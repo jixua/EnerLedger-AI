@@ -1,0 +1,260 @@
+"""CleaningStage：文档清洗（下载源文件 → 解析为 Markdown → 上传对象存储）。
+
+从 CLEANING 恢复的 retry 与首次执行共用同一顺序：``parsed_*`` 字段只在 markdown
+真实上传成功后写入。本阶段把临时文件生命周期（早删 + finally 兜底）与下载异常的
+失败码归类（磁盘满 / 源文件不可达 / 解析失败 / 上传失败）封装在 :meth:`run` 内。
+"""
+
+from __future__ import annotations
+
+import asyncio
+import errno
+import time
+from pathlib import Path
+
+from loguru import logger
+
+from app.rag.config import settings
+from app.rag.core.markdown_parser import EnhancementModelMissingError
+from app.rag.core.markdown_parser.heading_hierarchy import (
+    aprocess_existing_markdown_heading_hierarchy,
+    build_heading_hierarchy_metadata,
+)
+
+from .. import temp_workspace
+from .._utils import coerce_optional_int, compact_log_value, now, task_log_context
+from ..error_codes import ParseFailureCode, build_failure_reason
+from ..post_process.constants import POST_PROCESS_STAGE_CLEANING
+from ..raw_markdown_assets import RawMarkdownAssetLoader
+from .base import Stage
+from .context import StageContext, StageOutcome
+
+
+class CleaningStage(Stage):
+    """文档清洗阶段。"""
+
+    name = POST_PROCESS_STAGE_CLEANING
+    status_field = "cleaning_status"
+
+    def __init__(self, services, repository, *, log_repository) -> None:
+        super().__init__(services, repository)
+        self._log_repo = log_repository
+
+    async def mark_started(self, ctx: StageContext, started_at) -> None:
+        ctx.log_record.parse_started_at = now()
+        await self._repo.mark_cleaning_started(
+            ctx.db,
+            ctx.pipeline_record,
+            started_at=ctx.log_record.parse_started_at,
+        )
+
+    async def run(self, ctx: StageContext) -> StageOutcome:
+        payload = ctx.payload
+        source_path: Path | None = None
+        try:
+            if self._services.source_io.should_skip_source_download(payload):
+                logger.info(
+                    "[ParseTask] source_download_skipped {} reason=mineru_url_api",
+                    task_log_context(payload),
+                )
+            else:
+                source_path = temp_workspace.create_temp_file(
+                    payload.task_id,
+                    Path(settings.PARSE_TEMP_DIR),
+                    suffix=payload.file_type,
+                )
+                download_started_at = time.monotonic()
+                try:
+                    await asyncio.to_thread(
+                        self._services.source_io.download_to_path, payload, source_path
+                    )
+                except OSError as exc:
+                    temp_workspace.safe_unlink(source_path)
+                    source_path = None
+                    code = (
+                        ParseFailureCode.TEMP_DISK_FULL
+                        if exc.errno == errno.ENOSPC
+                        else ParseFailureCode.SOURCE_FILE_NOT_FOUND
+                    )
+                    return self._classified_failure(code, exc)
+                except Exception as exc:
+                    temp_workspace.safe_unlink(source_path)
+                    source_path = None
+                    return self._classified_failure(ParseFailureCode.SOURCE_FILE_NOT_FOUND, exc)
+
+                download_ms = int((time.monotonic() - download_started_at) * 1000)
+                try:
+                    file_size_mb = source_path.stat().st_size / (1024 * 1024)
+                except OSError:
+                    file_size_mb = 0.0
+                logger.info(
+                    "[ParseTask] source_downloaded {} file_size_mb={:.1f} download_ms={} "
+                    "source_bucket={}",
+                    task_log_context(payload),
+                    file_size_mb,
+                    download_ms,
+                    compact_log_value(payload.source_bucket),
+                )
+
+            parse_started_at = time.monotonic()
+            try:
+                if payload.is_markdown_passthrough:
+                    # md/markdown 源文件本身即目标格式：cleaning 阶段的职责是把多源文件
+                    # 「解析为 md」，md 无需任何引擎转换，直接读取源文件文本透传，跳过解析。
+                    parse_result = await self._read_markdown_passthrough(source_path)
+                    # 提取 MD 中 base64 内嵌图片并上传到 MinIO，替换为对象 URL；
+                    # 单张失败不阻断整篇（best-effort），修改后的 markdown 用于后续分片。
+                    parse_result["markdown"] = await self._services.upload_md_images(
+                        parse_result["markdown"], payload
+                    )
+                    dataset_cfg = await self._load_dataset_config(payload, ctx)
+                    enhancement_config = (
+                        dataset_cfg.enhancement if dataset_cfg is not None else None
+                    )
+                    # Java v1 资源包的 source_object_key 指向 normalized.md。仅该路径消费
+                    # 数据集图片增强开关；关闭时不扫描 URI、不下载 RAW、不构建 Vision client。
+                    if RawMarkdownAssetLoader.is_v1_source(payload):
+                        parse_result["markdown"] = await self._services.enhance_markdown_raw_images(
+                            parse_result["markdown"],
+                            payload,
+                            enhancement_config,
+                        )
+                    heading_result = await aprocess_existing_markdown_heading_hierarchy(
+                        parse_result["markdown"],
+                        enhancement_config=enhancement_config,
+                        source_file=payload.source_filename or payload.source_object_key,
+                        user_id=coerce_optional_int(payload.user_id),
+                        resolved_model=(
+                            ctx.execution_context.enhancement_chat
+                            if ctx.execution_context is not None
+                            else None
+                        ),
+                    )
+                    parse_result["markdown"] = heading_result.markdown
+                    parse_result["parse_result"] = heading_result.parse_result
+                    parse_result["metadata"].update(
+                        build_heading_hierarchy_metadata(heading_result)
+                    )
+                else:
+                    # 读取数据集级配置（PDF 后端 + 增强模型/开关）注入解析。get_config 内部已对
+                    # DB 故障降级为默认；JSON 内容非法时 ValidationError 在此向上抛，由下方
+                    # except 归类为 PARSE_ENGINE_FAILED（reason 含具体字段名，便于排查）。
+                    dataset_cfg = await self._load_dataset_config(payload, ctx)
+                    parse_result = await self._services.parse_file(
+                        source_path,
+                        payload,
+                        dataset_cfg,
+                        ctx.execution_context,
+                    )
+            except EnhancementModelMissingError as exc:
+                # 数据集开启增强，但未提供对应能力的精确配置绑定：单独归类。
+                return self._classified_failure(ParseFailureCode.ENHANCEMENT_MODEL_MISSING, exc)
+            except Exception as exc:
+                return self._classified_failure(ParseFailureCode.PARSE_ENGINE_FAILED, exc)
+            parse_ms = int((time.monotonic() - parse_started_at) * 1000)
+            logger.info(
+                "[ParseTask] parse_completed {} parse_ms={} markdown_chars={} "
+                "file_type={} parser_backend={}",
+                task_log_context(payload),
+                parse_ms,
+                len(parse_result["markdown"] or ""),
+                compact_log_value(payload.file_type),
+                compact_log_value(payload.pdf_parser_backend),
+            )
+
+            # 早删：拿到 markdown 后原文件已无下游用途；finally 兜底幂等。
+            temp_workspace.safe_unlink(source_path)
+            source_path = None
+
+            # markdown 产物统一写入 Python 配置的 RAG 文档私有桶（MINIO_PRIVATE_BUCKET）；
+            # md/markdown 只跳过解析引擎转换（is_markdown_passthrough），不跳过落盘，
+            # 避免产物停留在 source_bucket。坐标由 payload.markdown_bucket/markdown_object_key 统一解析。
+            upload_started_at = time.monotonic()
+            try:
+                await asyncio.to_thread(
+                    self._services.source_io.upload_markdown,
+                    payload,
+                    parse_result["markdown"],
+                )
+            except Exception as exc:
+                return self._classified_failure(ParseFailureCode.PARSED_FILE_UPLOAD_FAILED, exc)
+            logger.info(
+                "[ParseTask] markdown_uploaded {} upload_ms={} markdown_bytes={} "
+                "markdown_bucket={}",
+                task_log_context(payload),
+                int((time.monotonic() - upload_started_at) * 1000),
+                len(parse_result["markdown"].encode("utf-8")),
+                compact_log_value(payload.markdown_bucket),
+            )
+
+            ctx.parse_result = parse_result
+            return StageOutcome.success()
+        finally:
+            temp_workspace.safe_unlink(source_path)
+
+    async def mark_success(self, ctx: StageContext, outcome: StageOutcome, *, started_at) -> None:
+        # Markdown 转换事实先落库，后处理失败只影响 pipeline 当前态。
+        await self._log_repo.mark_parsed(ctx.payload, ctx.log_record, ctx.db)
+        await self._repo.mark_cleaning_success(
+            ctx.db,
+            ctx.pipeline_record,
+            duration_ms=ctx.log_record.parse_duration_ms,
+        )
+        await self._repo.mark_post_cleaning(
+            ctx.db,
+            ctx.pipeline_record,
+            started_at=now(),
+        )
+
+    async def mark_failed(self, ctx: StageContext, outcome: StageOutcome, *, started_at) -> None:
+        await self._log_repo.mark_parse_finished(ctx.log_record, ctx.db)
+        await self._repo.mark_cleaning_failed(
+            ctx.db,
+            ctx.pipeline_record,
+            reason=outcome.failure_reason,
+            duration_ms=ctx.log_record.parse_duration_ms,
+            finished_at=now(),
+        )
+
+    @staticmethod
+    async def _load_dataset_config(payload, ctx: StageContext):
+        """读取数据集级解析配置（PDF + 增强）。
+
+        ``user_id`` / ``dataset_id`` 缺失（理论上不应发生）时返回 ``None``，由 ``parse_file``
+        全量回退系统默认。DB 故障在 ``DatasetConfigService`` 内已降级为默认，不在此处理。
+        """
+        user_id = coerce_optional_int(payload.user_id)
+        dataset_id = coerce_optional_int(payload.dataset_id)
+        if user_id is None or dataset_id is None:
+            return None
+        if ctx.execution_context is None:
+            return None
+        return ctx.execution_context.config
+
+    @staticmethod
+    async def _read_markdown_passthrough(source_path: Path | None) -> dict:
+        """直接读取已下载的 md/markdown 源文件文本作为 markdown 产物。
+
+        返回与 :meth:`StageServices.parse_file` 一致的产物字典形状
+        （``markdown`` / ``parse_result`` / ``metadata`` / ``time_cost_ms``），
+        ``parse_result`` 置空使下游 chunking 走纯 markdown 分片路径。
+        """
+        if source_path is None:
+            raise ValueError("md/markdown 源文件路径不能为空，无法透传")
+        started_at = time.monotonic()
+        markdown = await asyncio.to_thread(Path(source_path).read_text, "utf-8", "ignore")
+        return {
+            "markdown": markdown,
+            "parse_result": None,
+            "metadata": {
+                "format": "markdown",
+                "passthrough": True,
+                "pages_or_length": len(markdown),
+            },
+            "time_cost_ms": int((time.monotonic() - started_at) * 1000),
+        }
+
+    @staticmethod
+    def _classified_failure(code: ParseFailureCode, exc: Exception) -> StageOutcome:
+        failure_reason = build_failure_reason(code, str(exc))
+        return StageOutcome.failure(failure_reason, error=exc)

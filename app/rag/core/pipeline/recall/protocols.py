@@ -1,0 +1,67 @@
+"""召回路统一契约。
+
+pipeline 只认"满足契约的召回方式"，不限制路数。本期默认装稠密 / 稀疏 / 关键词
+三路；后续要加 GraphRag / wiki 等，只要新路满足本契约就能直接挂进来。
+"""
+
+from collections.abc import Sequence
+from typing import Protocol, runtime_checkable
+
+from app.rag.core.pipeline.recall.models import RecallHit, RetrieverHit
+
+# 本期内置三路 source 名常量；调用方自由选用，pipeline 不依赖具体取值。
+SOURCE_DENSE = "dense"
+SOURCE_SPARSE = "sparse"
+SOURCE_BM25 = "bm25"
+
+
+@runtime_checkable
+class Retriever(Protocol):
+    """召回方法契约。
+
+    实现方在自己的存储模块（storage.qdrant / storage.vector /
+    storage.es）内自包含完成 query 预处理（embedding / 稀疏化 / 分词）、
+    存储查询、打分排序，最终返回一份按自己打分降序排好的候选列表。
+
+    实现要求：
+    - ``source`` 必须是常量字符串，pipeline 内部用它作为 dict 键。
+    - ``recall`` 返回的列表必须按 score 降序排序——pipeline 信任此前提，不会重排。
+    - 合法但无命中应返回 ``[]``，不要抛异常。
+    - 不可恢复的查询失败（模型不可达、ES 超时等）应抛任意 Exception，由 pipeline
+      按严格 / 宽松策略处理。
+    - ``user_id`` 与 ``top_k`` 在**执行期**由 pipeline 透传（top_k 按 source 来自
+      ``RecallRequest`` 的 ``bm25_top_k`` / ``sparse_top_k`` / ``dense_top_k`` 等字段），
+      retriever 不在装配期持有它们——这样 pipeline 与 retriever 可单例复用。
+    - ``score_threshold_override`` 在执行期由 pipeline 按 source 透传（来自数据集级 recall
+      配置）：``None`` 表示沿用装配期默认阈值。无分数阈值概念的路（如 bm25）应接受但忽略。
+    """
+
+    source: str
+
+    async def recall(
+        self,
+        query: str,
+        dataset_ids: list[int],
+        doc_ids: list[int] | None = None,
+        *,
+        user_id: int,
+        top_k: int,
+        score_threshold_override: float | None = None,
+        dataset_contexts: dict[int, object] | None = None,
+    ) -> list[RetrieverHit]: ...
+
+
+@runtime_checkable
+class DocumentReadinessGate(Protocol):
+    """文档级召回可见性门禁契约。
+
+    实现方必须基于 MySQL 当前任务的整体状态判断候选是否可见，并保持输入顺序。
+    门禁异常必须向上抛出，不能把未经确认的候选原样放行。
+    """
+
+    async def filter_visible_hits(
+        self,
+        hits: Sequence[RecallHit],
+        *,
+        user_id: int,
+    ) -> list[RecallHit]: ...

@@ -1,0 +1,67 @@
+from datetime import datetime, timezone
+
+from sqlalchemy import Boolean, Column, DateTime, Index, UniqueConstraint
+from sqlalchemy.dialects.mysql import BIGINT, JSON, VARCHAR
+from sqlalchemy.orm import declarative_base
+
+Base = declarative_base()
+
+
+def utc_now() -> datetime:
+    """返回 UTC 当前时间，供 SQLAlchemy 默认值使用。"""
+    return datetime.now(timezone.utc)
+
+
+class DatasetParseConfig(Base):
+    """SQLAlchemy ORM: dataset_parse_config 数据集级解析/检索参数配置表。
+
+    四个 JSON 列分别承载分块 / Markdown 增强 / PDF / 召回四类配置，各类消费点不同
+    （chunking 在 splitter.factory、enhancement 在 markdown_parser.orchestrator、pdf 在
+    parse_task_service、recall 在 routes/rag），分列后字段变更的影响范围互相隔离。
+
+    **所有权约定**：表结构由 Alembic 管理，行数据由当前项目的数据集控制面 API 写入；
+    RAG 执行面只读。无配置行时 ``DatasetConfigService`` 返回内存默认。
+    """
+
+    __tablename__ = "dataset_parse_config"
+    __table_args__ = (
+        UniqueConstraint("user_id", "dataset_id", name="uk_user_dataset"),
+        Index("idx_dataset_parse_config_dataset", "dataset_id"),
+        Index("idx_dataset_parse_sparse_config", "sparse_embedding_config_id"),
+        Index("idx_dataset_parse_dense_config", "dense_embedding_config_id"),
+        Index("idx_dataset_parse_enhancement_chat_config", "enhancement_chat_config_id"),
+        Index("idx_dataset_parse_enhancement_vision_config", "enhancement_vision_config_id"),
+        Index("idx_dataset_parse_rerank_config", "rerank_config_id"),
+    )
+
+    id = Column(BIGINT(unsigned=True), primary_key=True, autoincrement=True)
+    user_id = Column(BIGINT(unsigned=True), nullable=False, comment="所属用户 ID")
+    dataset_id = Column(
+        BIGINT(unsigned=True), nullable=False, comment="所属数据集 ID，对应 dataset.id"
+    )
+    chunking_config = Column(JSON, nullable=False, comment="分块配置（3 项）")
+    enhancement_config = Column(JSON, nullable=False, comment="Markdown 增强配置（2 项）")
+    pdf_config = Column(JSON, nullable=False, comment="PDF 解析配置（1 项）")
+    recall_config = Column(JSON, nullable=False, comment="召回检索配置（15 项）")
+    sparse_embedding_config_id = Column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="稀疏向量全局 LLM 配置 ID",
+    )
+    dense_embedding_config_id = Column(
+        BIGINT(unsigned=True),
+        nullable=True,
+        comment="稠密向量全局 LLM 配置 ID",
+    )
+    enhancement_chat_config_id = Column(
+        BIGINT(unsigned=True), nullable=True, comment="Markdown 表格/标题增强 CHAT 配置 ID"
+    )
+    enhancement_vision_config_id = Column(
+        BIGINT(unsigned=True), nullable=True, comment="Markdown 图片增强 VISION 配置 ID"
+    )
+    rerank_config_id = Column(
+        BIGINT(unsigned=True), nullable=True, comment="召回重排 RERANK 配置 ID"
+    )
+    is_active = Column(Boolean, nullable=False, default=True)
+    created_at = Column(DateTime, default=utc_now, nullable=False)
+    updated_at = Column(DateTime, default=utc_now, onupdate=utc_now, nullable=False)

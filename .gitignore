@@ -1,0 +1,23 @@
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.coverage
+.venv/
+node_modules/
+.env
+.env.local
+dist/
+app/logs/
+nltk_data/
+data/*.db
+data/uploads/*
+!data/uploads/.gitkeep
+
+# 本地设计验收产物，不纳入源码版本。
+design-qa*.png
+design-source*.jpg
+design-qa.md
+frontend/audit/
+frontend/qa/
+frontend/design-qa.md

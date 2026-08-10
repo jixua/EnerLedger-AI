@@ -1,0 +1,191 @@
+import json
+from typing import Optional, Protocol
+
+from pydantic import AliasChoices, Field
+
+from app.rag.config import settings
+from app.rag.core.mq.exceptions import MQSerializationError
+from app.rag.core.mq.message import AbstractMessage, MessagePayload
+
+
+class ParseTaskPayload(MessagePayload):
+    """文档解析任务载荷。"""
+
+    task_id: str = Field(..., title="任务ID", description="文档解析任务的唯一标识")
+    original_file_id: int = Field(..., title="原始文件ID", description="原始文件表主键")
+    # 线上字段名为 document_parse_file_id（与 Java 投递、DB 列名一致）；
+    # 同时兼容历史 document_parse_task_id 别名，内部属性沿用 document_parse_task_id。
+    document_parse_task_id: int = Field(
+        ...,
+        title="文件解析表ID",
+        description="document_parse_file 表主键",
+        validation_alias=AliasChoices("document_parse_file_id", "document_parse_task_id"),
+        serialization_alias="document_parse_file_id",
+    )
+    user_id: int = Field(..., title="用户ID", description="文件所属用户ID")
+    dataset_id: int = Field(..., title="数据集ID", description="文件所属数据集ID")
+    file_type: str = Field(..., title="文件类型", description="文件格式（pdf/docx/html/...）")
+    source_bucket: str = Field(..., title="原始文件Bucket", description="源文件对象存储 bucket")
+    source_object_key: str = Field(..., title="原始文件对象Key", description="源文件对象存储 key")
+    source_filename: str = Field(..., title="原始文件名", description="用户上传时的原始文件名")
+    md_bucket: str = Field(..., title="Markdown Bucket", description="Markdown 输出 bucket")
+    md_object_key: str = Field(..., title="Markdown 对象Key", description="Markdown 输出对象 key")
+    trigger_mode: str = Field(
+        "upload_auto", title="触发方式", description="upload_auto/manual_retry"
+    )
+    pdf_parser_backend: Optional[str] = Field(
+        "opendataloader",
+        title="PDF解析器",
+        description="可选 PDF 解析器: mineru/opendataloader/naive",
+        validation_alias=AliasChoices("pdf_parser_backend", "parser_backend"),
+        serialization_alias="pdf_parser_backend",
+    )
+    docling_force_ocr: Optional[bool] = Field(
+        False, title="Docling强制全页 OCR", description="仅 Docling 后端生效"
+    )
+    image_bucket: Optional[str] = Field(
+        None, title="图片 Bucket", description="PDF 图片输出 bucket"
+    )
+    image_prefix: Optional[str] = Field(
+        None, title="图片前缀", description="PDF 图片输出对象 key 前缀"
+    )
+    # 重试链路字段：is_retry=False 时整条载荷与首次解析等价（老消息向后兼容）；
+    # is_retry=True 时 previous_task_id 必填，由编排层 _handle_retry_branch 消费。
+    is_retry: bool = Field(
+        False,
+        title="是否为重试任务",
+        description="True 表示本次为重试任务，需配合 previous_task_id；老消息缺省按首次解析处理",
+    )
+    previous_task_id: Optional[str] = Field(
+        None,
+        title="上一轮任务ID",
+        description="重试场景下指向上一轮失败的 task_id；首次解析必须为空",
+    )
+
+    model_config = {"title": "文档解析任务载荷", "populate_by_name": True}
+
+    @property
+    def is_markdown_passthrough(self) -> bool:
+        """md / markdown 走透传：源文件本身即目标 markdown，无需经解析引擎转换。"""
+        return self.file_type.lower() in ("md", "markdown")
+
+    @property
+    def markdown_bucket(self) -> str:
+        """markdown 产物统一写入服务配置的 ``MINIO_PRIVATE_BUCKET``。
+
+        不区分 file_type：md/markdown 透传只跳过解析引擎转换，产物仍会被
+        （重新）上传到私有桶，不再复用 ``source_bucket``。``md_bucket`` 保留为
+        兼容历史消息字段，不作为 Python 侧实际写入桶名的权威来源。
+        """
+        return settings.MINIO_PRIVATE_BUCKET
+
+    @property
+    def markdown_object_key(self) -> str:
+        """markdown 产物对象 key，统一取消息中的 ``md_object_key``。"""
+        return self.md_object_key
+
+
+class ParseTaskMessage(AbstractMessage):
+    """文档解析 MQ 消息。"""
+
+    MQ_NAME = "tolink.rag.parse_task"
+    MQ_TYPE = "PARSE_TASK"
+
+    def __init__(self, payload: ParseTaskPayload):
+        self._payload = payload
+
+    @classmethod
+    def get_mq_name(cls) -> str:
+        return cls.MQ_NAME
+
+    @classmethod
+    def get_mq_type(cls) -> str:
+        return cls.MQ_TYPE
+
+    def get_payload(self) -> ParseTaskPayload:
+        return self._payload
+
+    def get_routing_key(self) -> Optional[str]:
+        return self._payload.file_type
+
+    def get_log_fields(self) -> dict[str, object]:
+        """返回解析任务消息的关联字段，不记录文件名和对象存储坐标。"""
+        return {
+            "message_id": self._payload.message_id,
+            "task_id": self._payload.task_id,
+            "doc_id": self._payload.original_file_id,
+            "parse_file_id": self._payload.document_parse_task_id,
+            "user_id": self._payload.user_id,
+            "dataset_id": self._payload.dataset_id,
+            "file_type": self._payload.file_type,
+            "is_retry": self._payload.is_retry,
+            "previous_task_id": self._payload.previous_task_id,
+        }
+
+    @classmethod
+    def build(
+        cls,
+        task_id: str,
+        original_file_id: int,
+        document_parse_task_id: int,
+        user_id: int,
+        dataset_id: int,
+        file_type: str,
+        source_bucket: str,
+        source_object_key: str,
+        source_filename: str,
+        md_bucket: str,
+        md_object_key: str,
+        trigger_mode: str = "upload_auto",
+        pdf_parser_backend: Optional[str] = "opendataloader",
+        docling_force_ocr: Optional[bool] = False,
+        image_bucket: Optional[str] = None,
+        image_prefix: Optional[str] = None,
+        is_retry: bool = False,
+        previous_task_id: Optional[str] = None,
+    ) -> "ParseTaskMessage":
+        return cls(
+            payload=ParseTaskPayload(
+                task_id=task_id,
+                original_file_id=original_file_id,
+                document_parse_task_id=document_parse_task_id,
+                user_id=user_id,
+                dataset_id=dataset_id,
+                file_type=file_type,
+                source_bucket=source_bucket,
+                source_object_key=source_object_key,
+                source_filename=source_filename,
+                md_bucket=md_bucket,
+                md_object_key=md_object_key,
+                trigger_mode=trigger_mode,
+                pdf_parser_backend=pdf_parser_backend,
+                docling_force_ocr=docling_force_ocr,
+                image_bucket=image_bucket,
+                image_prefix=image_prefix,
+                is_retry=is_retry,
+                previous_task_id=previous_task_id,
+            )
+        )
+
+    @classmethod
+    def parse_msg(cls, raw: str) -> ParseTaskPayload:
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError as exc:
+            raise MQSerializationError(f"消息 JSON 反序列化失败: {exc}") from exc
+
+        if not isinstance(data, dict):
+            raise MQSerializationError("消息必须是 JSON 对象")
+
+        payload_data = data.get("payload", data)
+        try:
+            return ParseTaskPayload(**payload_data)
+        except Exception as exc:
+            if hasattr(exc, "errors"):
+                details = exc.errors(include_url=False, include_input=False)
+            else:
+                details = [{"type": type(exc).__name__}]
+            raise MQSerializationError(f"ParseTaskPayload 字段校验失败: {details}") from None
+
+    class MQReceiver(Protocol):
+        async def on_parse_task(self, payload: "ParseTaskPayload") -> None: ...

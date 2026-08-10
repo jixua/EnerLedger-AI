@@ -1,0 +1,309 @@
+"""文件级稀疏向量阶段编排：解析主流水线的最后一段。
+
+承接 brief v3 §3.6（已升级为「接收 pipeline 传入 chunks」）：
+
+- 输入是 pipeline 已过滤的 ``chunks`` 列表 + ``task_id`` + ``db``，复用现有
+  sparse_vector 底层能力（``SparseVectorService`` + Qdrant client）。
+- 文件级 all-or-nothing：任一 chunk 失败 → 触发失败 chunk 标 FAILED，整体
+  抛 :class:`SparseIndexingError`，由上层编排转为 ``pipeline.sparse_vectorizing_status=FAILED`` +
+  ``pipeline_status=FAILED`` + 通知 Java。
+- 调用方约束：
+  - chunks 已剔除 ``sparse_vector_status=SUCCESS`` 的条目（由 pipeline 现场过滤完成）。
+  - chunks 中每条的 ``dense_vector_status`` 必须是 ``SUCCESS``——业务硬约束：sparse
+    向量追加在 dense point 上，dense 没成功就不能跑 sparse。本模块在入口前置断言
+    （fail-fast）兜底；多值 CAS 只能保护 ``sparse_vector_status`` 维度，拦不住这条前置条件。
+  - dense / learned sparse 共用固定业务 collection，租户隔离统一依赖 payload filter。
+- 空集短路：传入 chunks 为空（调用方过滤后无待处理）→ 幂等 no-op SUCCESS。
+"""
+
+from __future__ import annotations
+
+from typing import Sequence
+
+from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.rag.config import settings
+from app.rag.core.encoding.sparse.exceptions import SparseVectorError
+from app.rag.core.encoding.sparse.factory import build_sparse_vector_service
+from app.rag.core.encoding.sparse.pipeline import SparseVectorService
+from app.rag.core.llm.user_model_resolver import ResolvedModel
+from app.rag.core.storage.chunks import ChunkRepository
+from app.rag.core.storage.chunks.constants import (
+    SPARSE_VECTOR_STATUS_FAILED,
+    SPARSE_VECTOR_STATUS_INDEXING,
+    SPARSE_VECTOR_STATUS_PENDING,
+)
+from app.rag.core.storage.qdrant import QdrantIndexStore
+from app.rag.core.storage.qdrant.point_factory import sparse_indexed_point_from_record
+from app.rag.models.chunk_record import ChunkRecordDB
+from app.rag.observability.logging import safe_exception_stack, truncate_log_value
+from app.rag.services.usage_reporter import report_usage_nowait
+
+
+class SparseIndexingError(SparseVectorError):
+    """SparseIndexingPipeline 文件级失败：由上层转为 pipeline FAILED 终态。
+
+    ``reason`` 形如 ``"SPARSE_VECTORIZING_FAILED:<具体原因>"``，由编排层
+    透传到 ``pipeline.failure_reason``。
+    """
+
+    def __init__(self, reason: str) -> None:
+        super().__init__(reason)
+        self.reason = reason
+
+
+# mark_sparse_indexing 多值 CAS 的合法旧态集合：PENDING 是首次没跑到的；FAILED 是
+# 上次失败的。一次 UPDATE 覆盖两态，拦下意外混入的 SUCCESS / INDEXING；非 ACTIVE
+# 生命周期记录由 ChunkRepository 的 _active_predicate 兜底过滤，避免破坏删除态。
+_SPARSE_PENDING_OR_FAILED = (SPARSE_VECTOR_STATUS_PENDING, SPARSE_VECTOR_STATUS_FAILED)
+
+
+class SparseIndexingPipeline:
+    """文件级稀疏向量编排。
+
+    与 ``EsIndexingPipeline`` 在 ES 链路里的角色对称：承担"读 chunk 真值 →
+    调用 sparse encoder → 写 Qdrant + MySQL 状态翻转"全过程，但保持文件级
+    all-or-nothing 语义。
+    """
+
+    def __init__(
+        self,
+        *,
+        chunk_repository: ChunkRepository | None = None,
+        sparse_vector_service: SparseVectorService | None = None,
+        qdrant_store: QdrantIndexStore | None = None,
+        batch_size: int | None = None,
+    ) -> None:
+        """构造编排器；所有依赖均支持显式注入（测试友好）+ 懒加载默认值。"""
+        self._chunk_repository = chunk_repository or ChunkRepository()
+        # sparse_vector_service 与 qdrant_store 延迟到第一次 run() 调用时再构造，
+        # 生产路径不注入 service，按发起用户在 run() 内 per-record 解析（见 _resolve_sparse_vector_service）。
+        self._sparse_vector_service = sparse_vector_service
+        self._qdrant_store = qdrant_store
+        # batch_size 优先级：显式注入 > settings。这里的 batch 是"切多少个 chunk 一组喂 encoder"的
+        # 外层批；稀疏编码已统一走 per-user adapter，外层批只读 SPARSE_VECTOR_BATCH_SIZE。
+        self.batch_size = batch_size or _resolve_sparse_index_batch_size()
+
+    async def run(
+        self,
+        *,
+        chunks: Sequence[ChunkRecordDB],
+        task_id: str,
+        db: AsyncSession,
+        resolved_model: ResolvedModel | None = None,
+    ) -> None:
+        """执行单文档的稀疏向量阶段。
+
+        接收 pipeline 已过滤的 chunks（``sparse_vector_status != SUCCESS`` 且
+        ``dense_vector_status == SUCCESS``）。正常路径不返回值；异常路径统一抛
+        :class:`SparseIndexingError`，由 ``SparseVectorizingStage`` 捕获并翻 FAILED 终态。
+        """
+        records = list(chunks)
+
+        # ① 空集短路：调用方现场过滤后没有待处理 chunk，等价于成功。
+        if not records:
+            logger.info(
+                "[SparseIndexingPipeline] empty chunks, no-op: task_id={}",
+                task_id,
+            )
+            return
+
+        # ② sparse 与 dense 解耦后不再要求 dense 已就绪：Qdrant point 由 ensure_points
+        # 独立建出（或 dense/sparse 任一方按需建），sparse 用 update_vectors 只写自己的
+        # named 向量。dense/sparse 的"共存"不再是硬前置，允许 sparse 先于 / 独立于 dense。
+
+        # ③ 分批编排：encode → Qdrant upsert → mark INDEXED；任一批失败抛文件级异常。
+        # 稀疏 encoder 背后的 provider 按数据集绑定解析（必配 SPARSE_EMBEDDING、无系统兜底）：
+        # 同一文档的 chunks 必定同 user/set，故按首条 user_id + set_id 一次解析、整篇复用，
+        # 与 dense 写入侧 per-document 解析同构。vector_name 仍是全局 Qdrant named vector
+        # （解析函数取自 settings），保证所有用户写进同一个稀疏向量命名空间。
+        user_id = int(records[0].user_id)
+        if self._sparse_vector_service is not None:
+            service = self._sparse_vector_service
+        elif resolved_model is not None:
+            service = build_sparse_vector_service(resolved_model)
+        else:
+            raise SparseIndexingError(
+                "SPARSE_VECTORIZING_FAILED:dataset execution context is required"
+            )
+        store = self._get_qdrant_store()
+        model_name = service.model_name
+        vector_name = service.vector_name
+
+        for batch_start in range(0, len(records), self.batch_size):
+            batch = records[batch_start : batch_start + self.batch_size]
+            await self._run_batch(
+                db=db,
+                batch=batch,
+                service=service,
+                store=store,
+                model_name=model_name,
+                vector_name=vector_name,
+                task_id=task_id,
+                user_id=user_id,
+            )
+
+        logger.info(
+            "[SparseIndexingPipeline] success: task_id={} processed={}",
+            task_id,
+            len(records),
+        )
+
+    async def _run_batch(
+        self,
+        *,
+        db: AsyncSession,
+        batch: Sequence[ChunkRecordDB],
+        service: SparseVectorService,
+        store: QdrantIndexStore,
+        model_name: str,
+        vector_name: str,
+        task_id: str,
+        user_id: int,
+    ) -> None:
+        """处理一批 chunk：encode + 写 Qdrant + 翻 MySQL 状态。
+
+        失败时把"触发失败的 chunk 集合"标 ``sparse_vector_status=FAILED``
+        作为审计痕迹（重试时仍可被反查继续处理），然后抛 SparseIndexingError。
+        """
+        chunk_ids = [row.chunk_id for row in batch]
+        texts = [row.content for row in batch]
+
+        try:
+            # 4.1 先把本批切换到 INDEXING（多值 CAS allowed=(PENDING, FAILED)），一次 SQL
+            # 同时覆盖首次（PENDING）/ retry（FAILED）两种合法旧态，并拦下意外混入的
+            # SUCCESS / INDEXING；如 rowcount != len 视为状态不一致，抛文件级失败。
+            indexing_count = await self._chunk_repository.mark_sparse_indexing(
+                db, chunk_ids, model_name=model_name, allowed_statuses=_SPARSE_PENDING_OR_FAILED
+            )
+            if indexing_count != len(chunk_ids):
+                raise SparseIndexingError(
+                    "SPARSE_VECTORIZING_FAILED:mark_indexing_rowcount_mismatch;"
+                    f"expected={len(chunk_ids)},actual={indexing_count}"
+                )
+            await db.commit()
+
+            # 4.2 调 encoder 生成稀疏向量；BGE-M3 返回顺序与输入对齐，这里再做一次长度校验。
+            vectors = await service.vectorize_texts(texts)
+            self._report_sparse_usage(
+                service=service,
+                user_id=user_id,
+                task_id=task_id,
+            )
+            if len(vectors) != len(batch):
+                raise SparseIndexingError(
+                    "SPARSE_VECTORIZING_FAILED:vectorize_count_mismatch;"
+                    f"expected={len(batch)},actual={len(vectors)}"
+                )
+
+            # 4.3 写 Qdrant：先 ensure schema，再 upsert sparse vectors。
+            await store.ensure_sparse_vector_schema(vector_name=vector_name)
+            points = [
+                sparse_indexed_point_from_record(row, vec, vector_name=vector_name)
+                for row, vec in zip(batch, vectors)
+            ]
+            await store.upsert_sparse_vectors(points=points)
+
+            # 4.4 翻 MySQL 状态为 INDEXED，写入 nonzero_count；rowcount 不匹配视为不一致。
+            for row, vec in zip(batch, vectors):
+                indexed_count = await self._chunk_repository.mark_sparse_indexed(
+                    db,
+                    [row.chunk_id],
+                    model_name=model_name,
+                    nonzero_count=len(vec.indices),
+                    expected_status=SPARSE_VECTOR_STATUS_INDEXING,
+                )
+                if indexed_count != 1:
+                    raise SparseIndexingError(
+                        "SPARSE_VECTORIZING_FAILED:mark_indexed_rowcount_mismatch;"
+                        f"chunk_id={row.chunk_id},rowcount={indexed_count}"
+                    )
+            await db.commit()
+        except SparseIndexingError as exc:
+            # 已经是结构化失败：先把本批标 FAILED 留审计痕迹，再抛。
+            await self._safe_mark_failed(db, chunk_ids, reason=str(exc), task_id=task_id)
+            raise
+        except Exception as exc:
+            reason = f"SPARSE_VECTORIZING_FAILED:{type(exc).__name__}: {exc}"
+            await self._safe_mark_failed(db, chunk_ids, reason=reason, task_id=task_id)
+            raise SparseIndexingError(reason) from exc
+
+    async def _safe_mark_failed(
+        self,
+        db: AsyncSession,
+        chunk_ids: Sequence[str],
+        *,
+        reason: str,
+        task_id: str,
+    ) -> None:
+        """尽力把失败批次的 chunk 标 FAILED；失败被吞掉避免掩盖原始异常。"""
+        try:
+            await self._chunk_repository.mark_sparse_failed(
+                db, chunk_ids, error_msg=reason, expected_status=None
+            )
+            await db.commit()
+        except Exception as bookkeeping_exc:
+            await db.rollback()
+            logger.bind(
+                error_type=type(bookkeeping_exc).__name__,
+                error_message=truncate_log_value(bookkeeping_exc),
+                stack_trace=safe_exception_stack(bookkeeping_exc),
+            ).error(
+                "[SparseIndexingPipeline] failed to mark sparse_vector_status=FAILED: "
+                "task_id={} chunk_count={}",
+                task_id,
+                len(chunk_ids),
+            )
+
+    @staticmethod
+    def _report_sparse_usage(
+        *,
+        service: SparseVectorService,
+        user_id: int,
+        task_id: str,
+    ) -> None:
+        usage = getattr(service, "last_usage", None)
+        total_tokens = int(getattr(usage, "total_tokens", 0) or 0) if usage is not None else 0
+        if total_tokens <= 0:
+            return
+        report_usage_nowait(
+            user_id=user_id,
+            provider_type=getattr(service, "provider_type", None) or "",
+            model_name=service.model_name or "",
+            stage="parse",
+            operation="sparse",
+            prompt_tokens=int(getattr(usage, "prompt_tokens", 0) or 0),
+            completion_tokens=0,
+            total_tokens=total_tokens,
+            task_id=task_id,
+            config_id=int(service.config_id),
+        )
+
+    def _get_qdrant_store(self) -> QdrantIndexStore:
+        if self._qdrant_store is None:
+            self._qdrant_store = QdrantIndexStore()
+        return self._qdrant_store
+
+
+def _resolve_sparse_index_batch_size() -> int:
+    """解析稀疏索引「外层批大小」：一次从 DB 取多少 chunk 原文喂给编码器。
+
+    稀疏编码已统一走 per-user adapter（provider 由用户配置解析，各自的请求批策略由 provider
+    内部决定），外层批大小不再随 provider 切换，统一取 ``SPARSE_VECTOR_BATCH_SIZE``。
+    """
+    return _positive_int(
+        getattr(settings, "SPARSE_VECTOR_BATCH_SIZE", None),
+        default=32,
+        name="SPARSE_VECTOR_BATCH_SIZE",
+    )
+
+
+def _positive_int(value, *, default: int, name: str) -> int:
+    """Return a positive integer setting, falling back to default for empty values."""
+    if value is None or value == "":
+        return default
+    resolved = int(value)
+    if resolved <= 0:
+        raise ValueError(f"{name} must be greater than 0.")
+    return resolved

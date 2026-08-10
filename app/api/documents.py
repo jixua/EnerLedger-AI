@@ -1,0 +1,1025 @@
+"""文档上传、异步解析队列与完整生命周期 API。"""
+
+from __future__ import annotations
+
+import asyncio
+import base64
+import binascii
+import os
+import re
+import tempfile
+from collections.abc import Iterator
+from pathlib import Path, PurePath, PurePosixPath
+from typing import Literal
+from urllib.parse import unquote, urlsplit
+from uuid import uuid4
+
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi.responses import StreamingResponse
+from sqlalchemy import func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.domain.auth import get_user_id
+from app.domain.models import Dataset, Document
+from app.domain.schemas import (
+    DocumentChunkPage,
+    DocumentPreviewMap,
+    DocumentRead,
+    DocumentUpdate,
+)
+from app.rag.config import settings
+from app.rag.database import get_db
+from app.rag.models.chunk_record import ChunkRecordDB
+from app.rag.observability.logging import logger
+from app.rag.services.storage.factory import StorageFactory
+from app.services.document_ingestion import SimpleDocumentIngestionService
+from app.services.document_queue import (
+    DOCUMENT_STATUS_FAILED,
+    DOCUMENT_STATUS_PROCESSING,
+    DOCUMENT_STATUS_QUEUED,
+    DOCUMENT_STATUS_READY,
+    reset_document_for_queue,
+    utc_now,
+)
+
+router = APIRouter(prefix="/api/v1", tags=["文档解析"])
+
+SUPPORTED_FILE_TYPES = {"pdf", "docx", "html", "htm"}
+DOCUMENT_STATUSES = {
+    DOCUMENT_STATUS_QUEUED,
+    DOCUMENT_STATUS_PROCESSING,
+    DOCUMENT_STATUS_READY,
+    DOCUMENT_STATUS_FAILED,
+}
+
+_MARKDOWN_IMAGE_PATTERN = re.compile(
+    r"(?P<prefix>!\[[^\]\n]*\]\()"
+    r"(?P<target><[^>\n]+>|[^)\s\n]+)"
+    r"(?P<suffix>(?:\s+(?:\"[^\"\n]*\"|'[^'\n]*'))?\))"
+)
+_PREVIEW_IMAGE_CONTENT_TYPES = {
+    ".bmp": "image/bmp",
+    ".gif": "image/gif",
+    ".jpeg": "image/jpeg",
+    ".jpg": "image/jpeg",
+    ".png": "image/png",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".webp": "image/webp",
+}
+
+
+async def _owned_dataset(
+    db: AsyncSession,
+    dataset_id: int,
+    user_id: int,
+    *,
+    for_update: bool = False,
+) -> Dataset:
+    statement = select(Dataset).where(
+        Dataset.id == dataset_id,
+        Dataset.user_id == user_id,
+        Dataset.status == "ACTIVE",
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    dataset = await db.scalar(statement)
+    if dataset is None:
+        raise HTTPException(status_code=404, detail="数据集不存在或不属于当前用户")
+    return dataset
+
+
+async def _owned_document(
+    db: AsyncSession,
+    document_id: int,
+    user_id: int,
+    *,
+    for_update: bool = False,
+) -> Document:
+    statement = select(Document).where(
+        Document.id == document_id,
+        Document.user_id == user_id,
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    document = await db.scalar(statement)
+    if document is None:
+        raise HTTPException(status_code=404, detail="文档不存在")
+    return document
+
+
+async def _save_upload_to_path(file: UploadFile, destination: Path) -> int:
+    """分块落盘并在读取过程中执行大小限制，不构造完整文件 bytes。"""
+
+    limit = settings.DOCUMENT_UPLOAD_MAX_BYTES
+    total = 0
+    with destination.open("wb") as output:
+        while chunk := await file.read(1024 * 1024):
+            total += len(chunk)
+            if total > limit:
+                raise HTTPException(
+                    status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+                    detail=f"文件超过上传上限 {limit} bytes",
+                )
+            output.write(chunk)
+    if total == 0:
+        raise HTTPException(status_code=422, detail="上传文件不能为空")
+    return total
+
+
+def _document_payload(document: Document) -> dict:
+    return {
+        "document_id": document.id,
+        "dataset_id": document.dataset_id,
+        "filename": document.filename,
+        "file_type": document.file_type,
+        "file_size": document.file_size,
+        "content_type": document.content_type,
+        "parser_backend": document.parser_backend,
+        "status": document.status,
+        "version": document.version,
+        "attempt_count": document.attempt_count,
+        "available_at": document.available_at,
+        "queued_at": document.queued_at,
+        "processing_started_at": document.processing_started_at,
+        "lease_expires_at": document.lease_expires_at,
+        "finished_at": document.finished_at,
+        "error_code": document.error_code,
+        "error_message": document.error_message,
+        "reparse_requested": document.reparse_requested,
+        "page_count": document.page_count,
+        "chunk_count": document.chunk_count,
+        "parse_time_ms": document.parse_time_ms,
+        "created_at": document.created_at,
+        "updated_at": document.updated_at,
+    }
+
+
+def _chunk_payload(record: ChunkRecordDB) -> dict:
+    """把 Chunk 真值记录收敛为对外可追溯、无内部索引细节的响应。"""
+
+    return {
+        "chunk_id": record.chunk_id,
+        "document_version": record.document_version,
+        "chunk_index": record.chunk_index,
+        "chunk_type": record.chunk_type,
+        "content": record.content,
+        "char_count": len(record.content),
+        "start_line": record.start_line,
+        "end_line": record.end_line,
+        "start_page": record.start_page,
+        "end_page": record.end_page,
+        "structure": record.structure_metadata,
+        "created_at": record.create_time,
+        "updated_at": record.update_time,
+    }
+
+
+def _preview_not_ready(document: Document) -> HTTPException:
+    return HTTPException(
+        status_code=409,
+        detail={
+            "code": "DOCUMENT_PREVIEW_NOT_READY",
+            "message": "文档当前版本尚未解析完成，暂时不能预览",
+            "status": document.status,
+        },
+    )
+
+
+def _iter_preview_file(path: Path, *, block_size: int = 1024 * 1024) -> Iterator[bytes]:
+    """分块输出已下载的 Markdown，消费完毕或客户端断开时清理临时文件。"""
+
+    try:
+        with path.open("rb") as source:
+            while content := source.read(block_size):
+                yield content
+    finally:
+        path.unlink(missing_ok=True)
+
+
+def _validated_preview_asset_path(value: str) -> PurePosixPath:
+    """校验预览资产的文档内相对路径。
+
+    代理只允许当前 Markdown 目录内的常见栅格图片；绝对路径、回退、
+    Windows 分隔符和 SVG/HTML 等可执行内容均不会进入对象存储。
+    """
+
+    if not value or len(value.encode("utf-8")) > 1024 or "\x00" in value or "\\" in value:
+        raise ValueError("非法预览资产引用")
+    raw_parts = value.split("/")
+    if any(part in {"", ".", ".."} for part in raw_parts):
+        raise ValueError("非法预览资产路径")
+    path = PurePosixPath(value)
+    if path.is_absolute() or path.suffix.lower() not in _PREVIEW_IMAGE_CONTENT_TYPES:
+        raise ValueError("非法预览资产类型")
+    return path
+
+
+def _encode_preview_asset_ref(relative_path: PurePosixPath | str) -> str:
+    path = _validated_preview_asset_path(str(relative_path))
+    return base64.urlsafe_b64encode(path.as_posix().encode("utf-8")).decode("ascii").rstrip("=")
+
+
+def _decode_preview_asset_ref(asset_ref: str) -> PurePosixPath:
+    if not asset_ref or len(asset_ref) > 2048:
+        raise ValueError("非法预览资产引用")
+    padding = "=" * (-len(asset_ref) % 4)
+    try:
+        decoded = base64.b64decode(
+            f"{asset_ref}{padding}",
+            altchars=b"-_",
+            validate=True,
+        ).decode("utf-8")
+    except (binascii.Error, UnicodeDecodeError) as exc:
+        raise ValueError("非法预览资产引用") from exc
+    return _validated_preview_asset_path(decoded)
+
+
+def _preview_asset_relative_path(
+    target: str,
+    *,
+    parsed_bucket: str,
+    parsed_object_key: str,
+) -> PurePosixPath | None:
+    """仅解析属于当前 Markdown 产物目录的图片目标。"""
+
+    normalized_target = target.strip()
+    if normalized_target.startswith("<") and normalized_target.endswith(">"):
+        normalized_target = normalized_target[1:-1].strip()
+    parsed = urlsplit(normalized_target)
+    if parsed.scheme.lower() in {"data", "blob"} or parsed.scheme.lower() not in {
+        "",
+        "http",
+        "https",
+    }:
+        return None
+
+    parsed_root = PurePosixPath(parsed_object_key).parent
+    if parsed.scheme:
+        decoded_url_path = unquote(parsed.path)
+        marker = f"/{parsed_bucket}/{parsed_root.as_posix()}/"
+        marker_index = decoded_url_path.find(marker)
+        if marker_index < 0:
+            return None
+        relative_value = decoded_url_path[marker_index + len(marker) :]
+    else:
+        if parsed.netloc or parsed.path.startswith("/"):
+            return None
+        relative_value = unquote(parsed.path)
+        while relative_value.startswith("./"):
+            relative_value = relative_value[2:]
+
+    try:
+        return _validated_preview_asset_path(relative_value)
+    except ValueError:
+        return None
+
+
+def _rewrite_preview_markdown_line(line: str, document: Document) -> str:
+    """将当前文档的私有图片引用替换为租户受控代理地址。"""
+
+    if not document.parsed_bucket or not document.parsed_object_key:
+        return line
+
+    def replace(match: re.Match[str]) -> str:
+        relative_path = _preview_asset_relative_path(
+            match.group("target"),
+            parsed_bucket=document.parsed_bucket,
+            parsed_object_key=document.parsed_object_key,
+        )
+        if relative_path is None:
+            return match.group(0)
+        asset_ref = _encode_preview_asset_ref(relative_path)
+        proxy_url = (
+            f"/api/v1/documents/{document.id}/preview/versions/{document.version}"
+            f"/assets/{asset_ref}"
+        )
+        return f"{match.group('prefix')}{proxy_url}{match.group('suffix')}"
+
+    return _MARKDOWN_IMAGE_PATTERN.sub(replace, line)
+
+
+def _rewrite_preview_markdown_file(
+    source_path: Path,
+    target_path: Path,
+    document: Document,
+) -> None:
+    """逐行重写 Markdown，避免大文档全量读入内存。"""
+
+    with source_path.open("r", encoding="utf-8", newline="") as source:
+        with target_path.open("w", encoding="utf-8", newline="") as target:
+            for line in source:
+                target.write(_rewrite_preview_markdown_line(line, document))
+
+
+def _boundary_payload(record: ChunkRecordDB) -> dict:
+    structure = record.structure_metadata if isinstance(record.structure_metadata, dict) else {}
+    heading_trail = structure.get("heading_trail")
+    return {
+        "chunk_id": record.chunk_id,
+        "chunk_index": int(record.chunk_index),
+        "chunk_type": record.chunk_type,
+        "start_line": int(record.start_line),
+        "end_line": int(record.end_line),
+        "start_page": record.start_page,
+        "end_page": record.end_page,
+        "heading_trail": [str(value) for value in heading_trail]
+        if isinstance(heading_trail, list)
+        else [],
+        "split_strategy": str(structure["split_strategy"])
+        if structure.get("split_strategy")
+        else None,
+    }
+
+
+def _strict_line_boundaries(
+    records: list[ChunkRecordDB],
+    *,
+    allow_overlapping_lines: bool = False,
+) -> list[dict] | None:
+    """只接受按 chunk_index 严格递增且行范围不重叠的主体分片。"""
+
+    boundaries: list[dict] = []
+    previous_index: int | None = None
+    previous_end: int | None = None
+    for record in records:
+        chunk_index = record.chunk_index
+        start_line = record.start_line
+        end_line = record.end_line
+        if (
+            isinstance(chunk_index, bool)
+            or not isinstance(chunk_index, int)
+            or isinstance(start_line, bool)
+            or not isinstance(start_line, int)
+            or isinstance(end_line, bool)
+            or not isinstance(end_line, int)
+            or chunk_index < 0
+            or start_line < 0
+            or end_line < start_line
+            or (previous_index is not None and chunk_index <= previous_index)
+            or (
+                not allow_overlapping_lines
+                and previous_end is not None
+                and start_line <= previous_end
+            )
+        ):
+            return None
+        boundaries.append(_boundary_payload(record))
+        previous_index = chunk_index
+        previous_end = end_line
+    return boundaries
+
+
+def _legacy_line_boundaries(records: list[ChunkRecordDB]) -> tuple[list[dict], int]:
+    """为旧版本保守恢复主体边界，并跳过落在已接受主体范围内的派生候选。
+
+    旧记录没有 ``chunk_role``，无法声称边界可靠；但 LinkRag 默认 noop 的 source
+    chunk 行范围严格递增，而表格/图片派生块位于 source 范围内部。这里仅接受这一
+    可验证的单调子序列，所有跳过项只计作历史推断，不改变 ``map_reliable=false``。
+    """
+
+    boundaries: list[dict] = []
+    skipped = 0
+    previous_index: int | None = None
+    previous_end: int | None = None
+    for record in records:
+        chunk_index = record.chunk_index
+        start_line = record.start_line
+        end_line = record.end_line
+        if (
+            isinstance(chunk_index, bool)
+            or not isinstance(chunk_index, int)
+            or isinstance(start_line, bool)
+            or not isinstance(start_line, int)
+            or isinstance(end_line, bool)
+            or not isinstance(end_line, int)
+            or chunk_index < 0
+            or start_line < 0
+            or end_line < start_line
+            or (previous_index is not None and chunk_index <= previous_index)
+        ):
+            return [], len(records)
+        previous_index = chunk_index
+        if previous_end is not None and start_line <= previous_end:
+            skipped += 1
+            continue
+        boundaries.append(_boundary_payload(record))
+        previous_end = end_line
+    return boundaries, skipped
+
+
+def _preview_boundary_map(
+    document: Document,
+    records: list[ChunkRecordDB],
+) -> dict:
+    """从当前版本 Chunk 真值记录生成连续阅读所需的边界图。"""
+
+    derived_records = [
+        record
+        for record in records
+        if isinstance(record.structure_metadata, dict)
+        and str(record.structure_metadata.get("chunk_role") or "").strip().lower()
+        == "derived_element"
+    ]
+    source_records = [record for record in records if record not in derived_records]
+    has_legacy_record = any(
+        not isinstance(record.structure_metadata, dict)
+        or not str(record.structure_metadata.get("split_strategy") or "").strip()
+        for record in source_records
+    )
+    strategies = [
+        str(record.structure_metadata.get("split_strategy") or "").lower()
+        for record in source_records
+        if isinstance(record.structure_metadata, dict)
+    ]
+    precision: Literal["line", "approximate_line", "legacy_line"]
+    if has_legacy_record:
+        precision = "legacy_line"
+    elif any("semantic_depth_window" in strategy for strategy in strategies):
+        precision = "approximate_line"
+    else:
+        precision = "line"
+
+    inferred_derived_count = 0
+    if has_legacy_record:
+        boundaries, inferred_derived_count = _legacy_line_boundaries(source_records)
+        resolved_boundaries = boundaries or None
+    else:
+        resolved_boundaries = _strict_line_boundaries(
+            source_records,
+            allow_overlapping_lines=precision == "approximate_line",
+        )
+        boundaries = resolved_boundaries or []
+    boundaries = [
+        {"boundary_index": boundary_index, **boundary}
+        for boundary_index, boundary in enumerate(boundaries)
+    ]
+    has_source_boundaries = bool(source_records) and resolved_boundaries is not None
+    # semantic_depth_window 可以在同一 Markdown 行内用 token 级边界切分；
+    # 当前数据模型没有字符 offset，因此只能给出近似行位置，不得
+    # 声称 map_reliable=true。
+    structurally_reliable = (
+        not has_legacy_record and has_source_boundaries and precision == "line"
+    )
+    reparse_required = has_legacy_record or not has_source_boundaries
+    return {
+        "document_id": document.id,
+        "dataset_id": document.dataset_id,
+        "document_version": document.version,
+        "boundary_precision": precision,
+        "map_reliable": structurally_reliable,
+        "reparse_required": reparse_required,
+        "source_chunk_count": len(boundaries),
+        "derived_chunk_count": len(derived_records) + inferred_derived_count,
+        "boundaries": boundaries,
+    }
+
+
+@router.post(
+    "/datasets/{dataset_id}/documents",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=DocumentRead,
+)
+async def upload_and_queue_document(
+    dataset_id: int,
+    response: Response,
+    file: UploadFile = File(...),
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """流式保存原文件并将解析任务写入 MySQL durable queue。"""
+
+    await _owned_dataset(db, dataset_id, user_id)
+
+    filename = PurePath(file.filename or "").name
+    file_type = PurePath(filename).suffix.lower().lstrip(".")
+    if not filename or file_type not in SUPPORTED_FILE_TYPES:
+        supported = ", ".join(sorted(SUPPORTED_FILE_TYPES))
+        raise HTTPException(status_code=415, detail=f"不支持的文件格式，可用格式: {supported}")
+    if len(filename) > 255:
+        raise HTTPException(status_code=422, detail="文件名不能超过 255 个字符")
+
+    storage = StorageFactory.get_storage()
+    object_key = f"raw/{user_id}/{dataset_id}/{uuid4().hex}/{filename}"
+    content_type = (file.content_type or "application/octet-stream")[:128]
+    parse_temp_root = Path(settings.PARSE_TEMP_DIR)
+    await asyncio.to_thread(parse_temp_root.mkdir, parents=True, exist_ok=True)
+
+    with tempfile.TemporaryDirectory(
+        prefix="energy-carbon-upload-",
+        dir=parse_temp_root,
+    ) as temp_dir:
+        source_path = Path(temp_dir) / f"source.{file_type}"
+        file_size = await _save_upload_to_path(file, source_path)
+        try:
+            await asyncio.to_thread(
+                storage.upload_from_path,
+                settings.MINIO_RAW_BUCKET,
+                object_key,
+                source_path,
+                content_type,
+            )
+        except Exception as exc:
+            raise HTTPException(status_code=502, detail="原始文件上传对象存储失败") from exc
+
+    # 对象上传期间数据集可能被并发删除；提交 Document 前重新加锁校验，使删除与插入串行。
+    try:
+        await _owned_dataset(db, dataset_id, user_id, for_update=True)
+    except HTTPException:
+        try:
+            await asyncio.to_thread(storage.remove_prefix, settings.MINIO_RAW_BUCKET, object_key)
+        except Exception:
+            logger.bind(
+                event="raw_upload_cleanup_failed",
+                document_object_key=object_key,
+            ).warning("数据集已删除后清理原文件对象失败")
+        raise
+
+    now = utc_now()
+    document = Document(
+        dataset_id=dataset_id,
+        user_id=user_id,
+        filename=filename,
+        file_type=file_type,
+        file_size=file_size,
+        content_type=content_type,
+        raw_bucket=settings.MINIO_RAW_BUCKET,
+        raw_object_key=object_key,
+        parser_backend="opendataloader" if file_type == "pdf" else "builtin",
+        status=DOCUMENT_STATUS_QUEUED,
+        version=1,
+        attempt_count=0,
+        available_at=now,
+        queued_at=now,
+    )
+    try:
+        db.add(document)
+        await db.commit()
+        await db.refresh(document)
+    except Exception:
+        await db.rollback()
+        try:
+            await asyncio.to_thread(storage.remove_prefix, settings.MINIO_RAW_BUCKET, object_key)
+        except Exception as cleanup_exc:
+            logger.bind(
+                event="raw_upload_cleanup_failed",
+                document_object_key=object_key,
+                error_type=type(cleanup_exc).__name__,
+            ).warning("数据库写入失败后清理原文件对象失败")
+        raise
+
+    response.headers["Location"] = f"/api/v1/documents/{document.id}"
+    return _document_payload(document)
+
+
+# 保留旧函数名，避免内部调用方升级期间 import 失败；HTTP 契约已经改为 202 + QUEUED。
+upload_and_parse_document = upload_and_queue_document
+
+
+@router.get("/datasets/{dataset_id}/documents", response_model=list[DocumentRead])
+async def list_documents(
+    dataset_id: int,
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    await _owned_dataset(db, dataset_id, user_id)
+    documents = (
+        await db.scalars(
+            select(Document)
+            .where(Document.dataset_id == dataset_id, Document.user_id == user_id)
+            .order_by(Document.created_at.desc(), Document.id.desc())
+        )
+    ).all()
+    return [_document_payload(document) for document in documents]
+
+
+@router.get("/documents", response_model=list[DocumentRead])
+async def list_all_documents(
+    dataset_id: int | None = Query(default=None, gt=0),
+    document_status: str | None = Query(default=None, alias="status"),
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> list[dict]:
+    """一次读取当前用户的文档队列，可按数据集或处理状态筛选。"""
+
+    normalized_status = document_status.strip().upper() if document_status else None
+    if normalized_status is not None and normalized_status not in DOCUMENT_STATUSES:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "INVALID_DOCUMENT_STATUS",
+                "message": f"status 必须是 {', '.join(sorted(DOCUMENT_STATUSES))} 之一",
+            },
+        )
+
+    statement = select(Document).where(Document.user_id == user_id)
+    if dataset_id is not None:
+        statement = statement.where(Document.dataset_id == dataset_id)
+    if normalized_status is not None:
+        statement = statement.where(Document.status == normalized_status)
+    documents = (
+        await db.scalars(statement.order_by(Document.created_at.desc(), Document.id.desc()))
+    ).all()
+    return [_document_payload(document) for document in documents]
+
+
+@router.get("/documents/{document_id}", response_model=DocumentRead)
+async def get_document_status(
+    document_id: int,
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    return _document_payload(await _owned_document(db, document_id, user_id))
+
+
+@router.get("/documents/{document_id}/chunks", response_model=DocumentChunkPage)
+async def list_document_chunks(
+    document_id: int,
+    offset: int = Query(default=0, ge=0),
+    limit: int = Query(default=20, ge=1, le=100),
+    query: str | None = Query(default=None, alias="q", max_length=200),
+    chunk_type: str | None = Query(default=None, min_length=1, max_length=32),
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """查看 READY 文档当前版本的分片正文、顺序与来源位置。"""
+
+    document = await _owned_document(db, document_id, user_id)
+    if document.status != DOCUMENT_STATUS_READY:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DOCUMENT_CHUNKS_NOT_READY",
+                "message": "文档当前版本尚未解析完成，暂时不能查看分片",
+                "status": document.status,
+            },
+        )
+
+    normalized_query = query.strip() if query else None
+    normalized_type = chunk_type.strip().lower() if chunk_type else None
+    if chunk_type is not None and not normalized_type:
+        raise HTTPException(status_code=422, detail="分片类型不能为空")
+    conditions = [
+        ChunkRecordDB.doc_id == document.id,
+        ChunkRecordDB.set_id == document.dataset_id,
+        ChunkRecordDB.user_id == user_id,
+        ChunkRecordDB.document_version == document.version,
+    ]
+    if normalized_query:
+        conditions.append(
+            or_(
+                ChunkRecordDB.content.contains(normalized_query, autoescape=True),
+                ChunkRecordDB.chunk_id.contains(normalized_query, autoescape=True),
+            )
+        )
+    if normalized_type:
+        conditions.append(ChunkRecordDB.chunk_type == normalized_type)
+
+    total = int(
+        await db.scalar(
+            select(func.count()).select_from(ChunkRecordDB).where(*conditions)
+        )
+        or 0
+    )
+    records = (
+        await db.scalars(
+            select(ChunkRecordDB)
+            .where(*conditions)
+            .order_by(ChunkRecordDB.chunk_index.asc(), ChunkRecordDB.id.asc())
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+    return {
+        "document_id": document.id,
+        "dataset_id": document.dataset_id,
+        "document_version": document.version,
+        "items": [_chunk_payload(record) for record in records],
+        "total": total,
+        "offset": offset,
+        "limit": limit,
+    }
+
+
+@router.get("/documents/{document_id}/preview/content")
+async def stream_document_preview_content(
+    document_id: int,
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """流式返回 READY 文档当前版本的完整解析 Markdown。"""
+
+    document = await _owned_document(db, document_id, user_id)
+    if document.status != DOCUMENT_STATUS_READY:
+        raise _preview_not_ready(document)
+    if not document.parsed_bucket or not document.parsed_object_key:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "DOCUMENT_PREVIEW_STORAGE_UNAVAILABLE",
+                "message": "文档解析产物位置不完整，请重新解析后再试",
+            },
+        )
+
+    temp_root = Path(settings.PARSE_TEMP_DIR)
+    source_path: Path | None = None
+    preview_path: Path | None = None
+    try:
+        await asyncio.to_thread(temp_root.mkdir, parents=True, exist_ok=True)
+        source_descriptor, source_name = tempfile.mkstemp(
+            prefix=f"document-preview-source-{document.id}-",
+            suffix=".md",
+            dir=temp_root,
+        )
+        os.close(source_descriptor)
+        source_path = Path(source_name)
+        preview_descriptor, preview_name = tempfile.mkstemp(
+            prefix=f"document-preview-output-{document.id}-",
+            suffix=".md",
+            dir=temp_root,
+        )
+        os.close(preview_descriptor)
+        preview_path = Path(preview_name)
+    except OSError as exc:
+        if source_path is not None:
+            source_path.unlink(missing_ok=True)
+        if preview_path is not None:
+            preview_path.unlink(missing_ok=True)
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "DOCUMENT_PREVIEW_STORAGE_UNAVAILABLE",
+                "message": "无法准备文档预览，请稍后重试",
+            },
+        ) from exc
+
+    try:
+        storage = StorageFactory.get_storage()
+        await asyncio.to_thread(
+            storage.download_to_path,
+            document.parsed_bucket,
+            document.parsed_object_key,
+            source_path,
+        )
+        await asyncio.to_thread(
+            _rewrite_preview_markdown_file,
+            source_path,
+            preview_path,
+            document,
+        )
+        content_length = preview_path.stat().st_size
+    except Exception as exc:
+        source_path.unlink(missing_ok=True)
+        preview_path.unlink(missing_ok=True)
+        logger.bind(
+            event="document_preview_download_failed",
+            document_id=document.id,
+            user_id=user_id,
+            error_type=type(exc).__name__,
+        ).warning("下载文档预览产物失败")
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "DOCUMENT_PREVIEW_STORAGE_UNAVAILABLE",
+                "message": "读取文档解析产物失败，请稍后重试",
+            },
+        ) from exc
+    finally:
+        if source_path is not None:
+            source_path.unlink(missing_ok=True)
+
+    return StreamingResponse(
+        _iter_preview_file(preview_path),
+        media_type="text/markdown; charset=utf-8",
+        headers={
+            "X-Document-Version": str(document.version),
+            "Content-Length": str(content_length),
+            "Cache-Control": "no-store",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get(
+    "/documents/{document_id}/preview/versions/{document_version}/assets/{asset_ref}"
+)
+async def stream_document_preview_asset(
+    document_id: int,
+    document_version: int,
+    asset_ref: str,
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> StreamingResponse:
+    """流式返回当前 READY 版本 Markdown 内的私有图片资产。
+
+    ``asset_ref`` 只承载 Markdown 目录内的 URL-safe 相对路径；服务端会
+    重新校验 ``X-User-Id`` 租户、文档当前版本与路径边界，对外不返回
+    bucket 或完整 object key。
+    """
+
+    document = await _owned_document(db, document_id, user_id)
+    if document.status != DOCUMENT_STATUS_READY:
+        raise _preview_not_ready(document)
+    if (
+        document_version <= 0
+        or int(document.version or 0) != document_version
+        or not document.parsed_bucket
+        or not document.parsed_object_key
+    ):
+        raise HTTPException(status_code=404, detail="预览资产不存在")
+    try:
+        relative_path = _decode_preview_asset_ref(asset_ref)
+    except ValueError as exc:
+        raise HTTPException(status_code=404, detail="预览资产不存在") from exc
+
+    parsed_root = PurePosixPath(document.parsed_object_key).parent
+    asset_object_key = (parsed_root / relative_path).as_posix()
+    content_type = _PREVIEW_IMAGE_CONTENT_TYPES[relative_path.suffix.lower()]
+    temp_root = Path(settings.PARSE_TEMP_DIR)
+    temp_path: Path | None = None
+    try:
+        await asyncio.to_thread(temp_root.mkdir, parents=True, exist_ok=True)
+        file_descriptor, temp_name = tempfile.mkstemp(
+            prefix=f"document-preview-asset-{document.id}-",
+            suffix=relative_path.suffix.lower(),
+            dir=temp_root,
+        )
+        os.close(file_descriptor)
+        temp_path = Path(temp_name)
+        storage = StorageFactory.get_storage()
+        await asyncio.to_thread(
+            storage.download_to_path,
+            document.parsed_bucket,
+            asset_object_key,
+            temp_path,
+        )
+        content_length = temp_path.stat().st_size
+    except Exception as exc:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        logger.bind(
+            event="document_preview_asset_download_failed",
+            document_id=document.id,
+            document_version=document_version,
+            user_id=user_id,
+            error_type=type(exc).__name__,
+        ).warning("下载文档预览资产失败")
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "DOCUMENT_PREVIEW_ASSET_UNAVAILABLE",
+                "message": "读取文档预览资产失败，请稍后重试",
+            },
+        ) from exc
+
+    return StreamingResponse(
+        _iter_preview_file(temp_path),
+        media_type=content_type,
+        headers={
+            "X-Document-Version": str(document.version),
+            "Content-Length": str(content_length),
+            "Cache-Control": "private, no-store",
+            "Content-Disposition": "inline",
+            "Content-Security-Policy": "default-src 'none'; sandbox",
+            "X-Content-Type-Options": "nosniff",
+        },
+    )
+
+
+@router.get("/documents/{document_id}/preview/map", response_model=DocumentPreviewMap)
+async def get_document_preview_map(
+    document_id: int,
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """返回 READY 文档当前版本的完整主体分片边界，不拼接 Chunk 正文。"""
+
+    document = await _owned_document(db, document_id, user_id)
+    if document.status != DOCUMENT_STATUS_READY:
+        raise _preview_not_ready(document)
+    conditions = [
+        ChunkRecordDB.doc_id == document.id,
+        ChunkRecordDB.set_id == document.dataset_id,
+        ChunkRecordDB.user_id == user_id,
+        ChunkRecordDB.document_version == document.version,
+    ]
+    records = list(
+        (
+            await db.scalars(
+                select(ChunkRecordDB)
+                .where(*conditions)
+                .order_by(ChunkRecordDB.chunk_index.asc(), ChunkRecordDB.id.asc())
+            )
+        ).all()
+    )
+    return _preview_boundary_map(document, records)
+
+
+@router.patch("/documents/{document_id}", response_model=DocumentRead)
+async def update_document(
+    document_id: int,
+    payload: DocumentUpdate,
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """修改用户可见文件名；文件类型和对象存储键保持不变。"""
+
+    document = await _owned_document(db, document_id, user_id, for_update=True)
+    document.filename = payload.filename
+    await db.commit()
+    await db.refresh(document)
+    return _document_payload(document)
+
+
+@router.post(
+    "/documents/{document_id}/retry",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=DocumentRead,
+)
+async def retry_document(
+    document_id: int,
+    response: Response,
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """重新入队失败任务，或收回 lease 已过期的永久 PROCESSING 任务。"""
+
+    document = await _owned_document(db, document_id, user_id, for_update=True)
+    now = utc_now()
+    stale_processing = document.status == DOCUMENT_STATUS_PROCESSING and (
+        document.lease_expires_at is None or document.lease_expires_at <= now
+    )
+    if document.status != DOCUMENT_STATUS_FAILED and not stale_processing:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DOCUMENT_NOT_RETRYABLE",
+                "message": "只有失败或租约已过期的解析任务可以重试",
+            },
+        )
+    reset_document_for_queue(document, reparse=False)
+    await db.commit()
+    await db.refresh(document)
+    response.headers["Location"] = f"/api/v1/documents/{document.id}"
+    return _document_payload(document)
+
+
+@router.post(
+    "/documents/{document_id}/reparse",
+    status_code=status.HTTP_202_ACCEPTED,
+    response_model=DocumentRead,
+)
+async def reparse_document(
+    document_id: int,
+    response: Response,
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> dict:
+    """为 READY/FAILED 文档创建新版本并用同一原文件重新解析。"""
+
+    document = await _owned_document(db, document_id, user_id, for_update=True)
+    if document.status not in {DOCUMENT_STATUS_READY, DOCUMENT_STATUS_FAILED}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DOCUMENT_NOT_REPARSABLE",
+                "message": "只有已完成或失败的文档可以重新解析",
+            },
+        )
+    reset_document_for_queue(document, reparse=True)
+    await db.commit()
+    await db.refresh(document)
+    response.headers["Location"] = f"/api/v1/documents/{document.id}"
+    return _document_payload(document)
+
+
+@router.delete("/documents/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    document_id: int,
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    """删除非活跃文档及原文件、解析产物和三路索引。"""
+
+    document = await _owned_document(db, document_id, user_id, for_update=True)
+    if document.status not in {DOCUMENT_STATUS_READY, DOCUMENT_STATUS_FAILED}:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "DOCUMENT_NOT_DELETABLE",
+                "message": "只有解析完成或最终失败的文档可以删除",
+            },
+        )
+
+    service = SimpleDocumentIngestionService(storage=StorageFactory.get_storage())
+    try:
+        await service.purge_document(document, db, include_raw=True)
+    except Exception as exc:
+        await db.rollback()
+        logger.bind(
+            event="document_delete_failed",
+            document_id=document_id,
+            user_id=user_id,
+            error_type=type(exc).__name__,
+        ).error("清理文档对象或索引失败")
+        raise HTTPException(status_code=502, detail="文档存储或索引清理失败，请稍后重试") from exc

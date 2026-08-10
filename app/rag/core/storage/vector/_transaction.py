@@ -1,0 +1,104 @@
+"""提供向量存储服务层共享的事务执行工具。"""
+
+from __future__ import annotations
+
+from collections.abc import Awaitable, Callable
+from typing import TypeVar
+
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
+
+from app.rag.core.storage.chunks.constants import CHUNK_LIFECYCLE_INACTIVE_STATUSES
+from app.rag.observability.logging import safe_exception_stack, truncate_log_value
+from app.rag.utils.logger import logger
+
+ResultT = TypeVar("ResultT")
+
+
+class TransactionalPipelineMixin:
+    """
+    为向量存储服务提供统一的独立事务执行方法。
+
+    Args:
+        None.
+
+    Returns:
+        None.
+    """
+
+    session_factory: async_sessionmaker[AsyncSession]
+
+    async def _run_in_transaction(
+        self,
+        operation: Callable[[AsyncSession], Awaitable[None]],
+    ) -> None:
+        """
+        为单个数据库动作包裹独立事务。
+
+        Args:
+            operation: 接收 `AsyncSession` 并执行具体数据库动作的协程函数。
+
+        Returns:
+            None.
+        """
+        async with self.session_factory() as session:
+            async with session.begin():
+                await operation(session)
+
+    async def _run_in_transaction_with_result(
+        self,
+        operation: Callable[[AsyncSession], Awaitable[ResultT]],
+    ) -> ResultT:
+        """
+        为需要返回结果的数据库动作包裹独立事务。
+
+        Args:
+            operation: 接收 `AsyncSession` 并返回结果的协程函数。
+
+        Returns:
+            ResultT: 数据库动作返回的结果。
+        """
+        async with self.session_factory() as session:
+            async with session.begin():
+                return await operation(session)
+
+    async def _delete_qdrant_point_if_record_is_delete_state(
+        self,
+        *,
+        chunk_id: str,
+    ) -> None:
+        """
+        回查 MySQL 删除态后，尽力清理可能残留的 Qdrant point。
+
+        Args:
+            chunk_id: 需要检查并清理的 chunk 标识。
+
+        Returns:
+            None.
+        """
+        try:
+            async with self.session_factory() as session:
+                records = await self.repository.get_by_chunk_ids(session, [chunk_id])
+            record = records[0] if records else None
+            if record is None or record.lifecycle_status not in CHUNK_LIFECYCLE_INACTIVE_STATUSES:
+                return
+
+            try:
+                await self.qdrant_store.delete_points(chunk_ids=[chunk_id])
+            except Exception as exc:
+                logger.bind(
+                    event="stale_vector_cleanup_failed",
+                    outcome="skipped",
+                    chunk_id=chunk_id,
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                    stack_trace=safe_exception_stack(exc),
+                ).warning("[TransactionalPipelineMixin] Failed to cleanup stale Qdrant point")
+        except Exception as exc:
+            logger.bind(
+                event="stale_vector_cleanup_inspection_failed",
+                outcome="skipped",
+                chunk_id=chunk_id,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+                stack_trace=safe_exception_stack(exc),
+            ).warning("[TransactionalPipelineMixin] Failed to inspect delete state before cleanup")
