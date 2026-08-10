@@ -18,7 +18,11 @@ class HtmlImageRewriter:
         original_url = self._select_source(img)
         alt = self._clean_inline_text(img.get("alt", ""))
         absolute_url = self.resolve_url(original_url)
-        object_url = self.build_mock_object_url(absolute_url)
+        object_url = (
+            absolute_url
+            if self.options.preserve_image_urls
+            else self.build_mock_object_url(absolute_url)
+        )
 
         target_url = object_url or absolute_url
         warning = None if object_url else f"无法生成模拟对象路径: {absolute_url}"

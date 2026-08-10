@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, FileText, Loader2, UploadCloud, X } from 'lucide-react';
 
-const DEFAULT_ACCEPTED_SUFFIXES = ['pdf', 'docx', 'html', 'htm'];
+const DEFAULT_ACCEPTED_SUFFIXES = ['pdf', 'doc', 'docx', 'html', 'htm'];
 const DEFAULT_MAX_FILE_BYTES = 100 * 1024 * 1024;
 
 function fileSuffix(filename) {

@@ -136,6 +136,9 @@ def test_document_retrieval_ready_matches_pdf_quality_gate() -> None:
 
     ready_docx = _document(status="READY")
     ready_docx.file_type = "docx"
+    assert _document_payload(ready_docx)["retrieval_ready"] is False
+    ready_docx.parse_quality_status = "PASSED"
+    ready_docx.parse_quality = {"status": "PASSED"}
     assert _document_payload(ready_docx)["retrieval_ready"] is True
 
 

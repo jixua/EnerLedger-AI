@@ -18,6 +18,10 @@ const previewImageSource = await readFile(
   new URL("../src/components/DocumentPreviewImage.jsx", import.meta.url),
   "utf8",
 );
+const htmlTableSource = await readFile(
+  new URL("../src/components/DocumentHtmlTable.jsx", import.meta.url),
+  "utf8",
+);
 
 test("document reader cancels stale preview requests and keeps loading errors recoverable", () => {
   assert.match(pageSource, /const controller = new AbortController\(\)/);
@@ -34,7 +38,7 @@ test("document reader renders one continuous markdown flow with explicit chunk s
   assert.match(pageSource, /normalizeDocumentBoundaries\(preview\?\.boundaries \|\| \[\]\)/);
   assert.match(pageSource, /createDocumentBoundaryPlugin\(readerBoundaries, preview\?\.boundary_precision\)/);
   assert.equal(pageSource.match(/<ReactMarkdown/g)?.length, 1);
-  assert.match(pageSource, /<ReactMarkdown remarkPlugins=\{\[remarkGfm, boundaryPlugin\]\}[\s\S]*\{preview\.content\}<\/ReactMarkdown>/);
+  assert.match(pageSource, /<ReactMarkdown remarkPlugins=\{\[remarkGfm, boundaryPlugin, remarkDocumentHtmlTables\]\}[\s\S]*\{preview\.content\}<\/ReactMarkdown>/);
   assert.match(pageSource, /"document-chunk-boundary"/);
   assert.match(pageSource, /<BoundaryGroup entries=\{entries\} approximate=\{approximate\}/);
   assert.match(pageSource, /role="separator"/);
@@ -42,6 +46,17 @@ test("document reader renders one continuous markdown flow with explicit chunk s
   assert.match(pageSource, /"隐藏分片线"/);
   assert.match(pageStyles, /\.document-reader__paper/);
   assert.match(pageStyles, /\.document-chunk-boundary/);
+});
+
+test("document reader preserves merged Word tables through a restricted renderer", () => {
+  assert.match(pageSource, /"document-html-table": \(props\) => <DocumentHtmlTable/);
+  assert.match(htmlTableSource, /node\.type === "html"/);
+  assert.match(htmlTableSource, /node\.type = "documentHtmlTable"/);
+  assert.match(htmlTableSource, /rowSpan/);
+  assert.match(htmlTableSource, /colSpan/);
+  assert.match(htmlTableSource, /new Set\(\[/);
+  assert.doesNotMatch(htmlTableSource, /dangerouslySetInnerHTML/);
+  assert.match(htmlTableSource, /<DocumentPreviewImage/);
 });
 
 test("document reader keeps first-load failures actionable and honors reduced motion", () => {

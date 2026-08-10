@@ -11,8 +11,8 @@ class ParserFactory:
     @staticmethod
     def get_parser(file_type: str, **kwargs):
         ext = file_type.lower()
-        if ext == "docx":
-            return WordParser()
+        if ext in {"docx", "doc"}:
+            return WordParser(**kwargs)
         elif ext == "pdf":
             return PdfParser(**kwargs)
         elif ext in ["html", "htm"]:

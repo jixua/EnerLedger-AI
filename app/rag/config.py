@@ -671,6 +671,16 @@ class Settings(BaseSettings):
     PDF_IMAGE_UPLOAD_ASYNC: bool = True  # 是否后台异步上传 PDF 图片资产
     PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_IMAGES: int = 20  # 图片增强最多使用多少张内存图片
     PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_BYTES: int = 50 * 1024 * 1024  # 图片增强内存图片总量上限
+    # Word OOXML 可靠性与资源限制。DOCX 是 ZIP 容器，必须在 Mammoth
+    # 解压/解析前拦截 zip bomb、越界路径与过大媒体。
+    WORD_MAX_ZIP_ENTRIES: int = Field(default=10_000, ge=1)
+    WORD_MAX_UNCOMPRESSED_BYTES: int = Field(default=500 * 1024 * 1024, ge=1)
+    WORD_MAX_COMPRESSION_RATIO: float = Field(default=200.0, gt=1)
+    WORD_MAX_IMAGES: int = Field(default=2_000, ge=1)
+    WORD_MAX_SINGLE_IMAGE_BYTES: int = Field(default=20 * 1024 * 1024, ge=1)
+    WORD_MAX_TOTAL_IMAGE_BYTES: int = Field(default=200 * 1024 * 1024, ge=1)
+    WORD_LEGACY_CONVERTER_BINARY: str = "soffice"
+    WORD_LEGACY_CONVERTER_TIMEOUT_SECONDS: float = Field(default=120, gt=0)
     MINERU_API_URL: str = ""  # MinerU 官方云端 V4 API 地址
     MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token
     MINERU_TIMEOUT: int = 300  # MinerU API 请求超时（秒）

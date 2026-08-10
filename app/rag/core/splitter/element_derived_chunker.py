@@ -748,6 +748,20 @@ class DerivedElementChunkBuilder:
             content_parts.append(f"相邻上下文：{adjacent_context}")
         table_content_label = "结构化表格：" if structured_table else "原始表格："
         content_parts.extend([table_content_label, retrieval_table])
+        image_descriptions = element.metadata.get("image_visual_descriptions")
+        if isinstance(image_descriptions, dict):
+            descriptions = list(
+                dict.fromkeys(
+                    str(value).strip()
+                    for value in image_descriptions.values()
+                    if str(value).strip()
+                )
+            )
+            if descriptions:
+                content_parts.append(
+                    "表格内图片说明：\n"
+                    + "\n".join(f"- {description}" for description in descriptions)
+                )
 
         if structure is not None:
             row_count, column_count = self._structured_table_dimensions(structure)

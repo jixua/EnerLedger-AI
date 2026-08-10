@@ -164,6 +164,13 @@ class MarkdownParser:
                         element.content = f"{INLINE_IMAGE_DESCRIPTION_PREFIX}{desc}"
                         prev_real_index = idx
                         continue
+                    if owner.type == ElementType.TABLE:
+                        descriptions = owner.metadata.setdefault(
+                            "image_visual_descriptions", {}
+                        )
+                        descriptions[url] = desc
+                        consumed.add(idx)
+                        continue
                 # 非法 src / 无主：保留为普通段落（防误解码）。
                 prev_real_index = idx
                 continue

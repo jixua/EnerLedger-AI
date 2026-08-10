@@ -56,6 +56,25 @@ def test_single_line_html_table_is_detected_between_paragraphs() -> None:
     ]
 
 
+def test_nested_multiline_html_table_is_kept_as_one_outer_element() -> None:
+    markdown = """<table>
+<tr><td>外层<table>
+<tr><td>内层</td></tr>
+</table></td></tr>
+</table>
+表后正文"""
+
+    result = MarkdownParser().parse(markdown)
+
+    assert len(result.tables) == 1
+    assert "内层" in result.tables[0].content
+    assert result.elements[-1].content == "表后正文"
+    report = PdfTableStructureExtractor().extract(markdown, merge_continuations=False)
+    assert len(report.tables) == 1
+    assert "嵌套表格" not in report.tables[0].text_matrix[0][0]
+    assert "内层" in report.tables[0].text_matrix[0][0]
+
+
 def test_unclosed_html_table_does_not_consume_following_document() -> None:
     result = MarkdownParser().parse("<table>\n<tr><td>1</td></tr>\n\n后续正文")
 

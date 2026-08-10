@@ -170,6 +170,12 @@ class StageServices:
             }
             if pdf_backend.lower() == "mineru":
                 parser_kwargs["source_file_url"] = self.source_io.build_source_file_url(payload)
+        elif payload.file_type.lower() in {"doc", "docx"}:
+            parser_kwargs = {
+                "image_bucket": payload.image_bucket or payload.markdown_bucket,
+                "image_prefix": payload.image_prefix or payload.md_object_key,
+                "storage": self._storage,
+            }
 
         return await ParseTaskService.aprocess(
             source_path,

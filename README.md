@@ -8,7 +8,8 @@
 
 - 后端只有 Python 应用，不运行 Java 应用服务。
 - PDF 固定使用源码内的 OpenDataLoader；它在 Python 进程中调用 Java，因此运行镜像仍需 OpenJDK 21。
-- 上传入口支持 PDF、DOCX、HTML/HTM；旧版二进制 `.doc` 不在本期范围内。
+- 上传入口支持 PDF、DOC/DOCX、HTML/HTM；旧版二进制 `.doc` 由
+  LibreOffice 独立进程限时转换为 DOCX，再进入同一套 Mammoth 结构解析。
 - 文档上传请求只流式保存原文件并写入 MySQL 持久队列，独立 `parse-worker` 异步完成解析、切分和三路索引；不额外引入 RabbitMQ、Redis 或 Kafka。
 - MySQL 只保留 `dataset`、`document`、`document_chunk`、`llm_config` 四张业务表。
 - 不建立解析日志、阶段流水线、会话、消息、用量日志、厂商目录或模型目录表。

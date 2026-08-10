@@ -319,6 +319,7 @@ class PdfTableStructureExtractor:
         flags=re.MULTILINE,
     )
     _HTML_TABLE_RE = re.compile(r"<table\b.*?</table\s*>", re.IGNORECASE | re.DOTALL)
+    _HTML_TABLE_TAG_RE = re.compile(r"</?table\b[^>]*>", re.IGNORECASE)
     _MARKDOWN_DELIMITER_RE = re.compile(
         r"^\s*\|?\s*:?-{3,}:?\s*(?:\|\s*:?-{3,}:?\s*)+\|?\s*$"
     )
@@ -403,21 +404,21 @@ class PdfTableStructureExtractor:
         # whenever both formats occur on one page.
         candidates: list[tuple[int, int, str, object, str | None]] = []
         masked = list(section)
-        for match in self._HTML_TABLE_RE.finditer(section):
-            title_hint = self._preceding_title(section[: match.start()])
-            soup = BeautifulSoup(match.group(0), "html.parser")
+        for start, end in self._iter_top_level_html_tables(section):
+            title_hint = self._preceding_title(section[:start])
+            soup = BeautifulSoup(section[start:end], "html.parser")
             html_table = soup.find("table")
             if isinstance(html_table, Tag):
                 candidates.append(
                     (
-                        match.start(),
-                        match.end(),
+                        start,
+                        end,
                         "html",
                         html_table,
                         title_hint,
                     )
                 )
-            for offset in range(match.start(), match.end()):
+            for offset in range(start, end):
                 if masked[offset] != "\n":
                     masked[offset] = " "
 
@@ -496,6 +497,26 @@ class PdfTableStructureExtractor:
                 )
             next_index += 1
         return tables, next_index
+
+    @classmethod
+    def _iter_top_level_html_tables(cls, text: str) -> Iterable[tuple[int, int]]:
+        """Yield balanced outer ``table`` ranges, including nested tables in full."""
+
+        depth = 0
+        start: int | None = None
+        for match in cls._HTML_TABLE_TAG_RE.finditer(text or ""):
+            closing = match.group(0).lstrip().startswith("</")
+            if not closing:
+                if depth == 0:
+                    start = match.start()
+                depth += 1
+                continue
+            if depth <= 0:
+                continue
+            depth -= 1
+            if depth == 0 and start is not None:
+                yield start, match.end()
+                start = None
 
     def _parse_html_table(
         self,

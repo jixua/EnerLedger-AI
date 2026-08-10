@@ -18,6 +18,7 @@ import {
 import ReactMarkdown from "react-markdown";
 import { Link, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
+import { DocumentHtmlTable, remarkDocumentHtmlTables } from "../components/DocumentHtmlTable";
 import { DocumentPreviewImage } from "../components/DocumentPreviewImage";
 import { ParseQualityBadge, ParseQualitySummary } from "../components/ParseQuality";
 import {
@@ -194,6 +195,7 @@ export function DocumentDetailPage() {
       a: ({ children, node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
       img: (props) => <DocumentPreviewImage {...props} />,
       table: ({ children, node: _node, ...props }) => <div className="document-reader-table"><table {...props}>{children}</table></div>,
+      "document-html-table": (props) => <DocumentHtmlTable {...props} />,
       "document-chunk-boundary": ({ node }) => {
         const rawIndexes = node?.properties?.boundaryIndexes ?? node?.properties?.boundaryindexes ?? "";
         const entries = String(rawIndexes)
@@ -400,7 +402,7 @@ export function DocumentDetailPage() {
             <div className="document-reader__canvas">
               <article className="document-reader__paper" aria-label={`${document.filename} 的解析后正文`}>
                 <div className="document-reader-markdown">
-                  <ReactMarkdown remarkPlugins={[remarkGfm, boundaryPlugin]} components={markdownComponents}>{preview.content}</ReactMarkdown>
+                  <ReactMarkdown remarkPlugins={[remarkGfm, boundaryPlugin, remarkDocumentHtmlTables]} components={markdownComponents}>{preview.content}</ReactMarkdown>
                 </div>
               </article>
             </div>

@@ -91,7 +91,7 @@ class MySqlDocumentReadinessGate:
                 ChunkRecordDB.user_id == user_id,
                 Document.status == "READY",
                 or_(
-                    func.lower(Document.file_type) != "pdf",
+                    func.lower(Document.file_type).notin_(("pdf", "doc", "docx")),
                     and_(
                         Document.parse_quality_status == "PASSED",
                         func.upper(

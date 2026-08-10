@@ -153,8 +153,9 @@ class ImageDescriber:
                     marker = build_vision_marker(url, _sanitize_description(desc))
                     element.content = f"{element.content}\n\n{marker}"
 
-            elif element.type == ElementType.PARAGRAPH:
-                # 内联图：段落行号范围内每个图片 url 各编码一条带 src 标记。
+            elif element.type in {ElementType.PARAGRAPH, ElementType.TABLE}:
+                # 内联图/表格内图：先把带 src 标记写到元素之后，
+                # 下一次 parse 再精确回绑到 owner metadata。
                 # 按 url（而非描述值）去重，避免同段两图描述文字相同时丢失其一。
                 appended_urls: list[str] = []
                 for line in range(element.start_line, element.end_line + 1):

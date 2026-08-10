@@ -87,6 +87,8 @@ class HtmlMarkdownRenderer:
                     rendered = self._join_blocks([rendered, f"图注：{caption_text}"])
             return rendered
         if name == "table":
+            if self.options.preserve_table_html:
+                return self._render_preserved_table(node)
             result = self.table_processor.render(node)
             self.table_count += 1
             if result.strategy == "record_markdown":
@@ -103,6 +105,23 @@ class HtmlMarkdownRenderer:
         if name == "code":
             return f"`{self._clean_inline_text(node.get_text(' ', strip=True))}`"
         return self.render_inline_children(node) or self.render_children(node)
+
+    def _render_preserved_table(self, table: Tag) -> str:
+        """保留原始 HTML 表格结构，但先将其中图片改写为可持久化引用。"""
+
+        # 在当前 soup 树上原地改写；表格只会渲染一次，不会影响其他节点。
+        for img in table.find_all("img"):
+            result = self.image_rewriter.rewrite_img(img)
+            self.image_count += 1
+            if result.warning:
+                self.warnings.append(result.warning)
+            img["src"] = result.object_url or result.absolute_url
+            img.attrs.pop("srcset", None)
+
+        self.table_count += 1
+        # lxml/BeautifulSoup 会输出完整 table；下游 scanner 按标签深度
+        # 收集多行/嵌套表格，不再依赖第一个 </table>。
+        return str(table)
 
     def render_inline_children(self, node: Tag) -> str:
         parts = [self.render_inline(child) for child in node.children]

@@ -85,7 +85,7 @@ class DocumentIngestionLeaseLost(DocumentIngestionError):
 
 
 class DocumentQualityGateError(DocumentIngestionError):
-    """PDF 页级质量、兜底或专项验证未达到可检索条件。"""
+    """文档解析质量、兜底或专项验证未达到可检索条件。"""
 
     def __init__(
         self,
@@ -274,6 +274,12 @@ class SimpleDocumentIngestionService:
                     execution_context=execution_context,
                 )
                 markdown = self._required_markdown(parse_output)
+            elif identity.file_type in {"doc", "docx"}:
+                parse_quality_status, parse_quality = self._process_word_quality(
+                    identity=identity,
+                    parse_output=parse_output,
+                    markdown=markdown,
+                )
             else:
                 parse_quality_status = "NOT_APPLICABLE"
                 parse_quality = {
@@ -469,17 +475,19 @@ class SimpleDocumentIngestionService:
     ) -> None:
         """将文档的解析产物和终态与 chunk 真值集一次提交。"""
 
-        if document.file_type.lower() == "pdf":
+        if document.file_type.lower() in {"pdf", "doc", "docx"}:
             report_status = str(parse_quality.get("status") or "")
             if (
                 parse_quality_status != PdfQualityStatus.PASSED.value
                 or report_status != PdfQualityStatus.PASSED.value
             ):
                 raise DocumentIngestionError(
-                    "PDF 质量门禁未通过，禁止写入 READY 终态"
+                    "文档质量门禁未通过，禁止写入 READY 终态"
                 )
         parser_backend = (
-            "opendataloader" if document.file_type.lower() == "pdf" else document.parser_backend
+            "opendataloader"
+            if document.file_type.lower() == "pdf"
+            else str(parse_quality.get("parser_backend") or document.parser_backend or "") or None
         )
         values = {
             "parsed_bucket": parsed_bucket,
@@ -634,6 +642,165 @@ class SimpleDocumentIngestionService:
                 settings.PDF_FALLBACK_MAX_STRUCTURED_REPORT_BYTES
             ),
         )
+
+    def _process_word_quality(
+        self,
+        *,
+        identity: _DocumentIdentity,
+        parse_output: dict[str, Any],
+        markdown: str,
+    ) -> tuple[str, dict[str, Any]]:
+        """校验 Word 文本、表格和图片覆盖，并把结构绑定到分片输入。"""
+
+        metadata = parse_output.get("metadata")
+        if not isinstance(metadata, dict):
+            metadata = {}
+        parse_result = parse_output.get("parse_result")
+        if parse_result is None:
+            raise DocumentIngestionError("Word 解析器未返回 ParseResult")
+
+        table_report = self._pdf_table_structure_extractor.extract(
+            markdown,
+            merge_continuations=False,
+        )
+        self._apply_word_structured_tables(parse_result, table_report)
+        suppressed_images = self._apply_word_image_retrieval_policy(parse_result)
+
+        def integer(name: str) -> int:
+            try:
+                return max(0, int(metadata.get(name) or 0))
+            except (TypeError, ValueError):
+                return 0
+
+        source_text_chars = integer("source_text_chars")
+        mammoth_text_chars = integer("mammoth_text_chars")
+        text_retention_ratio = (
+            min(1.0, mammoth_text_chars / source_text_chars)
+            if source_text_chars > 0
+            else 1.0
+        )
+        source_table_count = integer("source_table_count")
+        source_top_level_tables = integer("source_top_level_table_count")
+        mammoth_table_count = integer("mammoth_html_table_count")
+        parsed_table_count = sum(
+            element.type is ElementType.TABLE for element in parse_result.elements
+        )
+        source_image_references = integer("source_image_reference_count")
+        image_occurrences = integer("image_occurrence_count")
+        rendered_images = integer("image_count")
+
+        warnings = [
+            str(item)
+            for item in metadata.get("warnings", [])
+            if str(item).strip()
+        ]
+        blocking: list[str] = []
+        blocking.extend(
+            warning for warning in warnings if warning.startswith("WORD_IMAGE_TRANSCODE_FAILED:")
+        )
+        if text_retention_ratio < 0.97:
+            blocking.append(
+                "WORD_TEXT_RETENTION_LOW:"
+                f"expected>={0.97},actual={text_retention_ratio:.4f}"
+            )
+        if source_table_count != mammoth_table_count:
+            blocking.append(
+                "WORD_TABLE_COUNT_MISMATCH:"
+                f"source={source_table_count},mammoth={mammoth_table_count}"
+            )
+        if source_top_level_tables != len(table_report.tables):
+            blocking.append(
+                "WORD_STRUCTURED_TABLE_COUNT_MISMATCH:"
+                f"source={source_top_level_tables},structured={len(table_report.tables)}"
+            )
+        if source_top_level_tables != parsed_table_count:
+            blocking.append(
+                "WORD_PARSE_RESULT_TABLE_COUNT_MISMATCH:"
+                f"source={source_top_level_tables},parsed={parsed_table_count}"
+            )
+        if source_image_references != image_occurrences or image_occurrences != rendered_images:
+            blocking.append(
+                "WORD_IMAGE_COUNT_MISMATCH:"
+                f"source={source_image_references},hook={image_occurrences},rendered={rendered_images}"
+            )
+        if source_image_references and not bool(metadata.get("image_assets_persisted")):
+            blocking.append("WORD_IMAGE_ASSETS_NOT_PERSISTED")
+        critical_warnings = [
+            str(item)
+            for item in metadata.get("critical_warnings", [])
+            if str(item).strip()
+        ]
+        if critical_warnings:
+            blocking.extend(f"WORD_UNSUPPORTED_OBJECT:{item}" for item in critical_warnings)
+
+        status = "PASSED" if not blocking else "CONTENT_VALIDATION_FAILED"
+        report = {
+            "schema_version": 2,
+            "status": status,
+            "parser_backend": str(metadata.get("parser_backend") or "mammoth"),
+            "unit_type": "block",
+            "unit_count": integer("unit_count"),
+            "text_coverage_ratio": round(text_retention_ratio, 6),
+            "source_text_chars": source_text_chars,
+            "output_text_chars": mammoth_text_chars,
+            "source_table_count": source_table_count,
+            "source_top_level_table_count": source_top_level_tables,
+            "source_nested_table_count": integer("source_nested_table_count"),
+            "structured_table_count": len(table_report.tables),
+            "source_image_reference_count": source_image_references,
+            "image_occurrence_count": image_occurrences,
+            "image_asset_count": integer("image_asset_count"),
+            "image_upload_count": integer("image_upload_count"),
+            "unsupported_vision_image_count": integer(
+                "unsupported_vision_image_count"
+            ),
+            "suppressed_unexplained_image_count": suppressed_images,
+            "mammoth_message_count": integer("mammoth_message_count"),
+            "warnings": list(dict.fromkeys([*warnings, *blocking])),
+            "blocking_issues": blocking,
+            "table_structure": table_report.to_dict(),
+            "image_assets": metadata.get("word_image_assets", []),
+        }
+        if blocking:
+            raise DocumentQualityGateError(
+                quality_status=status,
+                quality_report=report,
+                error_code="WORD_CONTENT_VALIDATION_FAILED",
+                message="Word 文本、表格或图片完整性验证未通过",
+                retryable=False,
+            )
+        metadata["word_quality_status"] = status
+        return status, report
+
+    @staticmethod
+    def _apply_word_structured_tables(parse_result: Any, table_report: Any) -> None:
+        tables = iter(table_report.tables)
+        for element in parse_result.elements:
+            if element.type is not ElementType.TABLE:
+                continue
+            table = next(tables, None)
+            if table is None:
+                break
+            element.metadata["table_structure"] = table.to_dict()
+
+    @staticmethod
+    def _apply_word_image_retrieval_policy(parse_result: Any) -> int:
+        """没有 alt/视觉说明的独立图片保留预览，但不进入召回索引。"""
+
+        suppressed = 0
+        for element in parse_result.elements:
+            if element.type is not ElementType.IMAGE:
+                continue
+            description = str(element.metadata.get(META_VISUAL_DESCRIPTION) or "").strip()
+            alt = str(element.metadata.get("alt") or "").strip()
+            if description or alt:
+                element.metadata["retrieval_eligible"] = True
+                continue
+            element.metadata["suppress_retrieval"] = True
+            element.metadata["retrieval_eligible"] = False
+            element.metadata["retrieval_noise_reason"] = "WORD_IMAGE_DESCRIPTION_MISSING"
+            suppressed += 1
+        return suppressed
 
     async def _process_pdf_quality(
         self,
@@ -1480,6 +1647,12 @@ class SimpleDocumentIngestionService:
                 "image_prefix": image_prefix,
                 # 入库返回 READY 时图片必须已经真实持久化。
                 "image_upload_async": False,
+            }
+        elif identity.file_type in {"doc", "docx"}:
+            parser_kwargs = {
+                "storage": self._storage,
+                "image_bucket": parsed_bucket,
+                "image_prefix": image_prefix,
             }
         output = await self._parse_service.aprocess(
             source_path,

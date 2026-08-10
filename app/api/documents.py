@@ -44,7 +44,7 @@ from app.services.document_queue import (
 
 router = APIRouter(prefix="/api/v1", tags=["文档解析"])
 
-SUPPORTED_FILE_TYPES = {"pdf", "docx", "html", "htm"}
+SUPPORTED_FILE_TYPES = {"pdf", "doc", "docx", "html", "htm"}
 DOCUMENT_STATUSES = {
     DOCUMENT_STATUS_QUEUED,
     DOCUMENT_STATUS_PROCESSING,
@@ -141,6 +141,14 @@ _QUALITY_SUMMARY_FIELDS = (
     "vision_incomplete_pages",
     "visually_assessed_pages",
     "visual_no_content_pages",
+    "unit_type",
+    "unit_count",
+    "source_table_count",
+    "structured_table_count",
+    "source_image_reference_count",
+    "image_asset_count",
+    "image_upload_count",
+    "suppressed_unexplained_image_count",
 )
 _QUALITY_LIST_WARNING_LIMIT = 20
 
@@ -150,7 +158,7 @@ def _document_retrieval_ready(document: Document) -> bool:
 
     if str(document.status or "").upper() != DOCUMENT_STATUS_READY:
         return False
-    if str(document.file_type or "").lower() != "pdf":
+    if str(document.file_type or "").lower() not in {"pdf", "doc", "docx"}:
         return True
     report = document.parse_quality if isinstance(document.parse_quality, dict) else {}
     return bool(

@@ -55,6 +55,7 @@ class MarkdownScanner:
     # 段落扫描器拆散，结构化单元格元数据也无法绑定到最终 Chunk。
     _HTML_TABLE_START_RE = re.compile(r"^\s*<table\b", re.IGNORECASE)
     _HTML_TABLE_END_RE = re.compile(r"</table\s*>", re.IGNORECASE)
+    _HTML_TABLE_TAG_RE = re.compile(r"</?table\b[^>]*>", re.IGNORECASE)
 
     # 新增：公式块识别
     _MATH_BLOCK_START_RE = re.compile(r"^\s*(\$\$|\\\[)(.*?)$")
@@ -337,9 +338,13 @@ class MarkdownScanner:
         if not self._HTML_TABLE_START_RE.match(self._lines[start]):
             return None
         content_lines: list[str] = []
+        depth = 0
         for index in range(start, len(self._lines)):
-            content_lines.append(self._lines[index])
-            if self._HTML_TABLE_END_RE.search(self._lines[index]):
+            line = self._lines[index]
+            content_lines.append(line)
+            for tag in self._HTML_TABLE_TAG_RE.finditer(line):
+                depth += -1 if tag.group(0).lstrip().startswith("</") else 1
+            if depth == 0 and self._HTML_TABLE_END_RE.search(line):
                 return MarkdownElement(
                     type=ElementType.TABLE,
                     content="\n".join(content_lines),
