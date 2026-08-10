@@ -60,23 +60,31 @@ if actual != expected:
     assert completed.returncode == 0, completed.stdout + completed.stderr
 
 
-def test_alembic_has_minimal_root_and_document_queue_revision() -> None:
+def test_alembic_has_single_minimal_revision_chain() -> None:
     version_files = sorted(path for path in VERSIONS_DIR.glob("*.py") if path.name != "__init__.py")
     assert [path.name for path in version_files] == [
         "0001_minimal_rag.py",
         "0002_document_parse_queue.py",
         "0003_chunk_structure_metadata.py",
+        "0004_document_parse_quality.py",
+        "0005_dataset_vision_config.py",
     ]
 
     root_revision = runpy.run_path(str(version_files[0]))
     queue_revision = runpy.run_path(str(version_files[1]))
     chunk_metadata_revision = runpy.run_path(str(version_files[2]))
+    parse_quality_revision = runpy.run_path(str(version_files[3]))
+    vision_config_revision = runpy.run_path(str(version_files[4]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
     assert queue_revision["down_revision"] == "0001_minimal_rag"
     assert chunk_metadata_revision["revision"] == "0003_chunk_structure_metadata"
     assert chunk_metadata_revision["down_revision"] == "0002_document_parse_queue"
+    assert parse_quality_revision["revision"] == "0004_document_parse_quality"
+    assert parse_quality_revision["down_revision"] == "0003_chunk_structure_metadata"
+    assert vision_config_revision["revision"] == "0005_dataset_vision_config"
+    assert vision_config_revision["down_revision"] == "0004_document_parse_quality"
 
 
 def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
@@ -97,6 +105,11 @@ def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
         match.strip("`") for match in re.findall(r"create\s+table\s+(`?[a-z0-9_]+`?)", sql)
     }
     assert created_tables == CORE_TABLES | {"alembic_version"}
+    assert "alter table document add column parse_quality_status varchar(32)" in sql
+    assert "alter table document add column parse_quality json" in sql
+    assert "legacy_unchecked" in sql
+    assert "not_applicable" in sql
+    assert "alter table dataset add column vision_config_id bigint unsigned" in sql
 
     legacy_tables = {
         "dataset_parse_config",
@@ -121,3 +134,6 @@ def test_readable_sql_snapshot_contains_current_chunk_structure_column() -> None
     sql = (PROJECT_ROOT / "migrations" / "db.sql").read_text(encoding="utf-8").lower()
 
     assert "structure_metadata json null" in sql
+    assert "parse_quality_status varchar(32) null" in sql
+    assert "parse_quality json null" in sql
+    assert "vision_config_id bigint unsigned null" in sql

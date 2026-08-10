@@ -3,6 +3,7 @@ import { afterEach, test } from "node:test";
 
 import {
   configureApi,
+  createDataset,
   getDocumentPreviewAsset,
   getDocumentPreviewContent,
   getDocumentPreviewMap,
@@ -11,6 +12,7 @@ import {
   getSystemStatus,
   listAllDocuments,
   updateDocument,
+  updateDataset,
 } from "../src/lib/api.js";
 import { streamRag } from "../src/lib/sse.js";
 
@@ -55,6 +57,30 @@ test("document rename sends the backend PATCH contract", async () => {
   assert.equal(captured.url, "/api/v1/documents/31");
   assert.equal(captured.init.method, "PATCH");
   assert.deepEqual(JSON.parse(captured.init.body), { filename: "核算报告.pdf" });
+});
+
+test("dataset create and update keep the optional vision model binding", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse({ id: 9, name: "核算资料", dense_embedding_config_id: 2, sparse_embedding_config_id: 3, vision_config_id: init.method === "POST" ? 5 : null });
+  };
+
+  await createDataset({
+    name: "核算资料",
+    dense_embedding_config_id: 2,
+    sparse_embedding_config_id: 3,
+    chat_config_id: null,
+    vision_config_id: 5,
+  });
+  await updateDataset(9, { vision_config_id: null });
+
+  assert.equal(requests[0].url, "/api/v1/datasets");
+  assert.equal(requests[0].init.method, "POST");
+  assert.equal(JSON.parse(requests[0].init.body).vision_config_id, 5);
+  assert.equal(requests[1].url, "/api/v1/datasets/9");
+  assert.equal(requests[1].init.method, "PATCH");
+  assert.deepEqual(JSON.parse(requests[1].init.body), { vision_config_id: null });
 });
 
 test("document chunks request keeps pagination, filters and tenant header", async () => {

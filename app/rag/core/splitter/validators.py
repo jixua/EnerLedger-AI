@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """splitter 阶段产物校验器。"""
 
 from __future__ import annotations
@@ -79,6 +78,7 @@ class CoarseChunkSetValidator:
             index
             for index, element in enumerate(split_input.elements)
             if element.type not in self.NOISE_TYPES
+            and element.metadata.get("suppress_retrieval") is not True
         ]
         if visible_indexes and not coarse_set.chunks:
             raise SplitterOutputValidationError(
@@ -443,7 +443,7 @@ class FinalChunkSetValidator:
     """
 
     def __init__(
-        self, tokenizer: "Tokenizer | None" = None, hard_max_tokens: int | None = None
+        self, tokenizer: Tokenizer | None = None, hard_max_tokens: int | None = None
     ) -> None:
         """
         初始化 FinalChunkSet 校验器。

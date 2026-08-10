@@ -213,6 +213,7 @@ async def update_config(
         Dataset.dense_embedding_config_id == config.id,
         Dataset.sparse_embedding_config_id == config.id,
         Dataset.chat_config_id == config.id,
+        Dataset.vision_config_id == config.id,
     )
     deactivating = updates.get("is_active") is False and config.is_active
     if deactivating:
@@ -289,6 +290,7 @@ async def delete_config(
                 Dataset.dense_embedding_config_id == config.id,
                 Dataset.sparse_embedding_config_id == config.id,
                 Dataset.chat_config_id == config.id,
+                Dataset.vision_config_id == config.id,
             )
         )
         .limit(1)

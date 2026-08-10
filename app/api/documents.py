@@ -10,7 +10,7 @@ import re
 import tempfile
 from collections.abc import Iterator
 from pathlib import Path, PurePath, PurePosixPath
-from typing import Literal
+from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
@@ -127,7 +127,126 @@ async def _save_upload_to_path(file: UploadFile, destination: Path) -> int:
     return total
 
 
-def _document_payload(document: Document) -> dict:
+_QUALITY_SUMMARY_FIELDS = (
+    "schema_version",
+    "status",
+    "parser_backend",
+    "page_count",
+    "pdf_page_count",
+    "markdown_page_count",
+    "text_coverage_ratio",
+    "ocr_required_pages",
+    "ocr_page_count",
+    "low_confidence_pages",
+    "vision_incomplete_pages",
+    "visually_assessed_pages",
+    "visual_no_content_pages",
+)
+_QUALITY_LIST_WARNING_LIMIT = 20
+
+
+def _document_retrieval_ready(document: Document) -> bool:
+    """返回与召回门禁相同的文档可见性。"""
+
+    if str(document.status or "").upper() != DOCUMENT_STATUS_READY:
+        return False
+    if str(document.file_type or "").lower() != "pdf":
+        return True
+    report = document.parse_quality if isinstance(document.parse_quality, dict) else {}
+    return bool(
+        str(document.parse_quality_status or "").upper() == "PASSED"
+        and str(report.get("status") or "").upper() == "PASSED"
+    )
+
+
+def _quality_report_summary(report: dict[str, Any] | None) -> dict[str, Any] | None:
+    """压缩列表所需的质量摘要，不复制 OCR 正文或结构化单元格。"""
+
+    if not isinstance(report, dict):
+        return None
+    summary = {
+        field_name: report[field_name]
+        for field_name in _QUALITY_SUMMARY_FIELDS
+        if field_name in report
+    }
+    warnings = report.get("warnings")
+    if isinstance(warnings, list):
+        summary["warning_count"] = len(warnings)
+        summary["warnings"] = warnings[:_QUALITY_LIST_WARNING_LIMIT]
+
+    fallback = report.get("fallback")
+    if isinstance(fallback, dict):
+        raw_results = fallback.get("results")
+        results = (
+            [item for item in raw_results if isinstance(item, dict)]
+            if isinstance(raw_results, list)
+            else []
+        )
+        fallback_warnings = fallback.get("warnings")
+        fallback_summary = {
+            field_name: fallback[field_name]
+            for field_name in (
+                "status",
+                "dpi",
+                "pdf_page_count",
+                "quality_page_count",
+                "processed_page_count",
+                "failed_page_count",
+            )
+            if field_name in fallback
+        }
+        fallback_summary.update(
+            ocr_page_count=sum(
+                str(item.get("method") or "").upper() == "OCR" for item in results
+            ),
+            vision_page_count=sum(
+                str(item.get("method") or "").upper() == "VISION" for item in results
+            ),
+            pages=sorted(
+                {
+                    int(item["page_number"])
+                    for item in results
+                    if str(item.get("page_number") or "").isdigit()
+                    and int(item["page_number"]) > 0
+                }
+            ),
+        )
+        if isinstance(fallback_warnings, list):
+            fallback_summary["warning_count"] = len(fallback_warnings)
+            fallback_summary["warnings"] = fallback_warnings[:_QUALITY_LIST_WARNING_LIMIT]
+        summary["fallback"] = fallback_summary
+
+    validation = report.get("content_validation")
+    if isinstance(validation, dict):
+        blocking_issues = validation.get("blocking_issues")
+        validation_warnings = validation.get("warnings")
+        validation_summary = {
+            field_name: validation[field_name]
+            for field_name in (
+                "status",
+                "structural_passed",
+                "page_set_complete",
+                "evaluated_page_count",
+                "missing_markdown_pages",
+                "unexpected_markdown_pages",
+                "affected_pages",
+            )
+            if field_name in validation
+        }
+        if isinstance(blocking_issues, list):
+            validation_summary["blocking_issue_count"] = len(blocking_issues)
+        if isinstance(validation_warnings, list):
+            validation_summary["warning_count"] = len(validation_warnings)
+        summary["content_validation"] = validation_summary
+    return summary
+
+
+def _document_payload(document: Document, *, quality_detail: bool = True) -> dict:
+    parse_quality = (
+        document.parse_quality
+        if quality_detail
+        else _quality_report_summary(document.parse_quality)
+    )
     return {
         "document_id": document.id,
         "dataset_id": document.dataset_id,
@@ -150,6 +269,9 @@ def _document_payload(document: Document) -> dict:
         "page_count": document.page_count,
         "chunk_count": document.chunk_count,
         "parse_time_ms": document.parse_time_ms,
+        "parse_quality_status": document.parse_quality_status,
+        "parse_quality": parse_quality,
+        "retrieval_ready": _document_retrieval_ready(document),
         "created_at": document.created_at,
         "updated_at": document.updated_at,
     }
@@ -590,7 +712,7 @@ async def list_documents(
             .order_by(Document.created_at.desc(), Document.id.desc())
         )
     ).all()
-    return [_document_payload(document) for document in documents]
+    return [_document_payload(document, quality_detail=False) for document in documents]
 
 
 @router.get("/documents", response_model=list[DocumentRead])
@@ -620,7 +742,7 @@ async def list_all_documents(
     documents = (
         await db.scalars(statement.order_by(Document.created_at.desc(), Document.id.desc()))
     ).all()
-    return [_document_payload(document) for document in documents]
+    return [_document_payload(document, quality_detail=False) for document in documents]
 
 
 @router.get("/documents/{document_id}", response_model=DocumentRead)

@@ -21,7 +21,9 @@ import {
   X,
 } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
+import { ParseQualityInline } from "../components/ParseQuality";
 import { UploadDialog } from "../components/UploadDialog";
+import { isDocumentRetrievalReady } from "../lib/parse-quality";
 import { useApp } from "../state/AppContext";
 
 const TABS = [
@@ -87,7 +89,8 @@ function canRetryDocument(document, status) {
 
 function statusMeta(document) {
   const status = normalizedStatus(document);
-  if (status === "READY") return { label: "已完成", modifier: "ready", icon: CheckCircle2 };
+  if (status === "READY" && isDocumentRetrievalReady(document)) return { label: "可检索", modifier: "ready", icon: CheckCircle2 };
+  if (status === "READY") return { label: "不可检索", modifier: "blocked", icon: AlertCircle };
   if (status === "FAILED") return { label: "失败", modifier: "failed", icon: AlertCircle };
   if (status === "QUEUED" && Number(document?.attempt_count || 0) > 0) return { label: "待重试", modifier: "retry", icon: Clock3 };
   if (status === "QUEUED") return { label: "排队中", modifier: "queued", icon: Clock3 };
@@ -154,6 +157,10 @@ export function DatasetDetailPage() {
     counts[normalizedStatus(document)] += 1;
     return counts;
   }, { QUEUED: 0, PROCESSING: 0, READY: 0, FAILED: 0 }), [datasetDocuments]);
+  const retrievalReadyCount = useMemo(
+    () => datasetDocuments.filter(isDocumentRetrievalReady).length,
+    [datasetDocuments],
+  );
   const filteredDocuments = useMemo(() => {
     const normalizedQuery = documentQuery.trim().toLocaleLowerCase("zh-CN");
     return datasetDocuments.filter((document) => {
@@ -166,10 +173,12 @@ export function DatasetDetailPage() {
   const denseModels = models.filter((model) => model.capability === "EMBEDDING" && (model.is_active !== false || Number(modelId(model)) === Number(dataset?.dense_embedding_config_id)));
   const sparseModels = models.filter((model) => model.capability === "SPARSE_EMBEDDING" && (model.is_active !== false || Number(modelId(model)) === Number(dataset?.sparse_embedding_config_id)));
   const chatModels = models.filter((model) => model.capability === "CHAT" && (model.is_active !== false || Number(modelId(model)) === Number(dataset?.chat_config_id)));
+  const visionModels = models.filter((model) => model.capability === "VISION" && (model.is_active !== false || Number(modelId(model)) === Number(dataset?.vision_config_id)));
   const hasActiveDocuments = statusCounts.QUEUED + statusCounts.PROCESSING > 0;
-  const embeddingBindingChanged = Boolean(settingsForm && dataset && (
+  const parseBindingChanged = Boolean(settingsForm && dataset && (
     Number(settingsForm.dense_embedding_config_id) !== Number(dataset.dense_embedding_config_id)
     || Number(settingsForm.sparse_embedding_config_id) !== Number(dataset.sparse_embedding_config_id)
+    || String(settingsForm.vision_config_id || "") !== String(dataset.vision_config_id || "")
   ));
   const settingsDirty = Boolean(settingsForm && dataset && (
     settingsForm.name.trim() !== String(dataset.name || "")
@@ -177,6 +186,7 @@ export function DatasetDetailPage() {
     || Number(settingsForm.dense_embedding_config_id) !== Number(dataset.dense_embedding_config_id)
     || Number(settingsForm.sparse_embedding_config_id) !== Number(dataset.sparse_embedding_config_id)
     || String(settingsForm.chat_config_id || "") !== String(dataset.chat_config_id || "")
+    || String(settingsForm.vision_config_id || "") !== String(dataset.vision_config_id || "")
   ));
 
   useEffect(() => {
@@ -194,6 +204,7 @@ export function DatasetDetailPage() {
       dense_embedding_config_id: String(dataset.dense_embedding_config_id || ""),
       sparse_embedding_config_id: String(dataset.sparse_embedding_config_id || ""),
       chat_config_id: String(dataset.chat_config_id || ""),
+      vision_config_id: String(dataset.vision_config_id || ""),
     });
   }, [dataset]);
 
@@ -304,13 +315,14 @@ export function DatasetDetailPage() {
     setSavingSettings(true);
     setPageError("");
     setPageNotice("");
-    const shouldRebuildIndex = embeddingBindingChanged;
+    const shouldRebuildIndex = parseBindingChanged;
     const payload = {};
     if (settingsForm.name.trim() !== String(dataset.name || "")) payload.name = settingsForm.name.trim();
     if (settingsForm.description.trim() !== String(dataset.description || "")) payload.description = settingsForm.description.trim() || null;
     if (Number(settingsForm.dense_embedding_config_id) !== Number(dataset.dense_embedding_config_id)) payload.dense_embedding_config_id = Number(settingsForm.dense_embedding_config_id);
     if (Number(settingsForm.sparse_embedding_config_id) !== Number(dataset.sparse_embedding_config_id)) payload.sparse_embedding_config_id = Number(settingsForm.sparse_embedding_config_id);
     if (String(settingsForm.chat_config_id || "") !== String(dataset.chat_config_id || "")) payload.chat_config_id = settingsForm.chat_config_id ? Number(settingsForm.chat_config_id) : null;
+    if (String(settingsForm.vision_config_id || "") !== String(dataset.vision_config_id || "")) payload.vision_config_id = settingsForm.vision_config_id ? Number(settingsForm.vision_config_id) : null;
     try {
       await actions.updateDataset(datasetId, payload);
       if (shouldRebuildIndex) await actions.loadDocuments?.(datasetId);
@@ -362,7 +374,7 @@ export function DatasetDetailPage() {
       <section className="dataset-summary" aria-label="数据集摘要">
         <article><span>全部文档</span><strong>{datasetDocuments.length}</strong></article>
         <article><span>排队 / 处理</span><strong>{statusCounts.QUEUED + statusCounts.PROCESSING}</strong></article>
-        <article><span>可用</span><strong>{statusCounts.READY}</strong></article>
+        <article><span>可检索</span><strong>{retrievalReadyCount}</strong></article>
         <article className={statusCounts.FAILED ? "has-error" : ""}><span>失败</span><strong>{statusCounts.FAILED}</strong></article>
       </section>
 
@@ -394,7 +406,7 @@ export function DatasetDetailPage() {
                   <option value="ALL">全部状态</option>
                   <option value="QUEUED">排队中</option>
                   <option value="PROCESSING">处理中</option>
-                  <option value="READY">已完成</option>
+                  <option value="READY">处理完成</option>
                   <option value="FAILED">失败</option>
                 </select>
                 <span className="document-toolbar__count">显示 {filteredDocuments.length} / {datasetDocuments.length}</span>
@@ -415,6 +427,7 @@ export function DatasetDetailPage() {
                         <div className="document-row__status" role="cell" data-label="状态"><StatusPill document={document} />{Number(document.attempt_count) > 0 ? <small>尝试 {document.attempt_count} 次</small> : null}</div>
                         <div className="document-row__result" role="cell" data-label="解析结果">
                           {status === "FAILED" ? <p className="document-error">{document.error_message || "解析或索引失败"}</p> : <><strong>{document.chunk_count ?? 0} 个分片 · {document.page_count ?? "—"} 页</strong><small>{status === "READY" ? `耗时 ${formatDuration(document.parse_time_ms)}` : status === "QUEUED" ? `可用时间 ${formatTime(document.available_at || document.queued_at)}` : `开始于 ${formatTime(document.processing_started_at)}`}</small></>}
+                          {["READY", "FAILED"].includes(status) ? <ParseQualityInline document={document} /> : null}
                         </div>
                         <time className="document-row__time" role="cell" data-label="更新时间">{formatTime(document.updated_at)}</time>
                         <div className="document-row__actions" role="cell" data-label="操作">
@@ -471,11 +484,12 @@ export function DatasetDetailPage() {
             </div>
             <label className="form-field"><span>描述</span><textarea rows={3} maxLength={512} value={settingsForm.description} onChange={(event) => setSettingsForm((current) => ({ ...current, description: event.target.value }))} /></label>
             {hasActiveDocuments ? <div className="notice notice--warning settings-model-notice"><Clock3 size={15} /><p>当前仍有文档在排队或处理，需等待完成后才能更换向量模型。</p></div> : null}
-            {embeddingBindingChanged && !hasActiveDocuments ? <div className="notice notice--warning settings-model-notice"><AlertCircle size={15} /><p>保存新的向量模型后，现有文档将重新解析并重建检索索引。</p></div> : null}
+            {parseBindingChanged && !hasActiveDocuments ? <div className="notice notice--warning settings-model-notice"><AlertCircle size={15} /><p>保存解析模型绑定后，现有文档将生成新版本、重新解析并重建检索索引。</p></div> : null}
             <div className="form-grid form-grid--two">
               <label className="form-field"><span>稠密向量模型</span><select required disabled={hasActiveDocuments} value={settingsForm.dense_embedding_config_id} onChange={(event) => setSettingsForm((current) => ({ ...current, dense_embedding_config_id: event.target.value }))}>{denseModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}</select></label>
               <label className="form-field"><span>稀疏向量模型</span><select required disabled={hasActiveDocuments} value={settingsForm.sparse_embedding_config_id} onChange={(event) => setSettingsForm((current) => ({ ...current, sparse_embedding_config_id: event.target.value }))}>{sparseModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}</select></label>
             </div>
+            <label className="form-field"><span>PDF OCR / 视觉模型 <small>可选</small></span><select disabled={hasActiveDocuments} value={settingsForm.vision_config_id} onChange={(event) => setSettingsForm((current) => ({ ...current, vision_config_id: event.target.value }))}><option value="">暂不绑定</option>{visionModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}</select><small>仅在 PDF 页面缺少有效正文、图表需要解释或专项验证需要补全时调用；未绑定时，相应 PDF 会被质量门禁阻断。</small></label>
             {!denseModels.length || !sparseModels.length ? <p className="settings-model-empty"><AlertCircle size={14} />缺少可用的向量模型，请先前往 <Link to="/models">模型配置</Link>。</p> : null}
             <footer className="dataset-settings-form__actions"><span>{settingsDirty ? "有尚未保存的更改" : "当前设置已保存"}</span><button type="submit" className="button button--primary" disabled={savingSettings || !settingsDirty || !denseModels.length || !sparseModels.length}>{savingSettings ? <Loader2 className="spin" size={15} /> : <Settings2 size={15} />}{savingSettings ? "正在保存" : "保存更改"}</button></footer>
           </form>

@@ -4,19 +4,19 @@ Anthropic Provider (Claude)
 """
 
 import time
-from typing import AsyncIterator, List, Optional, Union
+from typing import AsyncIterator, List, Optional
 
 import httpx
 
 from app.rag.core.llm.base_provider import BaseProvider
+from app.rag.core.llm.exceptions import (
+    AuthenticationError,
+    ProviderConnectionError,
+    RateLimitError,
+)
 from app.rag.core.llm.interfaces import CapabilityType
 from app.rag.core.llm.providers._sse import iter_sse_json
 from app.rag.core.llm.response import GenerateResult, StreamChunk, UsageInfo
-from app.rag.core.llm.exceptions import (
-    AuthenticationError,
-    RateLimitError,
-    ProviderConnectionError,
-)
 
 
 class AnthropicClient:
@@ -379,8 +379,12 @@ class AnthropicProvider(BaseProvider):
             }
         ]
 
+        max_tokens = int(kwargs.pop("max_tokens", 1024))
         response = await self._client.messages(
-            model=model or self.model_name, messages=messages, max_tokens=1024, **kwargs
+            model=model or self.model_name,
+            messages=messages,
+            max_tokens=max_tokens,
+            **kwargs,
         )
 
         content = response["content"][0]["text"]
@@ -389,6 +393,7 @@ class AnthropicProvider(BaseProvider):
         return VisionResult(
             content=content,
             model=response.get("model", self.model_name),
+            finish_reason=response.get("stop_reason"),
             usage=UsageInfo(
                 prompt_tokens=usage["input_tokens"],
                 completion_tokens=usage["output_tokens"],

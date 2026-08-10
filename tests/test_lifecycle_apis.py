@@ -83,6 +83,7 @@ def _dataset(*, dataset_id: int = 7, user_id: int = 11) -> Dataset:
         dense_embedding_config_id=101,
         sparse_embedding_config_id=102,
         chat_config_id=103,
+        vision_config_id=104,
         created_at=_now(),
         updated_at=_now(),
     )
@@ -151,9 +152,10 @@ async def test_dataset_patch_updates_metadata_and_validated_model_bindings() -> 
     dense = _config(config_id=201, capability="EMBEDDING")
     sparse = _config(config_id=202, capability="SPARSE_EMBEDDING")
     chat = _config(config_id=203, capability="CHAT")
+    vision = _config(config_id=204, capability="VISION")
     db = _FakeSession(
         scalar_values=[dataset],
-        scalar_lists=[[dense, sparse, chat], []],
+        scalar_lists=[[dense, sparse, chat, vision], []],
     )
     payload = DatasetUpdate.model_validate(
         {
@@ -162,6 +164,7 @@ async def test_dataset_patch_updates_metadata_and_validated_model_bindings() -> 
             "dense_embedding_config_id": 201,
             "sparse_embedding_config_id": 202,
             "chat_config_id": 203,
+            "vision_config_id": 204,
         }
     )
 
@@ -172,6 +175,7 @@ async def test_dataset_patch_updates_metadata_and_validated_model_bindings() -> 
     assert response.dense_embedding_config_id == 201
     assert response.sparse_embedding_config_id == 202
     assert response.chat_config_id == 203
+    assert response.vision_config_id == 204
     assert db.commits == 1
     assert db.refreshes == 1
     assert "llm_config.id" in str(db.statements[0])
@@ -224,6 +228,78 @@ async def test_dataset_embedding_rebind_rejects_active_documents() -> None:
     assert exc_info.value.status_code == 409
     assert exc_info.value.detail["code"] == "DATASET_DOCUMENTS_ACTIVE"
     assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_dataset_vision_rebind_validates_capability_and_requeues_documents() -> None:
+    dataset = _dataset()
+    vision = _config(config_id=204, capability="VISION")
+    document = _document(status="FAILED", version=4)
+    db = _FakeSession(
+        scalar_values=[dataset],
+        scalar_lists=[[vision], [document]],
+    )
+
+    response = await update_dataset(
+        7,
+        DatasetUpdate.model_validate({"vision_config_id": 204}),
+        11,
+        db,
+    )
+
+    assert response.vision_config_id == 204
+    assert document.status == "QUEUED"
+    assert document.version == 5
+    assert document.reparse_requested is True
+
+
+@pytest.mark.asyncio
+async def test_dataset_vision_rebind_rejects_non_vision_config() -> None:
+    dataset = _dataset()
+    chat = _config(config_id=204, capability="CHAT")
+    db = _FakeSession(
+        scalar_values=[dataset],
+        scalar_lists=[[chat]],
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await update_dataset(
+            7,
+            DatasetUpdate.model_validate({"vision_config_id": 204}),
+            11,
+            db,
+        )
+
+    assert exc_info.value.status_code == 400
+    assert exc_info.value.detail == {
+        "code": "LLM_CONFIG_CAPABILITY_MISMATCH",
+        "field": "vision_config_id",
+        "expected": "VISION",
+        "actual": "CHAT",
+    }
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_dataset_patch_can_unbind_vision_and_requeue_terminal_documents() -> None:
+    dataset = _dataset()
+    document = _document(status="READY", version=2)
+    db = _FakeSession(
+        scalar_values=[dataset],
+        scalar_lists=[[document]],
+    )
+
+    response = await update_dataset(
+        7,
+        DatasetUpdate.model_validate({"vision_config_id": None}),
+        11,
+        db,
+    )
+
+    assert response.vision_config_id is None
+    assert document.status == "QUEUED"
+    assert document.version == 3
+    assert document.reparse_requested is True
 
 
 @pytest.mark.asyncio

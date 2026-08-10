@@ -39,6 +39,8 @@ def reset_document_for_queue(document: Document, *, reparse: bool) -> None:
     document.lease_expires_at = None
     document.error_code = None
     document.error_message = None
+    document.parse_quality_status = None
+    document.parse_quality = None
     if reparse:
         document.version = int(document.version or 1) + 1
         document.reparse_requested = True
@@ -211,6 +213,8 @@ class DocumentQueueService:
         *,
         retryable: bool = True,
         error_code: str | None = None,
+        parse_quality_status: str | None = None,
+        parse_quality: dict[str, object] | None = None,
         now: datetime | None = None,
     ) -> str | None:
         """由当前 lease 的 owner 记录失败；失去 lease 时返回 ``None``。"""
@@ -227,6 +231,10 @@ class DocumentQueueService:
             "error_message": message,
             "updated_at": failed_at,
         }
+        if parse_quality_status is not None:
+            values["parse_quality_status"] = parse_quality_status
+        if parse_quality is not None:
+            values["parse_quality"] = parse_quality
         if should_retry:
             delay = self.retry_delays[min(claim.attempt_count - 1, len(self.retry_delays) - 1)]
             target_status = DOCUMENT_STATUS_QUEUED

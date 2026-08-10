@@ -414,7 +414,19 @@ export function AppProvider({ children }) {
             setDocuments((current) => ({
               ...current,
               [id]: (current[id] ?? []).map((item) => documentIdentity(item) === pending.document_id
-                ? { ...item, status: "READY", page_count: pending.file_type === "pdf" ? 12 : null, chunk_count: 48, parse_time_ms: 1680, finished_at: new Date().toISOString(), updated_at: new Date().toISOString() }
+                ? {
+                    ...item,
+                    status: "READY",
+                    page_count: pending.file_type === "pdf" ? 12 : null,
+                    chunk_count: 48,
+                    parse_time_ms: 1680,
+                    parse_quality_status: pending.file_type === "pdf" ? "PASSED" : "NOT_APPLICABLE",
+                    parse_quality: pending.file_type === "pdf"
+                      ? { schema_version: 2, status: "PASSED", pdf_page_count: 12, markdown_page_count: 12, text_coverage_ratio: 1, ocr_page_count: 0, ocr_required_pages: [], low_confidence_pages: [], warnings: [] }
+                      : { schema_version: 2, status: "NOT_APPLICABLE", warnings: [] },
+                    finished_at: new Date().toISOString(),
+                    updated_at: new Date().toISOString(),
+                  }
                 : item),
             }));
           }, 2600 + index * 180);

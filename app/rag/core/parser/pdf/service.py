@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import html
 import logging
 import mimetypes
 import re
@@ -8,6 +9,7 @@ from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import asdict
 from pathlib import Path
+from urllib.parse import unquote, urlsplit
 
 import cv2
 import fitz
@@ -40,6 +42,12 @@ class PdfParserService:
         "docling": re.compile(r"<!-- image -->"),
     }
     IMAGE_MARKDOWN_PATTERN = re.compile(r"!\[([^\]]*)\]\(([^)]+)\)")
+    IMAGE_HTML_TAG_PATTERN = re.compile(r"<img\b[^>]*>", re.IGNORECASE)
+    IMAGE_HTML_SRC_PATTERN = re.compile(
+        r"\bsrc\s*=\s*(?:\"(?P<double>[^\"]+)\"|'(?P<single>[^']+)'|"
+        r"(?P<bare>[^\s\"'=<>`]+))",
+        re.IGNORECASE,
+    )
     MIN_IMAGE_BYTES = 2048
     MIN_IMAGE_WIDTH = 64
     MIN_IMAGE_HEIGHT = 64
@@ -343,10 +351,15 @@ class PdfParserService:
     ) -> list[PdfPreparedImageAsset]:
         prepared_assets: list[PdfPreparedImageAsset] = []
         for asset in binary_assets:
+            page_token = (
+                f"{asset.page_number:03d}"
+                if asset.page_number is not None
+                else "unmapped"
+            )
             filename = (
                 filename_builder(asset)
                 if filename_builder is not None
-                else f"{asset.kind}-page-{asset.page_number:03d}-{asset.index:02d}.{asset.ext}"
+                else f"{asset.kind}-page-{page_token}-{asset.index:02d}.{asset.ext}"
             )
             object_key = self._build_image_object_key(
                 options.image_prefix,
@@ -708,7 +721,18 @@ class PdfParserService:
 
         remaining = list(image_assets)
         if backend in {"opendataloader", "mineru"}:
-            markdown = self._replace_existing_image_urls(markdown, remaining)
+            markdown = self._replace_existing_image_urls(
+                markdown,
+                remaining,
+                allow_filename_fallback=backend != "opendataloader",
+                reuse_exact_source=backend == "opendataloader",
+            )
+        if backend == "opendataloader":
+            # ODL assets absent from its Markdown cannot be placed at a trustworthy page.
+            # Keep them in metadata/object storage only.  Appending them after the final
+            # marker would silently assign the final PDF page, even when the backend's
+            # first-page metadata points elsewhere.
+            remaining = []
 
         pattern = self.PLACEHOLDER_PATTERNS.get(backend)
 
@@ -737,43 +761,129 @@ class PdfParserService:
         self,
         markdown: str,
         remaining: list[PdfImageAsset],
+        *,
+        allow_filename_fallback: bool,
+        reuse_exact_source: bool = False,
     ) -> str:
-        def replacer(match: re.Match[str]) -> str:
+        # OpenDataLoader may reference one extracted file from several PDF pages.  It
+        # produces one binary asset for that file, so consuming the asset on the first
+        # match leaves later references broken.  Resolve exact ODL paths from a stable
+        # pool, record the asset as consumed once, and reuse its object URL for every
+        # occurrence.  MinerU keeps the historical one-to-one/fallback behavior.
+        reusable_assets = tuple(remaining)
+        consumed_asset_ids: set[int] = set()
+
+        def resolve(target: str) -> PdfImageAsset | None:
+            normalized_target = self._normalize_image_target(target)
+            if normalized_target.startswith(("http://", "https://", "data:")):
+                return None
+            if reuse_exact_source:
+                asset = self._find_asset_by_source_path(
+                    normalized_target,
+                    reusable_assets,
+                    allow_filename_fallback=False,
+                )
+                if asset is not None:
+                    consumed_asset_ids.add(id(asset))
+                return asset
+            return self._pop_asset_by_source_path(
+                normalized_target,
+                remaining,
+                allow_filename_fallback=allow_filename_fallback,
+            )
+
+        def markdown_replacer(match: re.Match[str]) -> str:
             alt_text = match.group(1)
             target = self._normalize_image_target(match.group(2))
             if target.startswith(("http://", "https://", "data:")):
                 return match.group(0)
 
-            asset = self._pop_asset_by_source_path(target, remaining)
+            asset = resolve(target)
             if asset is None:
                 return match.group(0)
             label = alt_text or f"page-{asset.page_number}-image-{asset.index}"
             return f"![{label}]({asset.url})"
 
-        return self.IMAGE_MARKDOWN_PATTERN.sub(replacer, markdown)
+        def html_replacer(tag_match: re.Match[str]) -> str:
+            tag = tag_match.group(0)
+            source_match = self.IMAGE_HTML_SRC_PATTERN.search(tag)
+            if source_match is None:
+                return tag
+            value_group = next(
+                (
+                    group_name
+                    for group_name in ("double", "single", "bare")
+                    if source_match.group(group_name) is not None
+                ),
+                None,
+            )
+            if value_group is None:
+                return tag
+            target = source_match.group(value_group)
+            asset = resolve(target)
+            if asset is None:
+                return tag
+            start, end = source_match.span(value_group)
+            return f"{tag[:start]}{asset.url}{tag[end:]}"
+
+        rewritten = self.IMAGE_MARKDOWN_PATTERN.sub(markdown_replacer, markdown)
+        rewritten = self.IMAGE_HTML_TAG_PATTERN.sub(html_replacer, rewritten)
+        if reuse_exact_source and consumed_asset_ids:
+            remaining[:] = [asset for asset in remaining if id(asset) not in consumed_asset_ids]
+        return rewritten
+
+    def _find_asset_by_source_path(
+        self,
+        target: str,
+        assets: tuple[PdfImageAsset, ...] | list[PdfImageAsset],
+        *,
+        allow_filename_fallback: bool = True,
+    ) -> PdfImageAsset | None:
+        normalized_target = self._normalize_image_target(target)
+        for asset in assets:
+            asset_target = self._normalize_image_target(asset.source_path or "")
+            if asset_target == normalized_target:
+                return asset
+
+        if not allow_filename_fallback:
+            return None
+
+        target_name = Path(normalized_target).name
+        for asset in assets:
+            asset_name = Path(asset.source_path or "").name
+            if asset_name == target_name:
+                return asset
+        return None
 
     @staticmethod
     def _normalize_image_target(target: str) -> str:
-        normalized = target.strip()
+        normalized = html.unescape(target or "").strip()
         if normalized.startswith("<") and normalized.endswith(">"):
             normalized = normalized[1:-1].strip()
-        return normalized.replace("\\", "/").lstrip("./")
+        if normalized.startswith(("http://", "https://", "data:")):
+            return normalized
+        parsed = urlsplit(normalized)
+        path = unquote(parsed.path or normalized).replace("\\", "/")
+        while path.startswith("./"):
+            path = path[2:]
+        return path.lstrip("/")
 
     def _pop_asset_by_source_path(
         self,
         target: str,
         remaining: list[PdfImageAsset],
+        *,
+        allow_filename_fallback: bool = True,
     ) -> PdfImageAsset | None:
-        normalized_target = self._normalize_image_target(target)
-        for index, asset in enumerate(remaining):
-            asset_target = self._normalize_image_target(asset.source_path or "")
-            if asset_target == normalized_target:
-                return remaining.pop(index)
-
-        target_name = Path(normalized_target).name
-        for index, asset in enumerate(remaining):
-            asset_name = Path(asset.source_path or "").name
-            if asset_name == target_name:
+        asset = self._find_asset_by_source_path(
+            target,
+            remaining,
+            allow_filename_fallback=allow_filename_fallback,
+        )
+        if asset is None:
+            return None
+        for index, candidate in enumerate(remaining):
+            if candidate is asset:
                 return remaining.pop(index)
         return None
 

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
@@ -42,6 +44,7 @@ class Dataset(Base):
     dense_embedding_config_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
     sparse_embedding_config_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
     chat_config_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
+    vision_config_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
     )
@@ -106,6 +109,8 @@ class Document(Base):
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     parse_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    parse_quality_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    parse_quality: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
     )

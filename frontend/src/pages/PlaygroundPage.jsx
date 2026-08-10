@@ -17,6 +17,7 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Link, useLocation } from "react-router-dom";
 
+import { isDocumentRetrievalReady } from "../lib/parse-quality";
 import { useApp } from "../state/AppContext";
 
 const SUGGESTED_QUESTIONS = [
@@ -80,9 +81,14 @@ function modelDescription(model) {
   return parts.join(" · ") || "用于生成对话回复";
 }
 
+function flattenDocuments(documents) {
+  if (Array.isArray(documents)) return documents;
+  return Object.values(documents || {}).flatMap((items) => Array.isArray(items) ? items : []);
+}
+
 export function PlaygroundPage() {
   const location = useLocation();
-  const { datasets = [], models = [], streamRag } = useApp();
+  const { datasets = [], models = [], documents = {}, streamRag } = useApp();
   const [selectedDatasetIds, setSelectedDatasetIds] = useState([]);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [question, setQuestion] = useState("");
@@ -97,9 +103,22 @@ export function PlaygroundPage() {
   const datasetTriggerRef = useRef(null);
   const modelTriggerRef = useRef(null);
 
+  const retrievalReadyCounts = useMemo(() => {
+    const counts = new Map();
+    flattenDocuments(documents).forEach((document) => {
+      if (!isDocumentRetrievalReady(document)) return;
+      const datasetId = Number(document.dataset_id ?? document.datasetId);
+      if (!Number.isFinite(datasetId)) return;
+      counts.set(datasetId, (counts.get(datasetId) || 0) + 1);
+    });
+    return counts;
+  }, [documents]);
   const activeDatasets = useMemo(
-    () => datasets.filter((dataset) => String(dataset.status || "ACTIVE").toUpperCase() !== "DELETED"),
-    [datasets],
+    () => datasets.filter((dataset) => (
+      String(dataset.status || "ACTIVE").toUpperCase() !== "DELETED"
+      && retrievalReadyCounts.has(Number(dataset.id))
+    )),
+    [datasets, retrievalReadyCounts],
   );
   const chatModels = useMemo(
     () => models.filter((model) => model.capability === "CHAT" && model.is_active !== false),
@@ -361,7 +380,7 @@ export function PlaygroundPage() {
                         aria-pressed={selected}
                       >
                         <span className="composer-selector__check">{selected ? <Check size={13} /> : null}</span>
-                        <span className="composer-selector__copy"><strong>{dataset.name}</strong><small>{dataset.description || `数据集 #${dataset.id}`}</small></span>
+                        <span className="composer-selector__copy"><strong>{dataset.name}</strong><small>{dataset.description || `数据集 #${dataset.id}`} · {retrievalReadyCounts.get(Number(dataset.id)) || 0} 个可检索文档</small></span>
                       </button>
                     );
                   }) : <p className="composer-selector__empty">暂无可用数据集</p>}

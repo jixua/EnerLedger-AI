@@ -117,7 +117,7 @@ docker compose exec api alembic current
 docker compose exec api alembic heads
 ```
 
-正常结果应指向 `0003_chunk_structure_metadata`。
+正常结果应指向 `0005_dataset_vision_config`。
 
 ## 本机开发启动
 
@@ -139,9 +139,45 @@ uv run uvicorn app.main:app --reload
 java -version
 ```
 
+### OpenDataLoader 表格策略 A/B
+
+可用独立工具将一个 PDF 或目录内的 PDF 分别按 `default` 和 `cluster`
+策略解析，然后基于本仓库的结构化表格提取器生成 JSON 对比报告：
+
+```bash
+uv run python scripts/evaluate_odl_table_strategies.py \
+  /path/to/document.pdf \
+  --timeout-seconds 600 \
+  --cluster-markdown-with-html \
+  --output /tmp/odl-table-ab.json
+```
+
+目录默认递归扫描，可用 `--no-recursive` 关闭。`--markdown-with-html` 同时
+影响两组，`--default-markdown-with-html` 和 `--cluster-markdown-with-html` 可分别
+覆盖。报告保留每组耗时、解析元数据、错误码、可重试标记、表格结构指标和
+推荐策略；任一策略失败时进程返回码为 `1`，且不会用 Naive/MinerU
+的降级结果冒充 OpenDataLoader 样本。
+
+### PDF 金标验收
+
+解析链路之外提供独立金标评估器，按页序、OCR、正文 CER、关键数值/单位/公式、
+简单与复杂表格、跨页续表、图表关系、引用来源及 Top 5 噪声共 13 项指标验收：
+
+```bash
+uv run python scripts/evaluate_pdf_acceptance.py \
+  --gold /path/to/gold.json \
+  --prediction /path/to/prediction.json \
+  --output /tmp/pdf-acceptance.json
+```
+
+通过、失败、缺少金标分别返回退出码 `0`、`1`、`2`；输入错误返回 `3`。缺少人工
+金标时指标会明确标为 `NOT_EVALUABLE`，不会把结构检查或单元测试冒充准确率达标。
+
 ## 模型配置与调用顺序
 
-Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。开始解析前，需要分别创建 `EMBEDDING` 和 `SPARSE_EMBEDDING` 配置；使用 SSE 对话还需要 `CHAT` 配置。
+Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。开始解析前，需要分别创建
+`EMBEDDING` 和 `SPARSE_EMBEDDING` 配置；使用 SSE 对话还需要 `CHAT` 配置。包含扫描页、
+图表或流程图的 PDF 应在数据集绑定可选 `VISION` 配置，供页级 OCR/视觉兜底使用。
 
 - `EMBEDDING` 输出维度必须等于 `DENSE_VECTOR_DIMENSION`，默认 1024。
 - `SPARSE_EMBEDDING` 可使用 `bge_m3` 或 `doubao_vision` 等已迁入协议。
@@ -152,7 +188,7 @@ Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。
 
 | 顺序 | 接口 | 作用 |
 | --- | --- | --- |
-| 1 | `POST /api/v1/llm/configs` | 分别创建 Dense、Sparse、Chat 可执行配置 |
+| 1 | `POST /api/v1/llm/configs` | 分别创建 Dense、Sparse、Chat，以及按需创建 Vision 配置 |
 | 2 | `POST /api/v1/datasets` | 绑定模型配置并创建数据集 |
 | 3 | `POST /api/v1/datasets/{dataset_id}/documents` | 流式上传原文件，返回 `202 + QUEUED` |
 | 4 | `GET /api/v1/documents/{document_id}` | 查询排队、处理、成功或失败状态 |
@@ -183,7 +219,7 @@ curl -N http://127.0.0.1:8000/api/v1/rag/stream \
 
 - `QUEUED`：原文件已持久化，等待独立 `parse-worker` 领取。
 - `PROCESSING`：worker 已持有可续租 lease，正在解析、切分或写入索引。
-- `READY`：Markdown/资产与三路索引均完成，可以召回。
+- `READY`：Markdown/资产、PDF 质量门禁与三路索引均完成，可以召回。
 - `FAILED`：自动退避重试耗尽后失败，原因记录在 `error_code/error_message`，不会参与召回。
 
 解析队列直接复用现有 MySQL 8 的 `document` 表，通过 `FOR UPDATE SKIP LOCKED`、
@@ -200,8 +236,19 @@ Redis/RabbitMQ/Kafka，也没有增加第五张业务表。失败任务按
 会清理被替代的旧版本，删除文档时再按文档级根目录全量收敛。
 
 文档上传默认上限为 100 MiB，可通过 `DOCUMENT_UPLOAD_MAX_BYTES` 调整；上传和 worker 下载
-均分块落盘，不会把 100 MiB 文件整体读入内存。OpenDataLoader 本身不等于 OCR，纯扫描
-PDF 可能无法得到有效文本。
+均分块落盘，不会把 100 MiB 文件整体读入内存。PDF 仍以 OpenDataLoader 结构解析为主，
+随后强制核对原页数与 `ODL_PAGE` 页序，统计正文/图片覆盖、旋转和 OCR 置信度。
+对可靠文本层同时使用顺序敏感的 source recall 和 output precision 门禁，
+两者默认均不低于 97%，避免截断、乱序、重复正文或追加幻觉文本进入索引。扫描页按
+`250–300 DPI`（默认 280）整页送数据集绑定的 Vision 模型做 OCR；图表页补充结构化实体、
+数值和箭头关系，再按原页码合并。页数不一致、OCR 未完成/低置信、视觉结构未完成或
+表格/图片/公式专项验证失败都只会进入 `FAILED`，不会写入可检索 `READY`。质量报告直接
+保存在 `document.parse_quality_status/parse_quality`，没有新增业务表。
+独立 OpenDataLoader 进程同时受输出目录、文件数和日志容量硬限制：默认最多
+`10000` 个输出文件（`PDF_MAX_OUTPUT_FILES`），stdout/stderr 合计最多 `16 MiB`
+（`OPENDATALOADER_MAX_LOG_BYTES`）。运行中超限会终止整个进程组，并以确定性资源错误结束，
+不会重试同一份输入。单页模型结构字段只保留白名单且最多 `64 KiB`，整份文档默认
+最多 `4 MiB`（`PDF_FALLBACK_MAX_STRUCTURED_REPORT_BYTES`）；OCR 正文不会在质量 JSON 中重复持久化。
 
 ## 分片实现与查看
 
@@ -257,4 +304,6 @@ curl -fsS http://127.0.0.1:9308/
 
 本地 Docker 整栈、真实 Dense/Sparse/Chat 模型、HTML 解析、MySQL 持久队列、
 MinIO/Qdrant/Manticore 写读、三路召回和 SSE 流式对话已于 2026-08-10 完成联调验证。
-含图片或纯扫描页 PDF 仍属目标环境的补充验收项；单元测试或 import 成功不能替代该类文档实测。
+本轮另用真实 4 页正文 PDF 验证 ODL 页序与表格 A/B，并用真实 4 页扫描 PDF 验证全部页面
+进入 280 DPI OCR 门禁。真实 Vision 模型的字符/公式/图表准确率仍必须通过上述人工金标工具
+验收；单元测试或结构门禁通过不能替代准确率金标。

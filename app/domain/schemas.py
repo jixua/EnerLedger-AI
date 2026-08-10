@@ -28,6 +28,7 @@ class DatasetCreate(BaseModel):
     dense_embedding_config_id: int = Field(gt=0)
     sparse_embedding_config_id: int = Field(gt=0)
     chat_config_id: int | None = Field(default=None, gt=0)
+    vision_config_id: int | None = Field(default=None, gt=0)
 
     @field_validator("name")
     @classmethod
@@ -54,6 +55,7 @@ class DatasetUpdate(BaseModel):
     dense_embedding_config_id: int | None = Field(default=None, gt=0)
     sparse_embedding_config_id: int | None = Field(default=None, gt=0)
     chat_config_id: int | None = Field(default=None, gt=0)
+    vision_config_id: int | None = Field(default=None, gt=0)
 
     @field_validator("name")
     @classmethod
@@ -96,6 +98,7 @@ class DatasetRead(BaseModel):
     dense_embedding_config_id: int
     sparse_embedding_config_id: int
     chat_config_id: int | None
+    vision_config_id: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -136,6 +139,9 @@ class DocumentRead(BaseModel):
     page_count: int | None
     chunk_count: int
     parse_time_ms: int | None
+    parse_quality_status: str | None
+    parse_quality: dict[str, Any] | None
+    retrieval_ready: bool
     created_at: datetime
     updated_at: datetime
 

@@ -10,6 +10,7 @@ from pydantic import ValidationError
 
 import app.api.documents as documents_api
 from app.api.documents import (
+    _document_payload,
     delete_document,
     reparse_document,
     retry_document,
@@ -92,6 +93,118 @@ def _document(*, status: str = "FAILED", version: int = 1) -> Document:
     )
 
 
+def test_document_payload_exposes_parse_quality_without_internal_storage_fields() -> None:
+    document = _document(status="READY")
+    document.parse_quality_status = "PASSED"
+    document.parse_quality = {
+        "status": "PASSED",
+        "page_count": 4,
+        "warnings": [],
+    }
+
+    payload = _document_payload(document)
+
+    assert payload["parse_quality_status"] == "PASSED"
+    assert payload["parse_quality"] == {
+        "status": "PASSED",
+        "page_count": 4,
+        "warnings": [],
+    }
+    assert payload["retrieval_ready"] is True
+    assert "raw_object_key" not in payload
+    assert "parsed_object_key" not in payload
+
+
+def test_document_retrieval_ready_matches_pdf_quality_gate() -> None:
+    legacy_pdf = _document(status="READY")
+    assert _document_payload(legacy_pdf)["retrieval_ready"] is False
+
+    passed_pdf = _document(status="READY")
+    passed_pdf.parse_quality_status = "PASSED"
+    passed_pdf.parse_quality = {"status": "PASSED"}
+    assert _document_payload(passed_pdf)["retrieval_ready"] is True
+
+    inconsistent_pdf = _document(status="READY")
+    inconsistent_pdf.parse_quality_status = "PASSED"
+    inconsistent_pdf.parse_quality = {"status": "FALLBACK_INCOMPLETE"}
+    assert _document_payload(inconsistent_pdf)["retrieval_ready"] is False
+
+    queued_pdf = _document(status="QUEUED")
+    queued_pdf.parse_quality_status = "PASSED"
+    queued_pdf.parse_quality = {"status": "PASSED"}
+    assert _document_payload(queued_pdf)["retrieval_ready"] is False
+
+    ready_docx = _document(status="READY")
+    ready_docx.file_type = "docx"
+    assert _document_payload(ready_docx)["retrieval_ready"] is True
+
+
+def test_document_list_quality_summary_omits_ocr_text_and_structured_assets() -> None:
+    full_report = {
+        "schema_version": 2,
+        "status": "PASSED",
+        "pdf_page_count": 4,
+        "text_coverage_ratio": 1.0,
+        "warnings": ["warning-1"],
+        "fallback": {
+            "dpi": 280,
+            "processed_page_count": 2,
+            "warnings": [],
+            "results": [
+                {
+                    "page_number": 2,
+                    "method": "ocr",
+                    "text": "sensitive duplicated OCR body",
+                    "markdown": "complete merged page markdown",
+                },
+                {"page_number": 3, "method": "vision", "structured_data": {"x": 1}},
+            ],
+            "ocr_results": {"2": {"text": "duplicated OCR body"}},
+        },
+        "content_validation": {
+            "structural_passed": True,
+            "evaluated_page_count": 4,
+            "blocking_issues": [],
+            "warnings": [],
+        },
+        "table_structure": {"tables": [{"cells": [{"text": "large table"}]}]},
+        "image_assets": {"assets": [{"retrieval_text": "large visual result"}]},
+    }
+
+    document = _document(status="READY")
+    document.parse_quality_status = "PASSED"
+    document.parse_quality = full_report
+    summary = _document_payload(document, quality_detail=False)["parse_quality"]
+
+    assert summary == {
+        "schema_version": 2,
+        "status": "PASSED",
+        "pdf_page_count": 4,
+        "text_coverage_ratio": 1.0,
+        "warning_count": 1,
+        "warnings": ["warning-1"],
+        "fallback": {
+            "dpi": 280,
+            "processed_page_count": 2,
+            "ocr_page_count": 1,
+            "vision_page_count": 1,
+            "pages": [2, 3],
+            "warning_count": 0,
+            "warnings": [],
+        },
+        "content_validation": {
+            "structural_passed": True,
+            "evaluated_page_count": 4,
+            "blocking_issue_count": 0,
+            "warning_count": 0,
+        },
+    }
+    assert "table_structure" not in summary
+    assert "image_assets" not in summary
+    assert "results" not in summary["fallback"]
+    assert _document_payload(document)["parse_quality"] is full_report
+
+
 @pytest.mark.asyncio
 async def test_upload_streams_to_storage_and_returns_queued_location(monkeypatch, tmp_path) -> None:
     storage = _FakeStorage()
@@ -108,6 +221,8 @@ async def test_upload_streams_to_storage_and_returns_queued_location(monkeypatch
     assert result["status"] == "QUEUED"
     assert result["version"] == 1
     assert result["attempt_count"] == 0
+    assert result["parse_quality_status"] is None
+    assert result["parse_quality"] is None
     assert response.headers["Location"] == "/api/v1/documents/88"
     assert storage.uploads[0][2] == b"pdf-binary"
     assert db.commits == 1

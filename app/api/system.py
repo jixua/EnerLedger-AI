@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.auth import get_user_id
 from app.domain.models import Document
 from app.rag.config import settings
+from app.rag.core.parser.pdf.reliability import OpenDataLoaderHealthChecker
 from app.rag.database import get_db
 from app.services.document_queue import (
     DOCUMENT_STATUS_FAILED,
@@ -106,10 +107,15 @@ async def get_system_status(
         or 0
     )
 
-    minio, qdrant, manticore = await asyncio.gather(
+    minio, qdrant, manticore, opendataloader = await asyncio.gather(
         _check_http(_minio_health_url(), label="MinIO"),
         _check_http(_qdrant_health_url(), label="Qdrant"),
         _check_tcp(settings.MANTICORE_HOST, settings.MANTICORE_PORT, label="Manticore"),
+        asyncio.to_thread(
+            lambda: OpenDataLoaderHealthChecker(
+                timeout_seconds=settings.OPENDATALOADER_HEALTHCHECK_TIMEOUT_SECONDS
+            ).check().to_dict()
+        ),
     )
     queue = _component(
         "ready",
@@ -129,12 +135,13 @@ async def get_system_status(
         "minio": minio,
         "qdrant": qdrant,
         "manticore": manticore,
+        "opendataloader": opendataloader,
         "queue": queue,
         "worker": worker,
     }
     core_ready = all(
         components[name]["status"] == "ready"
-        for name in ("mysql", "minio", "qdrant", "manticore", "queue")
+        for name in ("mysql", "minio", "qdrant", "manticore", "opendataloader", "queue")
     )
     return {
         "status": "ok" if core_ready else "degraded",

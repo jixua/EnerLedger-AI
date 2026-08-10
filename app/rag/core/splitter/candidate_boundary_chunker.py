@@ -623,6 +623,7 @@ class CandidateBoundaryChunker:
             (index, element)
             for index, element in enumerate(split_input.elements)
             if element.type not in self.NOISE_TYPES
+            and element.metadata.get("suppress_retrieval") is not True
         ]
         visible_elements = [element for _, element in visible_entries]
         deepest_heading_level = self._deepest_heading_level(visible_elements)

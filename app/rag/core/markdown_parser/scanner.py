@@ -50,6 +50,11 @@ class MarkdownScanner:
 
     # 新增：表头分隔线正则 (支持 |---| 或 ---|--- 甚至 :---:)
     _TABLE_DELIMITER_RE = re.compile(r"^\s*\|?\s*[:-]+[-| :]*\s*\|?\s*$")
+    # OpenDataLoader 在 ``markdown_with_html`` 模式下会输出原生 HTML table。
+    # 必须把整个标签块作为一个 TABLE 元素保留，否则 rowspan/colspan 会被普通
+    # 段落扫描器拆散，结构化单元格元数据也无法绑定到最终 Chunk。
+    _HTML_TABLE_START_RE = re.compile(r"^\s*<table\b", re.IGNORECASE)
+    _HTML_TABLE_END_RE = re.compile(r"</table\s*>", re.IGNORECASE)
 
     # 新增：公式块识别
     _MATH_BLOCK_START_RE = re.compile(r"^\s*(\$\$|\\\[)(.*?)$")
@@ -120,6 +125,13 @@ class MarkdownScanner:
                 element = self._extract_image(i)
                 elements.append(element)
                 i = element.end_line + 1
+
+            # HTML 表格必须先于 Markdown 表格/段落兜底识别。
+            elif self._HTML_TABLE_START_RE.match(line) and (
+                html_table_element := self._extract_html_table(i)
+            ) is not None:
+                elements.append(html_table_element)
+                i = html_table_element.end_line + 1
 
             # 表格探测 (新增: 直接原生支持 TABLE 切分)
             # 注意：必须把「是否真为表格」并入 elif 条件。否则当行内含 `|` 但不是表格时
@@ -287,6 +299,7 @@ class MarkdownScanner:
                 or line.strip().startswith(">")
                 or self._HR_RE.match(line)
                 or self._IMAGE_LINE_RE.match(line)
+                or self._HTML_TABLE_START_RE.match(line)
             ):
                 break
 
@@ -318,10 +331,30 @@ class MarkdownScanner:
             metadata={"alt": m.group(1), "url": m.group(2)},
         )
 
+    def _extract_html_table(self, start: int) -> MarkdownElement | None:
+        """提取 OpenDataLoader 输出的完整 HTML table，保留合并单元格属性。"""
+
+        if not self._HTML_TABLE_START_RE.match(self._lines[start]):
+            return None
+        content_lines: list[str] = []
+        for index in range(start, len(self._lines)):
+            content_lines.append(self._lines[index])
+            if self._HTML_TABLE_END_RE.search(self._lines[index]):
+                return MarkdownElement(
+                    type=ElementType.TABLE,
+                    content="\n".join(content_lines),
+                    start_line=start,
+                    end_line=index,
+                    metadata={"table_format": "html"},
+                )
+        # 未闭合标签不应吞掉后续整份文档；交给普通段落逻辑并由内容验证告警。
+        return None
+
     def _extract_table(self, start: int) -> MarkdownElement | None:
         """提取表格块 (原生行扫描)
 
-        通过识别当前行含有 `|`，且下一行匹配 `_TABLE_DELIMITER_RE` 即确认为表格，并持续吃入直至断开。
+        通过识别当前行含有 `|`，且下一行匹配 `_TABLE_DELIMITER_RE` 即确认为表格，
+        并持续吃入直至断开。
         """
         if start + 1 >= len(self._lines):
             return None

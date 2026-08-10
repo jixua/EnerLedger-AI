@@ -7,6 +7,7 @@ import pytest
 
 import app.workers.document_parse_worker as worker_module
 from app.domain.models import Document
+from app.services.document_ingestion import DocumentQualityGateError
 from app.services.document_queue import DocumentClaim, utc_now
 from app.workers.document_parse_worker import DocumentParseWorker
 
@@ -38,8 +39,8 @@ class _FakeQueue:
         self.renewals += 1
         return True
 
-    async def fail_or_retry(self, _db, claim, error, *, retryable):
-        self.failures.append((claim, error, retryable))
+    async def fail_or_retry(self, _db, claim, error, *, retryable, **metadata):
+        self.failures.append((claim, error, retryable, metadata))
         return "QUEUED"
 
 
@@ -131,10 +132,61 @@ async def test_worker_schedules_backoff_after_ingestion_failure(monkeypatch, tmp
     await worker._process_claim(claim)
 
     assert len(queue.failures) == 1
-    failed_claim, error, retryable = queue.failures[0]
+    failed_claim, error, retryable, metadata = queue.failures[0]
     assert failed_claim == claim
     assert str(error) == "provider unavailable"
     assert retryable is True
+    assert metadata == {
+        "error_code": None,
+        "parse_quality_status": None,
+        "parse_quality": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_worker_preserves_quality_failure_inside_cleanup_exception_group(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    monkeypatch.setattr(worker_module.settings, "PARSE_TEMP_DIR", str(tmp_path))
+    document = _document()
+    queue = _FakeQueue()
+    quality_error = DocumentQualityGateError(
+        quality_status="OCR_REQUIRED",
+        quality_report={"status": "OCR_REQUIRED", "ocr_required_pages": [1]},
+        error_code="PDF_OCR_REQUIRED",
+        message="OCR 尚未完成",
+        retryable=False,
+    )
+    ingestion = _FakeIngestion(
+        ExceptionGroup(
+            "quality gate plus cleanup failure",
+            [quality_error, RuntimeError("cleanup failed")],
+        )
+    )
+    worker = DocumentParseWorker(
+        queue=queue,
+        ingestion=ingestion,
+        storage=_FakeStorage(),
+        session_context_factory=_session_factory(document),
+        heartbeat_interval=3600,
+        concurrency=1,
+    )
+
+    await worker._process_claim(DocumentClaim(7, "token", 1, False, False))
+
+    assert len(queue.failures) == 1
+    _claim, error, retryable, metadata = queue.failures[0]
+    assert error is quality_error
+    assert retryable is False
+    assert metadata == {
+        "error_code": "PDF_OCR_REQUIRED",
+        "parse_quality_status": "OCR_REQUIRED",
+        "parse_quality": {
+            "status": "OCR_REQUIRED",
+            "ocr_required_pages": [1],
+        },
+    }
 
 
 @pytest.mark.parametrize(

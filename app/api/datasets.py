@@ -88,6 +88,7 @@ def _dataset_response(dataset: Dataset) -> DatasetRead:
         dense_embedding_config_id=dataset.dense_embedding_config_id,
         sparse_embedding_config_id=dataset.sparse_embedding_config_id,
         chat_config_id=dataset.chat_config_id,
+        vision_config_id=dataset.vision_config_id,
         created_at=dataset.created_at,
         updated_at=dataset.updated_at,
     )
@@ -133,6 +134,8 @@ async def create_dataset(
     ]
     if payload.chat_config_id is not None:
         bindings.append((payload.chat_config_id, "CHAT", "chat_config_id"))
+    if payload.vision_config_id is not None:
+        bindings.append((payload.vision_config_id, "VISION", "vision_config_id"))
     await _lock_and_validate_model_bindings(db, user_id=user_id, bindings=bindings)
 
     dataset = Dataset(
@@ -143,6 +146,7 @@ async def create_dataset(
         dense_embedding_config_id=payload.dense_embedding_config_id,
         sparse_embedding_config_id=payload.sparse_embedding_config_id,
         chat_config_id=payload.chat_config_id,
+        vision_config_id=payload.vision_config_id,
     )
     try:
         db.add(dataset)
@@ -194,6 +198,7 @@ async def update_dataset(
         "dense_embedding_config_id": "EMBEDDING",
         "sparse_embedding_config_id": "SPARSE_EMBEDDING",
         "chat_config_id": "CHAT",
+        "vision_config_id": "VISION",
     }
     requested_bindings = [
         (updates[field_name], expected_capability, field_name)
@@ -212,14 +217,15 @@ async def update_dataset(
         for_update=True,
     )
 
-    embedding_binding_changed = any(
+    parse_binding_changed = any(
         field_name in updates and updates[field_name] != getattr(dataset, field_name)
         for field_name in (
             "dense_embedding_config_id",
             "sparse_embedding_config_id",
+            "vision_config_id",
         )
     )
-    if embedding_binding_changed:
+    if parse_binding_changed:
         documents = (
             await db.scalars(
                 select(Document)
@@ -240,7 +246,7 @@ async def update_dataset(
                 status_code=status.HTTP_409_CONFLICT,
                 detail={
                     "code": "DATASET_DOCUMENTS_ACTIVE",
-                    "message": "仍有文档正在排队或处理，请等待完成后再更换向量模型",
+                    "message": "仍有文档正在排队或处理，请等待完成后再更换解析模型绑定",
                     "document_ids": active,
                 },
             )

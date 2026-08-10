@@ -43,6 +43,7 @@ def test_openapi_contains_every_frontend_runtime_endpoint() -> None:
 def test_document_and_model_responses_do_not_expose_secrets_or_queue_tokens() -> None:
     schemas = app.openapi()["components"]["schemas"]
     model_fields = schemas["LLMConfigRead"]["properties"]
+    dataset_fields = schemas["DatasetRead"]["properties"]
     document_fields = schemas["DocumentRead"]["properties"]
     chunk_fields = schemas["DocumentChunkRead"]["properties"]
     preview_map_fields = schemas["DocumentPreviewMap"]["properties"]
@@ -50,9 +51,18 @@ def test_document_and_model_responses_do_not_expose_secrets_or_queue_tokens() ->
 
     assert "api_key" not in model_fields
     assert "api_key_masked" in model_fields
+    assert "vision_config_id" in dataset_fields
     assert "lease_token" not in document_fields
     assert "lease_owner" not in document_fields
-    assert {"status", "attempt_count", "lease_expires_at", "error_code"} <= document_fields.keys()
+    assert {
+        "status",
+        "attempt_count",
+        "lease_expires_at",
+        "error_code",
+        "parse_quality_status",
+        "parse_quality",
+        "retrieval_ready",
+    } <= document_fields.keys()
     assert {
         "user_id",
         "lease_token",

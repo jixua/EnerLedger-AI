@@ -419,6 +419,125 @@ class DerivedElementChunkBuilder:
             max_cols = max(max_cols, len(cells))
         return max_cols
 
+    @staticmethod
+    def _structured_table_metadata(element: MarkdownElement) -> dict[str, Any] | None:
+        """Return a usable structured-table payload attached by PDF ingestion."""
+
+        structure = element.metadata.get("table_structure")
+        if not isinstance(structure, dict):
+            return None
+        matrix = structure.get("text_matrix")
+        if not isinstance(matrix, (list, tuple)) or not matrix:
+            return None
+        if not all(isinstance(row, (list, tuple)) for row in matrix):
+            return None
+        return structure
+
+    @staticmethod
+    def _positive_dimension(value: Any) -> int | None:
+        """Parse one positive table dimension without accepting booleans."""
+
+        if isinstance(value, bool):
+            return None
+        try:
+            dimension = int(value)
+        except (TypeError, ValueError):
+            return None
+        return dimension if dimension > 0 else None
+
+    @classmethod
+    def _structured_table_dimensions(
+        cls,
+        structure: dict[str, Any],
+    ) -> tuple[int, int]:
+        """Read authoritative row/column counts, falling back to ``text_matrix``."""
+
+        matrix = structure.get("text_matrix")
+        rows = list(matrix) if isinstance(matrix, (list, tuple)) else []
+        matrix_row_count = len(rows)
+        matrix_column_count = max(
+            (len(row) for row in rows if isinstance(row, (list, tuple))),
+            default=0,
+        )
+        return (
+            cls._positive_dimension(structure.get("row_count")) or matrix_row_count,
+            cls._positive_dimension(structure.get("column_count"))
+            or matrix_column_count,
+        )
+
+    @staticmethod
+    def _structured_source_pages(structure: dict[str, Any]) -> list[int]:
+        """Normalize explicit structured-table page provenance for display."""
+
+        raw_pages = structure.get("source_pages")
+        if not isinstance(raw_pages, (list, tuple, set, frozenset)):
+            return []
+        pages: set[int] = set()
+        for value in raw_pages:
+            if isinstance(value, bool):
+                continue
+            try:
+                page = int(value)
+            except (TypeError, ValueError):
+                continue
+            if page > 0:
+                pages.add(page)
+        return sorted(pages)
+
+    @classmethod
+    def _structured_table_text(cls, structure: dict[str, Any]) -> str:
+        """Render a readable retrieval text from the complete two-dimensional table.
+
+        HTML markup is intentionally not used as retrieval text.  Expanded values in
+        ``text_matrix`` retain the semantic effect of rowspan/colspan, while the
+        original cell spans remain available in ``table_structure`` metadata.
+        """
+
+        raw_matrix = structure.get("text_matrix")
+        if not isinstance(raw_matrix, (list, tuple)):
+            return ""
+        matrix = [
+            ["" if value is None else str(value).strip() for value in row]
+            for row in raw_matrix
+            if isinstance(row, (list, tuple))
+        ]
+        if not matrix:
+            return ""
+
+        lines: list[str] = []
+        title = str(structure.get("title") or "").strip()
+        if title:
+            lines.append(f"表名：{title}")
+
+        pages = cls._structured_source_pages(structure)
+        if pages:
+            page_text = str(pages[0]) if len(pages) == 1 else f"{pages[0]}-{pages[-1]}"
+            lines.append(f"来源页：{page_text}")
+
+        raw_hierarchy = structure.get("header_hierarchy")
+        if isinstance(raw_hierarchy, (list, tuple)):
+            columns = [
+                " > ".join(
+                    str(level).strip()
+                    for level in levels
+                    if str(level).strip()
+                )
+                for levels in raw_hierarchy
+                if isinstance(levels, (list, tuple))
+            ]
+            if any(columns):
+                lines.append("列结构：" + "；".join(columns))
+
+        header_rows = cls._positive_dimension(structure.get("header_row_count")) or 0
+        lines.append("表格数据：")
+        for row_index, row in enumerate(matrix):
+            if row_index < header_rows:
+                label = f"表头{row_index + 1}"
+            else:
+                label = f"数据行{row_index - header_rows + 1}"
+            lines.append(f"{label}：" + " | ".join(row))
+        return "\n".join(lines)
+
     def _is_inline_table(self, raw_table: str) -> bool:
         """
             判断表格是否适合直接保留在 mixed chunk 中。
@@ -493,7 +612,7 @@ class DerivedElementChunkBuilder:
         return element is not None and element.type not in {
             ElementType.FRONT_MATTER,
             ElementType.HORIZONTAL_RULE,
-        }
+        } and element.metadata.get("suppress_retrieval") is not True
 
     @staticmethod
     def _heading_path(heading_trail: list[str]) -> str:
@@ -556,6 +675,10 @@ class DerivedElementChunkBuilder:
             "heading_trail": list(heading_trail),
         }
         metadata.update(self._page_metadata(element))
+        if isinstance(element.metadata.get("image_asset"), dict):
+            metadata["image_asset"] = element.metadata["image_asset"]
+        if isinstance(element.metadata.get("retrieval_eligible"), bool):
+            metadata["retrieval_eligible"] = element.metadata["retrieval_eligible"]
         if adjacent_context:
             metadata["adjacent_context_prev_tokens"] = previous_context_tokens
             metadata["adjacent_context_next_tokens"] = next_context_tokens
@@ -596,8 +719,19 @@ class DerivedElementChunkBuilder:
             以及表格派生草稿。
         """
         raw_table = self._extract_raw_table(element.content)
+        structure = self._structured_table_metadata(element)
+        structured_table = self._structured_table_text(structure) if structure else ""
+        retrieval_table = structured_table or raw_table
         summary = self._extract_table_summary(element)
-        inline_in_mixed = self._is_inline_table(raw_table)
+        source_format = str(structure.get("source_format") or "").upper() if structure else ""
+        part_table_ids = structure.get("part_table_ids") if structure else None
+        merged_continuation = isinstance(part_table_ids, (list, tuple)) and len(part_table_ids) > 1
+        # Keep raw source only when it is already the retrieval representation.
+        # HTML and merged continuations use one reference in the mixed chunk and one
+        # complete structured derived chunk, avoiding raw markup and duplicate rows.
+        inline_in_mixed = self._is_inline_table(raw_table) and not (
+            source_format in {"HTML", "MIXED"} or merged_continuation
+        )
 
         if inline_in_mixed:
             mixed_content = element.content
@@ -612,7 +746,14 @@ class DerivedElementChunkBuilder:
         ]
         if adjacent_context:
             content_parts.append(f"相邻上下文：{adjacent_context}")
-        content_parts.extend(["原始表格：", raw_table])
+        table_content_label = "结构化表格：" if structured_table else "原始表格："
+        content_parts.extend([table_content_label, retrieval_table])
+
+        if structure is not None:
+            row_count, column_count = self._structured_table_dimensions(structure)
+        else:
+            row_count = self._table_rows(raw_table)
+            column_count = self._table_cols(raw_table)
 
         metadata: dict[str, Any] = {
             "element_type": ElementType.TABLE.value,
@@ -621,11 +762,13 @@ class DerivedElementChunkBuilder:
             "element_types": [ElementType.TABLE.value],
             "heading_trail": list(heading_trail),
             "table_inline_in_source": inline_in_mixed,
-            "table_row_count": self._table_rows(raw_table),
-            "table_col_count": self._table_cols(raw_table),
-            "table_token_count": self._count_tokens(raw_table),
+            "table_row_count": row_count,
+            "table_col_count": column_count,
+            "table_token_count": self._count_tokens(retrieval_table),
         }
         metadata.update(self._page_metadata(element))
+        if isinstance(element.metadata.get("table_structure"), dict):
+            metadata["table_structure"] = element.metadata["table_structure"]
         if adjacent_context:
             metadata["adjacent_context_prev_tokens"] = previous_context_tokens
             metadata["adjacent_context_next_tokens"] = next_context_tokens
@@ -719,6 +862,8 @@ class DerivedElementChunkBuilder:
             )
 
         for index, element in enumerate(elements):
+            if element.metadata.get("suppress_retrieval") is True:
+                continue
             source_element_index = (
                 source_element_indexes[index]
                 if source_element_indexes is not None and index < len(source_element_indexes)

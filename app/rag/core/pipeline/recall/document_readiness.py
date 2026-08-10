@@ -6,7 +6,7 @@ from collections.abc import Callable, Iterator, Sequence
 from contextlib import AbstractAsyncContextManager
 from typing import Protocol, TypeAlias, TypeVar
 
-from sqlalchemy import and_, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models import Dataset, Document
@@ -90,6 +90,18 @@ class MySqlDocumentReadinessGate:
                 ChunkRecordDB.chunk_id.in_(chunk_ids),
                 ChunkRecordDB.user_id == user_id,
                 Document.status == "READY",
+                or_(
+                    func.lower(Document.file_type) != "pdf",
+                    and_(
+                        Document.parse_quality_status == "PASSED",
+                        func.upper(
+                            func.json_unquote(
+                                func.json_extract(Document.parse_quality, "$.status")
+                            )
+                        )
+                        == "PASSED",
+                    ),
+                ),
                 Dataset.status == "ACTIVE",
             )
         )

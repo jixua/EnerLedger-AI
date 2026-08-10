@@ -8,8 +8,9 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import math
 import re
-from collections.abc import Awaitable, Callable, Sequence
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path, PurePath, PurePosixPath
@@ -26,7 +27,33 @@ from app.rag.core.dataset_config.execution_context import (
 )
 from app.rag.core.encoding.sparse.factory import build_sparse_vector_service
 from app.rag.core.llm.provider_lifecycle import aclose_dataset_execution_contexts
+from app.rag.core.markdown_parser.models import (
+    META_VISUAL_DESCRIPTION,
+    ElementType,
+    MarkdownElement,
+)
+from app.rag.core.markdown_parser.parser import MarkdownParser
 from app.rag.core.parse_task_service import ParseTaskService
+from app.rag.core.parser.pdf.content_validation import (
+    PdfContentValidationPolicy,
+    PdfContentValidator,
+)
+from app.rag.core.parser.pdf.image_asset_policy import (
+    ImageAssetCategory,
+    PdfImageAssetPolicy,
+    StructuredVisualDescription,
+)
+from app.rag.core.parser.pdf.page_fallback import (
+    AnalyzeImagePageProviderAdapter,
+    PdfPageFallbackProcessor,
+)
+from app.rag.core.parser.pdf.quality import (
+    PdfQualityAnalyzer,
+    PdfQualityReport,
+    PdfQualityStatus,
+)
+from app.rag.core.parser.pdf.source_structure import PdfSourceStructureInspector
+from app.rag.core.parser.pdf.table_structure import PdfTableStructureExtractor
 from app.rag.core.preprocessor.models import ChunkWithTokens, FileIndexMeta, FilePostIndexPlan
 from app.rag.core.preprocessor.ragflow_tokenizer import RagFlowTokenizer
 from app.rag.core.splitter.factory import (
@@ -55,6 +82,25 @@ class DocumentIngestionError(RuntimeError):
 
 class DocumentIngestionLeaseLost(DocumentIngestionError):
     """当前 worker 的租约已失效，不得再提交或清理共享产物。"""
+
+
+class DocumentQualityGateError(DocumentIngestionError):
+    """PDF 页级质量、兜底或专项验证未达到可检索条件。"""
+
+    def __init__(
+        self,
+        *,
+        quality_status: str,
+        quality_report: dict[str, Any],
+        error_code: str,
+        message: str,
+        retryable: bool = False,
+    ) -> None:
+        super().__init__(message)
+        self.quality_status = quality_status
+        self.quality_report = quality_report
+        self.error_code = error_code
+        self.retryable = retryable
 
 
 LeaseGuard = Callable[[], bool | Awaitable[bool]]
@@ -108,6 +154,12 @@ class SimpleDocumentIngestionService:
         sparse_service_builder: Callable[[Any], Any] = build_sparse_vector_service,
         draft_factory: ChunkDraftFactory | None = None,
         tokenizer_factory: Callable[[], Any] = RagFlowTokenizer,
+        pdf_quality_analyzer: Any | None = None,
+        pdf_fallback_processor_factory: Callable[[Any | None], Any] | None = None,
+        pdf_source_structure_inspector: Any | None = None,
+        pdf_content_validator: Any | None = None,
+        pdf_table_structure_extractor: Any | None = None,
+        pdf_image_asset_policy: Any | None = None,
     ) -> None:
         self._storage = storage or StorageFactory.get_storage()
         self._qdrant_store = qdrant_store or _default_qdrant_store
@@ -123,6 +175,30 @@ class SimpleDocumentIngestionService:
         self._sparse_service_builder = sparse_service_builder
         self._draft_factory = draft_factory or ChunkDraftFactory()
         self._tokenizer_factory = tokenizer_factory
+        self._pdf_quality_analyzer = pdf_quality_analyzer or PdfQualityAnalyzer(
+            min_effective_text_chars=settings.PDF_QUALITY_MIN_EFFECTIVE_TEXT_CHARS,
+            image_only_max_text_chars=settings.PDF_QUALITY_IMAGE_ONLY_MAX_TEXT_CHARS,
+            image_only_min_coverage_ratio=(
+                settings.PDF_QUALITY_IMAGE_ONLY_MIN_COVERAGE_RATIO
+            ),
+            min_ocr_confidence=settings.PDF_QUALITY_MIN_OCR_CONFIDENCE,
+            min_text_retention_ratio=settings.PDF_QUALITY_MIN_TEXT_RETENTION_RATIO,
+        )
+        self._pdf_fallback_processor_factory = (
+            pdf_fallback_processor_factory or self._build_pdf_fallback_processor
+        )
+        self._pdf_source_structure_inspector = (
+            pdf_source_structure_inspector or PdfSourceStructureInspector()
+        )
+        self._pdf_content_validator = pdf_content_validator or PdfContentValidator(
+            policy=PdfContentValidationPolicy(
+                high_image_coverage_ratio=settings.PDF_CONTENT_HIGH_IMAGE_COVERAGE_RATIO
+            )
+        )
+        self._pdf_table_structure_extractor = (
+            pdf_table_structure_extractor or PdfTableStructureExtractor()
+        )
+        self._pdf_image_asset_policy = pdf_image_asset_policy or PdfImageAssetPolicy()
 
     async def ingest(
         self,
@@ -189,6 +265,23 @@ class SimpleDocumentIngestionService:
             )
             await self._assert_lease(lease_guard)
             markdown = self._required_markdown(parse_output)
+            if identity.file_type == "pdf":
+                parse_quality_status, parse_quality = await self._process_pdf_quality(
+                    identity=identity,
+                    source_path=source_path,
+                    parse_output=parse_output,
+                    markdown=markdown,
+                    execution_context=execution_context,
+                )
+                markdown = self._required_markdown(parse_output)
+            else:
+                parse_quality_status = "NOT_APPLICABLE"
+                parse_quality = {
+                    "schema_version": 2,
+                    "status": "NOT_APPLICABLE",
+                    "warnings": [],
+                }
+            await self._assert_lease(lease_guard)
             await self._upload_markdown(parsed_bucket, parsed_object_key, markdown)
 
             dense_pipeline = self._dense_pipeline_builder(execution_context.dense_embedding)
@@ -266,6 +359,8 @@ class SimpleDocumentIngestionService:
                 page_count=page_count,
                 chunk_count=len(drafts),
                 parse_time_ms=parse_time_ms,
+                parse_quality_status=parse_quality_status,
+                parse_quality=parse_quality,
                 lease_token=lease_token,
             )
             await self._cleanup_superseded_parsed_output(
@@ -368,10 +463,21 @@ class SimpleDocumentIngestionService:
         page_count: int | None,
         chunk_count: int,
         parse_time_ms: int,
+        parse_quality_status: str,
+        parse_quality: dict[str, Any],
         lease_token: str | None = None,
     ) -> None:
         """将文档的解析产物和终态与 chunk 真值集一次提交。"""
 
+        if document.file_type.lower() == "pdf":
+            report_status = str(parse_quality.get("status") or "")
+            if (
+                parse_quality_status != PdfQualityStatus.PASSED.value
+                or report_status != PdfQualityStatus.PASSED.value
+            ):
+                raise DocumentIngestionError(
+                    "PDF 质量门禁未通过，禁止写入 READY 终态"
+                )
         parser_backend = (
             "opendataloader" if document.file_type.lower() == "pdf" else document.parser_backend
         )
@@ -385,6 +491,8 @@ class SimpleDocumentIngestionService:
             "page_count": page_count,
             "chunk_count": chunk_count,
             "parse_time_ms": parse_time_ms,
+            "parse_quality_status": parse_quality_status,
+            "parse_quality": parse_quality,
             "available_at": None,
             "lease_token": None,
             "lease_owner": None,
@@ -427,8 +535,16 @@ class SimpleDocumentIngestionService:
 
         message = f"{type(error).__name__}: {error}"[:1000]
         document.status = "FAILED"
-        document.error_code = type(error).__name__.upper()[:64]
+        document.error_code = str(
+            getattr(error, "error_code", type(error).__name__)
+        ).upper()[:64]
         document.error_message = message
+        quality_status = getattr(error, "quality_status", None)
+        quality_report = getattr(error, "quality_report", None)
+        if quality_status is not None:
+            document.parse_quality_status = str(quality_status)
+        if isinstance(quality_report, dict):
+            document.parse_quality = quality_report
         # 重新解析失败时保留上一个 READY 版本的指针与统计；新产物只会在
         # ``mark_ready`` 的同一次 DB commit 中取代这些字段。首次解析时它们
         # 本来就是 None/0，因此也不会伪造可用产物。
@@ -495,6 +611,856 @@ class SimpleDocumentIngestionService:
         if inspect.isawaitable(result):
             result = await result
         return bool(result)
+
+    @staticmethod
+    def _build_pdf_fallback_processor(resolved_vision: Any | None) -> PdfPageFallbackProcessor:
+        provider_adapter = None
+        if resolved_vision is not None:
+            provider_adapter = AnalyzeImagePageProviderAdapter(
+                resolved_vision.provider,
+                model_name=resolved_vision.model_name,
+            )
+        return PdfPageFallbackProcessor(
+            ocr_provider=provider_adapter,
+            vision_provider=provider_adapter,
+            dpi=settings.PDF_FALLBACK_RENDER_DPI,
+            min_chart_image_coverage_ratio=(
+                settings.PDF_FALLBACK_MIN_CHART_IMAGE_COVERAGE_RATIO
+            ),
+            max_concurrency=settings.PDF_FALLBACK_MAX_CONCURRENCY,
+            max_rendered_page_pixels=settings.PDF_FALLBACK_MAX_RENDERED_PAGE_PIXELS,
+            max_rendered_page_bytes=settings.PDF_FALLBACK_MAX_RENDERED_PAGE_BYTES,
+            max_structured_report_bytes=(
+                settings.PDF_FALLBACK_MAX_STRUCTURED_REPORT_BYTES
+            ),
+        )
+
+    async def _process_pdf_quality(
+        self,
+        *,
+        identity: _DocumentIdentity,
+        source_path: Path,
+        parse_output: dict[str, Any],
+        markdown: str,
+        execution_context: Any,
+    ) -> tuple[str, dict[str, Any]]:
+        """ODL 主解析后执行页级补齐，并只在全部门禁通过后替换 ParseResult。"""
+
+        initial_quality: PdfQualityReport = await asyncio.to_thread(
+            self._pdf_quality_analyzer.analyze,
+            source_path,
+            markdown,
+        )
+        if initial_quality.status in {
+            PdfQualityStatus.PAGE_COUNT_MISMATCH,
+            PdfQualityStatus.PAGE_PROVENANCE_INVALID,
+        }:
+            report = self._compose_pdf_quality_report(
+                status=initial_quality.status.value,
+                initial_quality=initial_quality,
+                final_quality=initial_quality,
+            )
+            self._raise_pdf_quality_gate(initial_quality.status.value, report)
+
+        fallback_processor = self._pdf_fallback_processor_factory(
+            getattr(execution_context, "enhancement_vision", None)
+        )
+        fallback_report = await fallback_processor.process(
+            source_path,
+            markdown,
+            initial_quality,
+        )
+        merged_markdown = fallback_processor.merge_markdown(markdown, fallback_report)
+        final_quality: PdfQualityReport = await asyncio.to_thread(
+            self._pdf_quality_analyzer.analyze,
+            source_path,
+            merged_markdown,
+            ocr_results=fallback_report.ocr_results,
+        )
+
+        source_inspection = await asyncio.to_thread(
+            self._pdf_source_structure_inspector.inspect,
+            source_path,
+            markdown,
+            initial_quality,
+        )
+        table_structure_report = self._pdf_table_structure_extractor.extract(
+            merged_markdown
+        )
+        preliminary_image_report = self._pdf_image_asset_policy.extract_and_classify(
+            merged_markdown
+        )
+        categories_by_page: dict[int, list[ImageAssetCategory]] = {}
+        for decision in preliminary_image_report.assets:
+            if decision.page_number is not None:
+                categories_by_page.setdefault(decision.page_number, []).append(
+                    decision.category
+                )
+        structured_by_page: dict[int, StructuredVisualDescription] = {}
+        visually_assessed_pages: set[int] = set()
+        visual_no_content_pages: set[int] = set()
+        for result in fallback_report.results:
+            if (
+                not result.structured_data
+                or bool(getattr(result, "truncated", False))
+                or bool(getattr(result, "error_code", None))
+            ):
+                continue
+            has_visual_content = self._visual_assessment_state(result.structured_data)
+            if has_visual_content is None:
+                continue
+            if has_visual_content is False:
+                visually_assessed_pages.add(result.page_number)
+                visual_no_content_pages.add(result.page_number)
+                continue
+            try:
+                description = StructuredVisualDescription.from_mapping(result.structured_data)
+            except (TypeError, ValueError):
+                continue
+            # 扫描页使用同一个视觉模型执行 OCR；OCR 提示同时要求返回图表/流程关系，
+            # 因此有真实视觉字段时也可作为结构化图片说明，避免同页重复调用模型。
+            if self._structured_visual_is_complete(
+                description,
+                expected_page=result.page_number,
+                categories=categories_by_page.get(result.page_number, ()),
+            ):
+                # One full-page description is stored once by source page.  It is
+                # deliberately not copied onto every image reference on that page.
+                structured_by_page.setdefault(result.page_number, description)
+                visually_assessed_pages.add(result.page_number)
+        visual_descriptions = self._explicit_asset_visual_descriptions(
+            fallback_report,
+            preliminary_image_report,
+        )
+        image_policy_report = self._pdf_image_asset_policy.extract_and_classify(
+            merged_markdown,
+            visual_descriptions=visual_descriptions,
+        )
+        markdown_pages = self._split_pdf_markdown_pages(merged_markdown)
+        validation_report = self._pdf_content_validator.validate(
+            source_inspection.pages,
+            markdown_pages,
+        )
+        vision_incomplete_pages = self._pdf_vision_incomplete_pages(
+            fallback_report,
+            structured_by_page=structured_by_page,
+            visually_assessed_pages=visually_assessed_pages,
+            image_policy_report=image_policy_report,
+        )
+
+        if final_quality.status is not PdfQualityStatus.PASSED:
+            final_status = final_quality.status.value
+        elif vision_incomplete_pages:
+            final_status = "FALLBACK_INCOMPLETE"
+        elif not validation_report.structural_passed:
+            final_status = "CONTENT_VALIDATION_FAILED"
+        else:
+            final_status = PdfQualityStatus.PASSED.value
+
+        report = self._compose_pdf_quality_report(
+            status=final_status,
+            initial_quality=initial_quality,
+            final_quality=final_quality,
+            fallback_report=fallback_report,
+            source_inspection=source_inspection,
+            validation_report=validation_report,
+            vision_incomplete_pages=vision_incomplete_pages,
+            visually_assessed_pages=visually_assessed_pages,
+            visual_no_content_pages=visual_no_content_pages,
+            table_structure_report=table_structure_report,
+            image_policy_report=image_policy_report,
+        )
+        if final_status != PdfQualityStatus.PASSED.value:
+            self._raise_pdf_quality_gate(
+                final_status,
+                report,
+                retryable=bool(getattr(fallback_report, "has_retryable_failure", False)),
+            )
+
+        rebuilt_parse_result = MarkdownParser().parse(
+            self._pdf_markdown_for_indexing(merged_markdown),
+            source_file=identity.filename,
+        )
+        marker_count = self._apply_pdf_page_numbers_from_markdown(
+            rebuilt_parse_result,
+            merged_markdown,
+        )
+        self._apply_pdf_page_visual_descriptions(
+            rebuilt_parse_result,
+            structured_by_page,
+        )
+        self._apply_pdf_structured_assets(
+            rebuilt_parse_result,
+            table_structure_report=table_structure_report,
+            image_policy_report=image_policy_report,
+        )
+        retrieval_noise = self._apply_pdf_retrieval_noise_policy(rebuilt_parse_result)
+        report["retrieval_noise"] = retrieval_noise
+        if retrieval_noise["suppressed_element_count"]:
+            report["warnings"] = list(
+                dict.fromkeys(
+                    [
+                        *report.get("warnings", []),
+                        "RETRIEVAL_NOISE_SUPPRESSED:"
+                        f"count={retrieval_noise['suppressed_element_count']}",
+                    ]
+                )
+            )
+        if marker_count != final_quality.pdf_page_count:
+            report["status"] = PdfQualityStatus.PAGE_COUNT_MISMATCH.value
+            report["warnings"] = list(
+                dict.fromkeys(
+                    [
+                        *report.get("warnings", []),
+                        "PARSE_RESULT_PAGE_MARKER_COUNT_MISMATCH:"
+                        f"expected={final_quality.pdf_page_count},actual={marker_count}",
+                    ]
+                )
+            )
+            self._raise_pdf_quality_gate(PdfQualityStatus.PAGE_COUNT_MISMATCH.value, report)
+
+        parse_output["markdown"] = merged_markdown
+        parse_output["parse_result"] = rebuilt_parse_result
+        metadata = parse_output.setdefault("metadata", {})
+        metadata["pages_or_length"] = final_quality.pdf_page_count
+        metadata["pdf_page_markers"] = marker_count
+        metadata["pdf_quality_status"] = final_status
+        metadata["pdf_ocr_page_count"] = final_quality.ocr_page_count
+        return final_status, report
+
+    @staticmethod
+    def _visual_assessment_state(payload: Mapping[str, object]) -> bool | None:
+        """Return a consistent explicit page-level visual judgment.
+
+        A Boolean without a matching type is not enough: contradictory model JSON
+        (for example ``false`` + ``chart``) must remain incomplete rather than close
+        a blocking visual task.
+        """
+
+        has_visual_content = payload.get("has_visual_content")
+        visual_content_type = str(payload.get("visual_content_type") or "").strip().casefold()
+        if type(has_visual_content) is not bool:
+            return None
+        if has_visual_content is False:
+            return False if visual_content_type == "none" else None
+        if visual_content_type not in {
+            "chart",
+            "flowchart",
+            "system_boundary",
+            "other",
+        }:
+            return None
+        return True
+
+    @staticmethod
+    def _pdf_vision_incomplete_pages(
+        fallback_report: Any,
+        *,
+        structured_by_page: Mapping[int, StructuredVisualDescription],
+        visually_assessed_pages: Sequence[int] = (),
+        image_policy_report: Any,
+    ) -> list[int]:
+        """返回视觉调用无结构结果或仍有待办视觉资产的原 PDF 页码。"""
+
+        completed_pages = set(structured_by_page) | set(visually_assessed_pages)
+        return sorted(
+            {
+                result.page_number
+                for result in fallback_report.results
+                # OCR and VISION prompts must both explicitly state whether the
+                # rendered source page contains a chart/flow/boundary asset.  This
+                # prevents a scanned chart from passing merely because its text OCR
+                # succeeded while the visual structure fields were omitted.
+                if result.page_number not in completed_pages
+            }
+            | {
+                decision.page_number
+                for decision in image_policy_report.assets
+                if (
+                    decision.visual_task is not None
+                    and decision.page_number is not None
+                    and decision.page_number not in completed_pages
+                )
+            }
+        )
+
+    @staticmethod
+    def _structured_visual_is_complete(
+        description: StructuredVisualDescription,
+        *,
+        expected_page: int,
+        categories: Sequence[ImageAssetCategory] = (),
+    ) -> bool:
+        """Conservatively validate a page-level chart/flow description.
+
+        A generic summary alone does not prove that values, nodes or arrows were
+        extracted.  Page provenance is fixed by the rendered target and must match.
+        """
+
+        base_complete = bool(
+            description.source_page == expected_page
+            and description.summary.strip()
+            and (
+                description.relationships
+                or description.key_values
+                or len(description.entities) >= 2
+            )
+        )
+        if not base_complete:
+            return False
+        if categories:
+            return not PdfImageAssetPolicy().validate_page_visual_description(
+                description,
+                page_number=expected_page,
+                categories=categories,
+            )
+        return True
+
+    def _explicit_asset_visual_descriptions(
+        self,
+        fallback_report: Any,
+        preliminary_image_report: Any,
+    ) -> dict[str, StructuredVisualDescription]:
+        """Read only explicitly mapped per-asset descriptions from provider JSON.
+
+        A full-page ``summary/entities/...`` payload is intentionally excluded.  A
+        nested ``visual_assets`` item must identify one preliminary ``asset_key`` or
+        an otherwise unique source/page/line occurrence before it may be attached to
+        an image.  This keeps page-level analysis from being cloned onto logos,
+        signatures and unrelated images on the same page.
+        """
+
+        decisions = tuple(preliminary_image_report.assets)
+        by_key = {decision.asset_key: decision for decision in decisions}
+        descriptions: dict[str, StructuredVisualDescription] = {}
+        for result in fallback_report.results:
+            payload = result.structured_data
+            if not isinstance(payload, Mapping):
+                continue
+            raw_assets = payload.get("visual_assets")
+            if not isinstance(raw_assets, Sequence) or isinstance(
+                raw_assets,
+                (str, bytes),
+            ):
+                continue
+            for raw_asset in raw_assets:
+                if not isinstance(raw_asset, Mapping):
+                    continue
+                asset_key = str(raw_asset.get("asset_key") or "").strip()
+                if asset_key not in by_key:
+                    source_ref = str(raw_asset.get("source_ref") or "").strip()
+                    normalized_ref = self._pdf_image_asset_policy.normalize_source_ref(
+                        source_ref
+                    )
+                    raw_line_number = raw_asset.get("line_number")
+                    raw_occurrence_index = raw_asset.get("occurrence_index")
+                    try:
+                        line_number = (
+                            int(raw_line_number)
+                            if raw_line_number is not None
+                            and not isinstance(raw_line_number, bool)
+                            else None
+                        )
+                        occurrence_index = (
+                            int(raw_occurrence_index)
+                            if raw_occurrence_index is not None
+                            and not isinstance(raw_occurrence_index, bool)
+                            else None
+                        )
+                    except (TypeError, ValueError):
+                        continue
+                    matches = [
+                        decision
+                        for decision in decisions
+                        if decision.page_number == result.page_number
+                        and self._pdf_image_asset_policy.normalize_source_ref(
+                            decision.source_ref
+                        )
+                        == normalized_ref
+                        and (
+                            line_number is None
+                            or decision.line_number == line_number
+                        )
+                        and (
+                            occurrence_index is None
+                            or decision.occurrence_index == occurrence_index
+                        )
+                    ]
+                    if len(matches) != 1:
+                        continue
+                    asset_key = matches[0].asset_key
+                decision = by_key[asset_key]
+                if decision.page_number != result.page_number:
+                    continue
+                raw_description = raw_asset.get("description")
+                description_payload = (
+                    raw_description if isinstance(raw_description, Mapping) else raw_asset
+                )
+                normalized_payload = dict(description_payload)
+                normalized_payload["source_page"] = result.page_number
+                try:
+                    descriptions[asset_key] = StructuredVisualDescription.from_mapping(
+                        normalized_payload
+                    )
+                except (TypeError, ValueError):
+                    continue
+        return descriptions
+
+    @staticmethod
+    def _apply_pdf_page_visual_descriptions(
+        parse_result: Any,
+        descriptions: Mapping[int, StructuredVisualDescription],
+    ) -> None:
+        """Materialize each full-page visual result exactly once for retrieval."""
+
+        if not descriptions:
+            return
+        elements: list[MarkdownElement] = parse_result.elements
+        for page_number, description in sorted(descriptions.items()):
+            page_elements = [
+                (index, element)
+                for index, element in enumerate(elements)
+                if element.metadata.get("page_number") == page_number
+            ]
+            if not page_elements:
+                continue
+            existing = next(
+                (
+                    element
+                    for _, element in page_elements
+                    if element.metadata.get("page_visual_description") is not None
+                ),
+                None,
+            )
+            retrieval_text = "页面视觉结构：\n" + description.to_retrieval_text()
+            if existing is not None:
+                existing.content = retrieval_text
+                existing.metadata["page_visual_description"] = description.to_dict()
+                continue
+
+            marker_index = next(
+                (
+                    index
+                    for index, element in page_elements
+                    if "PAGE_FALLBACK:VISION" in element.content
+                ),
+                None,
+            )
+            target_index: int | None = None
+            if marker_index is not None:
+                marker = elements[marker_index]
+                marker.metadata["suppress_retrieval"] = True
+                marker.metadata["retrieval_noise_reason"] = "PAGE_FALLBACK_MARKER"
+                for index in range(marker_index + 1, len(elements)):
+                    candidate = elements[index]
+                    if candidate.metadata.get("page_number") != page_number:
+                        break
+                    if candidate.type not in {ElementType.IMAGE, ElementType.TABLE}:
+                        target_index = index
+                        break
+
+            if target_index is not None:
+                target = elements[target_index]
+                target.content = retrieval_text
+                target.metadata.update(
+                    {
+                        "page_visual_description": description.to_dict(),
+                        "page_visual_description_indexed": True,
+                    }
+                )
+                continue
+
+            insert_after, anchor = page_elements[-1]
+            elements.insert(
+                insert_after + 1,
+                MarkdownElement(
+                    type=ElementType.PARAGRAPH,
+                    content=retrieval_text,
+                    start_line=anchor.end_line,
+                    end_line=anchor.end_line,
+                    metadata={
+                        "page_number": page_number,
+                        "page_visual_description": description.to_dict(),
+                        "page_visual_description_indexed": True,
+                        "retrieval_only": True,
+                    },
+                ),
+            )
+
+    @staticmethod
+    def _compose_pdf_quality_report(
+        *,
+        status: str,
+        initial_quality: PdfQualityReport,
+        final_quality: PdfQualityReport,
+        fallback_report: Any | None = None,
+        source_inspection: Any | None = None,
+        validation_report: Any | None = None,
+        vision_incomplete_pages: Sequence[int] = (),
+        visually_assessed_pages: Sequence[int] = (),
+        visual_no_content_pages: Sequence[int] = (),
+        table_structure_report: Any | None = None,
+        image_policy_report: Any | None = None,
+    ) -> dict[str, Any]:
+        warnings: list[str] = [*initial_quality.warnings, *final_quality.warnings]
+        if fallback_report is not None:
+            warnings.extend(fallback_report.warnings)
+            for result in fallback_report.results:
+                warnings.extend(
+                    f"PAGE_{result.page_number}_{warning}" for warning in result.warnings
+                )
+        if source_inspection is not None:
+            warnings.extend(source_inspection.warnings)
+        if validation_report is not None:
+            warnings.extend(
+                f"PAGE_{issue.page_number}_{issue.code}" for issue in validation_report.warnings
+            )
+            warnings.extend(
+                f"PAGE_{issue.page_number}_{issue.code}"
+                for issue in validation_report.blocking_issues
+            )
+        return {
+            "schema_version": 2,
+            "status": status,
+            "parser_backend": "opendataloader",
+            "pdf_page_count": final_quality.pdf_page_count,
+            "markdown_page_count": final_quality.markdown_page_count,
+            "text_coverage_ratio": final_quality.text_coverage_ratio,
+            "ocr_required_pages": list(initial_quality.ocr_required_pages),
+            "ocr_page_count": final_quality.ocr_page_count,
+            "low_confidence_pages": list(final_quality.low_confidence_pages),
+            "vision_incomplete_pages": list(vision_incomplete_pages),
+            "visually_assessed_pages": sorted(set(visually_assessed_pages)),
+            "visual_no_content_pages": sorted(set(visual_no_content_pages)),
+            "warnings": list(dict.fromkeys(warnings)),
+            "page_quality": final_quality.to_dict(),
+            "fallback": fallback_report.to_dict() if fallback_report is not None else None,
+            "source_structure": (
+                source_inspection.to_dict() if source_inspection is not None else None
+            ),
+            "content_validation": (
+                validation_report.to_dict() if validation_report is not None else None
+            ),
+            "table_structure": (
+                table_structure_report.to_dict()
+                if table_structure_report is not None
+                else None
+            ),
+            "image_assets": (
+                image_policy_report.to_dict() if image_policy_report is not None else None
+            ),
+        }
+
+    @staticmethod
+    def _raise_pdf_quality_gate(
+        status: str,
+        report: dict[str, Any],
+        *,
+        retryable: bool = False,
+    ) -> None:
+        code_by_status = {
+            PdfQualityStatus.PAGE_COUNT_MISMATCH.value: "PDF_PAGE_COUNT_MISMATCH",
+            PdfQualityStatus.PAGE_PROVENANCE_INVALID.value: "PDF_PAGE_PROVENANCE_INVALID",
+            PdfQualityStatus.OCR_REQUIRED.value: "PDF_OCR_REQUIRED",
+            PdfQualityStatus.LOW_CONFIDENCE.value: "PDF_OCR_LOW_CONFIDENCE",
+            "FALLBACK_INCOMPLETE": "PDF_FALLBACK_INCOMPLETE",
+            "CONTENT_VALIDATION_FAILED": "PDF_CONTENT_VALIDATION_FAILED",
+        }
+        message_by_status = {
+            PdfQualityStatus.PAGE_COUNT_MISMATCH.value: "原 PDF 页数与 ODL 页标记不一致",
+            PdfQualityStatus.PAGE_PROVENANCE_INVALID.value: "ODL 输出存在无法归属原页的正文",
+            PdfQualityStatus.OCR_REQUIRED.value: "扫描页 OCR 尚未完成或正文仍不足",
+            PdfQualityStatus.LOW_CONFIDENCE.value: "扫描页 OCR 置信度未达到门槛",
+            "FALLBACK_INCOMPLETE": "图表页视觉补齐未完成",
+            "CONTENT_VALIDATION_FAILED": "表格、图片或公式专项验证未通过",
+        }
+        raise DocumentQualityGateError(
+            quality_status=status,
+            quality_report=report,
+            error_code=code_by_status.get(status, "PDF_QUALITY_GATE_FAILED"),
+            message=message_by_status.get(status, "PDF 页级质量门禁未通过"),
+            retryable=retryable,
+        )
+
+    @staticmethod
+    def _split_pdf_markdown_pages(markdown: str) -> dict[int, str]:
+        marker = re.compile(
+            r"^[\t ]*<!--[\t ]*ODL_PAGE:(\d+)[\t ]*-->[\t ]*\r?$",
+            flags=re.MULTILINE,
+        )
+        matches = list(marker.finditer(markdown or ""))
+        pages: dict[int, str] = {}
+        for index, match in enumerate(matches):
+            end = matches[index + 1].start() if index + 1 < len(matches) else len(markdown)
+            pages[int(match.group(1))] = markdown[match.end() : end]
+        return pages
+
+    @staticmethod
+    def _pdf_markdown_for_indexing(markdown: str) -> str:
+        """Replace ODL page markers with blank lines before Markdown parsing.
+
+        The newline is preserved, so element line numbers still map to the original
+        marker positions.  This prevents a marker from joining the previous footer
+        and next header into one cross-page paragraph while keeping provenance exact.
+        """
+
+        marker = re.compile(
+            r"^[\t ]*<!--[\t ]*ODL_PAGE:\d+[\t ]*-->[\t ]*\r?$",
+            flags=re.MULTILINE,
+        )
+        return marker.sub("", markdown or "")
+
+    @staticmethod
+    def _apply_pdf_page_numbers_from_markdown(parse_result: Any, markdown: str) -> int:
+        """用真实 ODL 页标记行给元素赋页码，绝不从图片文件名推断。"""
+
+        marker = re.compile(r"^\s*<!--\s*ODL_PAGE:(\d+)\s*-->\s*$")
+        page_markers = [
+            (line_number, int(match.group(1)))
+            for line_number, line in enumerate((markdown or "").splitlines())
+            if (match := marker.fullmatch(line)) is not None
+        ]
+        marker_index = 0
+        current_page: int | None = None
+        for element in parse_result.elements:
+            while (
+                marker_index < len(page_markers)
+                and page_markers[marker_index][0] <= int(element.start_line)
+            ):
+                current_page = page_markers[marker_index][1]
+                marker_index += 1
+            if current_page is not None:
+                element.metadata["page_number"] = current_page
+        return len(page_markers)
+
+    def _apply_pdf_structured_assets(
+        self,
+        parse_result: Any,
+        *,
+        table_structure_report: Any,
+        image_policy_report: Any,
+    ) -> None:
+        """把表格/图片策略写入切块输入，预览资产仍留在持久化 Markdown。"""
+
+        tables_by_part = {
+            part_id: table
+            for table in table_structure_report.tables
+            for part_id in table.part_table_ids
+        }
+        table_parts_by_line: dict[tuple[int, int], tuple[Any, str]] = {}
+        for table in table_structure_report.tables:
+            for part_index, line_range in enumerate(table.source_line_ranges):
+                if part_index < len(table.part_table_ids):
+                    table_parts_by_line[tuple(line_range)] = (
+                        table,
+                        table.part_table_ids[part_index],
+                    )
+        table_index = 0
+        for element in parse_result.elements:
+            if element.type is not ElementType.TABLE:
+                continue
+            table_index += 1
+            matched = table_parts_by_line.get((element.start_line, element.end_line))
+            if matched is None:
+                raw_table_id = f"table-{table_index:04d}"
+                table = tables_by_part.get(raw_table_id)
+            else:
+                table, raw_table_id = matched
+            if table is None:
+                continue
+            if raw_table_id != table.part_table_ids[0]:
+                element.metadata["suppress_retrieval"] = True
+                element.metadata["continuation_merged_into"] = table.table_id
+                continue
+            element.metadata.update(
+                {
+                    "table_structure": table.to_dict(),
+                    "page_numbers": list(table.source_pages),
+                    "start_page": table.source_page_start,
+                    "end_page": table.source_page_end,
+                }
+            )
+
+        decisions_by_owner: dict[int, list[Any]] = {}
+        owners_by_id: dict[int, Any] = {}
+        for decision in image_policy_report.assets:
+            owner = next(
+                (
+                    element
+                    for element in parse_result.elements
+                    if element.start_line <= decision.line_number <= element.end_line
+                ),
+                None,
+            )
+            if owner is None:
+                continue
+            owner_key = id(owner)
+            owners_by_id[owner_key] = owner
+            decisions_by_owner.setdefault(owner_key, []).append(decision)
+
+        for owner_key, owner_decisions in decisions_by_owner.items():
+            owner = owners_by_id[owner_key]
+            owner_decisions.sort(key=lambda item: item.occurrence_index)
+            payloads = [decision.to_dict() for decision in owner_decisions]
+            owner.metadata["image_assets"] = payloads
+            owner.metadata["retrieval_eligible"] = any(
+                decision.retrieval_asset for decision in owner_decisions
+            )
+            if len(owner_decisions) == 1:
+                owner.metadata["image_asset"] = payloads[0]
+
+            if owner.type is ElementType.IMAGE:
+                decision = owner_decisions[0]
+                if decision.retrieval_asset and decision.retrieval_text:
+                    owner.metadata[META_VISUAL_DESCRIPTION] = decision.retrieval_text
+                else:
+                    owner.metadata["suppress_retrieval"] = True
+                continue
+
+            owner.content = self._filter_inline_image_references(
+                owner.content,
+                owner_start_line=owner.start_line,
+                decisions=owner_decisions,
+            )
+            retrieval_descriptions = list(
+                dict.fromkeys(
+                    decision.retrieval_text
+                    for decision in owner_decisions
+                    if decision.retrieval_asset and decision.retrieval_text
+                )
+            )
+            if retrieval_descriptions:
+                description_text = "\n".join(
+                    f"图片说明：{description}" for description in retrieval_descriptions
+                )
+                owner.content = "\n\n".join(
+                    part for part in (owner.content.strip(), description_text) if part
+                )
+            if not owner.content.strip():
+                owner.metadata["suppress_retrieval"] = True
+
+    @staticmethod
+    def _apply_pdf_retrieval_noise_policy(parse_result: Any) -> dict[str, Any]:
+        """Suppress repeated page-edge boilerplate from retrieval, not preview.
+
+        The original Markdown remains untouched.  Only short paragraph/heading/list
+        elements repeated at the first/last two positions on most pages are marked for
+        the chunker to skip.  Explicit page numbers and public/signature boilerplate
+        are also suppressed.  Tables, formulas, code and image assets are excluded
+        from this text-noise heuristic.
+        """
+
+        eligible_types = {ElementType.HEADING, ElementType.PARAGRAPH, ElementType.LIST}
+        elements_by_page: dict[int, list[Any]] = {}
+        for element in parse_result.elements:
+            page_number = element.metadata.get("page_number")
+            if isinstance(page_number, int) and page_number > 0:
+                elements_by_page.setdefault(page_number, []).append(element)
+
+        page_count = len(elements_by_page)
+        edge_occurrences: dict[str, set[int]] = {}
+        normalized_by_element: dict[int, str] = {}
+        for page_number, elements in elements_by_page.items():
+            candidates = [element for element in elements if element.type in eligible_types]
+            edge_elements = [*candidates[:2], *candidates[-2:]]
+            for element in edge_elements:
+                normalized = re.sub(r"\s+", "", element.content).strip("#*_—- ").casefold()
+                if not normalized or len(normalized) > 120:
+                    continue
+                normalized_by_element[id(element)] = normalized
+                edge_occurrences.setdefault(normalized, set()).add(page_number)
+
+        repeated_threshold = max(2, math.ceil(page_count * 0.6)) if page_count else 2
+        repeated_noise = {
+            text
+            for text, pages in edge_occurrences.items()
+            if len(pages) >= repeated_threshold
+        }
+        explicit_noise = re.compile(
+            r"^(?:第?\d+页(?:共\d+页)?|page\d+(?:of\d+)?|"
+            r"公开属性[:：]?.{0,40}|(?:签名|签字|盖章|公章)[:：]?.{0,40})$",
+            flags=re.IGNORECASE,
+        )
+
+        suppressed: list[dict[str, object]] = []
+        for page_number, elements in elements_by_page.items():
+            for element in elements:
+                if element.type not in eligible_types:
+                    continue
+                normalized = normalized_by_element.get(id(element)) or re.sub(
+                    r"\s+",
+                    "",
+                    element.content,
+                ).strip("#*_—- ").casefold()
+                reason = None
+                if normalized in repeated_noise:
+                    reason = "REPEATED_PAGE_EDGE_TEXT"
+                elif len(normalized) <= 120 and explicit_noise.fullmatch(normalized):
+                    reason = "EXPLICIT_BOILERPLATE"
+                if reason is None:
+                    continue
+                element.metadata["suppress_retrieval"] = True
+                element.metadata["retrieval_noise_reason"] = reason
+                suppressed.append(
+                    {
+                        "page_number": page_number,
+                        "start_line": int(element.start_line),
+                        "reason": reason,
+                        "text_preview": element.content.strip()[:80],
+                    }
+                )
+        return {
+            "schema_version": 1,
+            "page_count": page_count,
+            "repeated_page_threshold": repeated_threshold,
+            "suppressed_element_count": len(suppressed),
+            "suppressed_elements": suppressed,
+        }
+
+    def _filter_inline_image_references(
+        self,
+        content: str,
+        *,
+        owner_start_line: int,
+        decisions: Sequence[Any],
+    ) -> str:
+        """Remove only the concrete preview-only occurrences owned by this block."""
+
+        image_reference = re.compile(
+            r"!\[[^\]]*\]\(\s*(?:<(?P<md_angle>[^>]+)>|(?P<md_plain>[^\s)]+))"
+            r"[^)]*\)|<img\b[^>]*\bsrc\s*=\s*(?:\"(?P<html_double>[^\"]+)\"|"
+            r"'(?P<html_single>[^']+)'|(?P<html_bare>[^\s>]+))[^>]*>",
+            flags=re.IGNORECASE,
+        )
+        pending: dict[tuple[int, str], list[Any]] = {}
+        for decision in decisions:
+            key = (
+                decision.line_number,
+                self._pdf_image_asset_policy.normalize_source_ref(decision.source_ref),
+            )
+            pending.setdefault(key, []).append(decision)
+
+        def replace_reference(match: re.Match[str]) -> str:
+            source_ref = (
+                match.group("md_angle")
+                or match.group("md_plain")
+                or match.group("html_double")
+                or match.group("html_single")
+                or match.group("html_bare")
+                or ""
+            )
+            line_number = owner_start_line + content.count("\n", 0, match.start())
+            key = (
+                line_number,
+                self._pdf_image_asset_policy.normalize_source_ref(source_ref),
+            )
+            matches = pending.get(key)
+            if not matches:
+                return match.group(0)
+            decision = matches.pop(0)
+            return match.group(0) if decision.retrieval_asset else ""
+
+        return image_reference.sub(replace_reference, content).strip()
 
     async def _parse(
         self,
@@ -765,6 +1731,38 @@ class SimpleDocumentIngestionService:
         for key in ("oversized", "truncated", "line_span_approx"):
             if isinstance(metadata.get(key), bool):
                 result[key] = metadata[key]
+        if isinstance(metadata.get("retrieval_eligible"), bool):
+            result["retrieval_eligible"] = metadata["retrieval_eligible"]
+
+        def json_native(value: Any, *, depth: int = 0) -> Any:
+            if depth > 16:
+                return None
+            if value is None or isinstance(value, (str, int, float, bool)):
+                return value
+            if isinstance(value, dict):
+                return {
+                    str(key): cleaned
+                    for key, item in value.items()
+                    if (cleaned := json_native(item, depth=depth + 1)) is not None
+                }
+            if isinstance(value, (list, tuple)):
+                return [
+                    cleaned
+                    for item in value
+                    if (cleaned := json_native(item, depth=depth + 1)) is not None
+                ]
+            return None
+
+        for key in (
+            "table_structure",
+            "image_asset",
+            "image_assets",
+            "page_visual_description",
+        ):
+            if isinstance(metadata.get(key), dict):
+                result[key] = json_native(metadata[key])
+            elif key == "image_assets" and isinstance(metadata.get(key), list):
+                result[key] = json_native(metadata[key])
         return result or None
 
     @staticmethod

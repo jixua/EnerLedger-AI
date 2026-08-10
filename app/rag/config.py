@@ -628,6 +628,46 @@ class Settings(BaseSettings):
     MINIO_PUBLIC_ENDPOINT: Optional[str] = None
     PDF_PARSER_BACKEND: str = "opendataloader"  # 本项目固定使用 OpenDataLoader
     PDF_PARSER_FALLBACKS: str = ""
+    # OpenDataLoader 仍是主解析器；以下配置只用于页级质量门禁和不足页面补齐。
+    PDF_QUALITY_MIN_EFFECTIVE_TEXT_CHARS: int = Field(default=20, ge=1, le=1000)
+    PDF_QUALITY_IMAGE_ONLY_MAX_TEXT_CHARS: int = Field(default=8, ge=0, le=200)
+    PDF_QUALITY_IMAGE_ONLY_MIN_COVERAGE_RATIO: float = Field(default=0.6, ge=0, le=1)
+    PDF_QUALITY_MIN_OCR_CONFIDENCE: float = Field(default=0.8, ge=0, le=1)
+    # Born-digital PDF 正文与有序 ODL 输出的最低 source recall；
+    # 同一阈值也作为 output precision 门禁，防止重复或额外幻觉文本入索引。
+    PDF_QUALITY_MIN_TEXT_RETENTION_RATIO: float = Field(default=0.97, ge=0, le=1)
+    PDF_FALLBACK_RENDER_DPI: int = Field(default=280, ge=250, le=300)
+    PDF_FALLBACK_MAX_CONCURRENCY: int = Field(default=2, ge=1, le=8)
+    PDF_FALLBACK_MAX_RENDERED_PAGE_PIXELS: int = Field(default=50_000_000, ge=1)
+    PDF_FALLBACK_MAX_RENDERED_PAGE_BYTES: int = Field(
+        # Base64 data URI 仍须低于视觉协议 20 MB 请求边界。
+        default=14 * 1024 * 1024,
+        ge=1,
+    )
+    PDF_FALLBACK_MAX_STRUCTURED_REPORT_BYTES: int = Field(
+        default=4 * 1024 * 1024,
+        ge=1,
+    )
+    PDF_FALLBACK_MIN_CHART_IMAGE_COVERAGE_RATIO: float = Field(
+        default=0.08,
+        ge=0,
+        le=1,
+    )
+    PDF_CONTENT_HIGH_IMAGE_COVERAGE_RATIO: float = Field(default=0.6, ge=0, le=1)
+    PDF_MAX_PAGES: int = Field(default=1000, ge=1)
+    PDF_MAX_IMAGES: int = Field(default=2000, ge=1)
+    PDF_MAX_SINGLE_IMAGE_PIXELS: int = Field(default=50_000_000, ge=1)
+    PDF_MAX_TOTAL_IMAGE_PIXELS: int = Field(default=500_000_000, ge=1)
+    PDF_MAX_TOTAL_DECODED_IMAGE_BYTES: int = Field(default=1024 * 1024 * 1024, ge=1)
+    PDF_MAX_SINGLE_IMAGE_BYTES: int = Field(default=20 * 1024 * 1024, ge=1)
+    PDF_MAX_TOTAL_IMAGE_BYTES: int = Field(default=200 * 1024 * 1024, ge=1)
+    PDF_MAX_OUTPUT_FILES: int = Field(default=10_000, ge=1)
+    PDF_MAX_OUTPUT_DIR_BYTES: int = Field(default=500 * 1024 * 1024, ge=1)
+    OPENDATALOADER_MAX_LOG_BYTES: int = Field(default=16 * 1024 * 1024, ge=1)
+    OPENDATALOADER_TIMEOUT_SECONDS: float = Field(default=600, gt=0)
+    OPENDATALOADER_HEALTHCHECK_TIMEOUT_SECONDS: float = Field(default=5, gt=0)
+    OPENDATALOADER_TABLE_METHOD: str = "default"
+    OPENDATALOADER_MARKDOWN_WITH_HTML: bool = False
     PDF_IMAGE_UPLOAD_ASYNC: bool = True  # 是否后台异步上传 PDF 图片资产
     PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_IMAGES: int = 20  # 图片增强最多使用多少张内存图片
     PDF_IMAGE_ENHANCEMENT_MEMORY_MAX_BYTES: int = 50 * 1024 * 1024  # 图片增强内存图片总量上限
@@ -657,6 +697,8 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DOCUMENT_QUEUE_RETRY_DELAYS_SECONDS must contain non-negative integers"
             )
+        if self.OPENDATALOADER_TABLE_METHOD not in {"default", "cluster"}:
+            raise ValueError("OPENDATALOADER_TABLE_METHOD must be default or cluster")
         return self
 
     @field_validator("RAW_MARKDOWN_IMAGE_MAX_BYTES")

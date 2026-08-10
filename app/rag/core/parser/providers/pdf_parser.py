@@ -1,10 +1,12 @@
 from pathlib import Path
+from typing import Literal
 
 import fitz
 
 from app.rag.config import settings
 from app.rag.core.parser.pdf.models import PdfParseOptions
 from app.rag.core.parser.pdf.service import PdfParserService
+
 from ..base import BaseParser
 
 
@@ -34,6 +36,9 @@ class PdfParser(BaseParser):
         mineru_api_key: str | None = None,
         mineru_timeout: int | None = None,
         mineru_model_version: str | None = None,
+        opendataloader_table_method: Literal["default", "cluster"] | None = None,
+        opendataloader_markdown_with_html: bool | None = None,
+        opendataloader_timeout_seconds: float | None = None,
     ):
         super().__init__()
         self.backend = (backend or settings.PDF_PARSER_BACKEND).lower()
@@ -51,6 +56,20 @@ class PdfParser(BaseParser):
         self.mineru_api_key = mineru_api_key or settings.MINERU_API_KEY
         self.mineru_timeout = mineru_timeout or settings.MINERU_TIMEOUT
         self.mineru_model_version = mineru_model_version or settings.MINERU_MODEL_VERSION
+        resolved_table_method = (
+            opendataloader_table_method or settings.OPENDATALOADER_TABLE_METHOD
+        )
+        if resolved_table_method not in {"default", "cluster"}:
+            raise ValueError("OpenDataLoader table_method 只支持 default 或 cluster")
+        self.opendataloader_table_method = resolved_table_method
+        self.opendataloader_markdown_with_html = (
+            settings.OPENDATALOADER_MARKDOWN_WITH_HTML
+            if opendataloader_markdown_with_html is None
+            else bool(opendataloader_markdown_with_html)
+        )
+        if opendataloader_timeout_seconds is not None and opendataloader_timeout_seconds <= 0:
+            raise ValueError("OpenDataLoader timeout_seconds 必须大于 0")
+        self.opendataloader_timeout_seconds = opendataloader_timeout_seconds
         self._service = PdfParserService()
 
     def parse(self, source: Path | None) -> str:
@@ -59,10 +78,8 @@ class PdfParser(BaseParser):
         can_skip_local_pdf = (
             self.backend == "mineru" and bool(self.source_file_url) and source is None
         )
-        doc = None
         if not can_skip_local_pdf:
             self.validate_source(source)
-            doc = fitz.open(filename=str(source))
         markdown, metadata = self._service.parse(
             source,
             PdfParseOptions(
@@ -77,11 +94,22 @@ class PdfParser(BaseParser):
                 mineru_api_key=self.mineru_api_key,
                 mineru_timeout=self.mineru_timeout,
                 mineru_model_version=self.mineru_model_version,
+                opendataloader_table_method=self.opendataloader_table_method,
+                opendataloader_markdown_with_html=self.opendataloader_markdown_with_html,
+                opendataloader_timeout_seconds=self.opendataloader_timeout_seconds,
             ),
         )
         self.metadata.update(metadata)
-        self.metadata["pages_or_length"] = len(doc) if doc is not None else 0
-        self.metadata["pdf_info"] = doc.metadata if doc is not None else {}
+        # OpenDataLoader backend 的可靠性预检必须先于这个只读 metadata
+        # 的便利打开执行，否则损坏/加密 PDF 会先在此处抛出不带
+        # ``error_code`` / ``retryable`` 的通用 PyMuPDF 异常。
+        if source is not None:
+            with fitz.open(filename=str(source)) as document:
+                self.metadata["pages_or_length"] = len(document)
+                self.metadata["pdf_info"] = dict(document.metadata or {})
+        else:
+            self.metadata["pages_or_length"] = 0
+            self.metadata["pdf_info"] = {}
 
         if not markdown.strip():
             attempts = metadata.get("pdf_parser_attempts") or []

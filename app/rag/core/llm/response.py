@@ -4,7 +4,7 @@
 
 from typing import Any, List, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class UsageInfo(BaseModel):
@@ -84,6 +84,8 @@ class VisionResult(BaseModel):
     content: str
     model: str
     usage: UsageInfo
+    # 厂商结束原因用于识别 token 截断；缺失时保持兼容旧 provider。
+    finish_reason: Optional[str] = None
 
 
 class ToolCallResult(BaseModel):

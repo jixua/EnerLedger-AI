@@ -251,8 +251,15 @@ class GoogleProvider(BaseProvider):
             model=model or self.model_name,
             contents=[{"role": "user", "parts": parts}],
         )
+        candidate = ((data.get("candidates") or [{}])[0] or {})
+        prompt_feedback = data.get("promptFeedback") or {}
         return VisionResult(
             content=_extract_text(data),
             model=data.get("modelVersion", model or self.model_name),
+            # A prompt blocked before candidate generation has no candidate finishReason.
+            # Preserve promptFeedback.blockReason so the page adapter cannot mistake the
+            # empty/filtered response for a normal completion.
+            finish_reason=candidate.get("finishReason")
+            or prompt_feedback.get("blockReason"),
             usage=_usage(data),
         )

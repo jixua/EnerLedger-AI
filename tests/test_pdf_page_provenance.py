@@ -9,6 +9,7 @@ from app.rag.core.parser.pdf.service import PdfParserService
 from app.rag.core.splitter.candidate_boundary_chunker import CandidateBoundaryChunker
 from app.rag.core.splitter.stage_models import SplitInput
 from app.rag.core.splitter.stage_two_semantic_depth import SemanticDepthWindowStageTwo
+from app.rag.core.splitter.validators import CoarseChunkSetValidator
 
 
 class _LengthTokenizer:
@@ -40,15 +41,37 @@ def test_candidate_chunk_aggregates_real_page_range() -> None:
     result.elements[0].metadata["page_number"] = 3
     result.elements[1].metadata["page_number"] = 4
 
+    split_input = SplitInput(elements=result.elements)
     coarse = CandidateBoundaryChunker(
         tokenizer=_LengthTokenizer(),
         min_candidate_chunk_tokens=10_000,
-    ).run(SplitInput(elements=result.elements))
+    ).run(split_input)
 
     assert len(coarse.chunks) == 1
     assert coarse.chunks[0].metadata["page_numbers"] == [3, 4]
     assert coarse.chunks[0].metadata["start_page"] == 3
     assert coarse.chunks[0].metadata["end_page"] == 4
+
+
+def test_candidate_chunk_excludes_suppressed_assets_from_indexes_and_views() -> None:
+    result = MarkdownParser().parse(
+        "可检索正文\n\n![装饰图](https://assets.example/logo.png)"
+    )
+    result.elements[1].metadata["suppress_retrieval"] = True
+
+    split_input = SplitInput(elements=result.elements)
+    coarse = CandidateBoundaryChunker(
+        tokenizer=_LengthTokenizer(),
+        min_candidate_chunk_tokens=10_000,
+    ).run(split_input)
+
+    assert len(coarse.chunks) == 1
+    source = coarse.chunks[0]
+    assert source.source_element_indexes == [0]
+    assert [view.element_index for view in source.element_views] == [0]
+    assert source.element_types == ["paragraph"]
+    assert "装饰图" not in source.content
+    CoarseChunkSetValidator().validate(coarse, split_input)
 
 
 def test_opendataloader_angle_bracket_image_is_replaced_once_in_place() -> None:

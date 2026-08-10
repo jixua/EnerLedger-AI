@@ -1,16 +1,27 @@
 from __future__ import annotations
 
-import importlib
+import html
 import re
-import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlsplit
 
 from loguru import logger
 
 from app.rag.core.parser.pdf.base import BasePdfBackend
 from app.rag.core.parser.pdf.models import PdfBinaryAsset
+from app.rag.core.parser.pdf.reliability import (
+    OpenDataLoaderConversionError,
+    OpenDataLoaderHealthChecker,
+    OpenDataLoaderProcessRunner,
+    OpenDataLoaderRuntimeError,
+    PdfPreflightError,
+    PdfReliabilityError,
+    PdfReliabilityGuard,
+    PdfReliabilityLimits,
+    parse_java_major_version,
+)
 from app.rag.observability.logging import safe_exception_stack, truncate_log_value
 
 
@@ -23,37 +34,48 @@ class OpenDataLoaderBackend(BasePdfBackend):
 
     name = "opendataloader"
     PAGE_MARKER_TEMPLATE = "<!-- ODL_PAGE:%page-number% -->"
-    _PAGE_NUMBER_PATTERN = re.compile(r"page[-_ ]?(\d+)", re.IGNORECASE)
+    _PAGE_MARKER_PATTERN = re.compile(r"<!--\s*ODL_PAGE:(\d+)\s*-->")
+    _MARKDOWN_IMAGE_PATTERN = re.compile(
+        r"!\[[^\]]*\]\(\s*(?:<(?P<angle>[^>]+)>|(?P<plain>[^\s)]+))"
+    )
+    _HTML_IMAGE_PATTERN = re.compile(
+        r"<img\b[^>]*\bsrc\s*=\s*(?:\"(?P<double>[^\"]+)\"|'(?P<single>[^']+)'|"
+        r"(?P<bare>[^\s>]+))",
+        re.IGNORECASE,
+    )
+
+    def __init__(
+        self,
+        *,
+        limits: PdfReliabilityLimits | None = None,
+        reliability_guard: PdfReliabilityGuard | None = None,
+        process_runner: OpenDataLoaderProcessRunner | None = None,
+        health_checker: OpenDataLoaderHealthChecker | None = None,
+    ) -> None:
+        super().__init__()
+        self._limits = limits or PdfReliabilityLimits()
+        self._reliability_guard = reliability_guard or PdfReliabilityGuard(self._limits)
+        self._process_runner = process_runner or OpenDataLoaderProcessRunner()
+        self._health_checker = health_checker or OpenDataLoaderHealthChecker()
 
     def parse(self, source: Path | None, options: Any = None) -> tuple[str, list[PdfBinaryAsset]]:
         if source is None:
-            # 本 backend 不参与 MinerU URL 旁路；source 缺省视为不可解析。
-            self.metadata["opendataloader_backend_error"] = "source path 缺失"
-            return "", []
-        try:
-            opendataloader_pdf = importlib.import_module("opendataloader_pdf")
-        except ImportError as exc:
-            self.metadata["opendataloader_backend_error"] = (
-                "opendataloader-pdf 未安装，请先安装该依赖"
+            raise PdfPreflightError(
+                "OpenDataLoader 缺少本地 PDF 源路径",
+                error_code="PDF_SOURCE_MISSING",
+                retryable=False,
             )
-            logger.bind(
-                event="pdf_backend_unavailable",
-                outcome="skipped",
-                backend=self.name,
-                stage="python_dependency",
-                error_type=type(exc).__name__,
-                error_message=truncate_log_value(exc),
-                stack_trace=safe_exception_stack(exc),
-            ).warning("OpenDataLoader Python 包未安装")
-            return "", []
-
-        java_check = self._ensure_java_11_plus()
-        if java_check is not None:
-            self.metadata["opendataloader_backend_error"] = java_check
-            logger.warning(f"[OpenDataLoader] {java_check}")
-            return "", []
 
         try:
+            preflight = self._reliability_guard.inspect(source)
+            self.metadata["pdf_preflight"] = preflight.to_dict()
+            self.metadata["pdf_reliability_limits"] = self._limits.to_dict()
+
+            runtime_health = self._health_checker.check()
+            self.metadata["opendataloader_runtime_health"] = runtime_health.to_dict()
+            self.metadata["opendataloader_java_version"] = runtime_health.java_version or ""
+            runtime_health.require_ready()
+
             # 仅借用 temp_dir 隔离 output_dir / image_dir；输入 PDF 直接复用 pipeline 已经
             # 落盘的 ``source`` 路径，避免再写一份完整 bytes。
             with tempfile.TemporaryDirectory(prefix="opendataloader-") as temp_dir:
@@ -62,53 +84,75 @@ class OpenDataLoaderBackend(BasePdfBackend):
                 image_dir = output_dir / "images"
                 output_dir.mkdir(parents=True, exist_ok=True)
 
-                opendataloader_pdf.convert(
-                    input_path=[str(source)],
-                    output_dir=str(output_dir),
-                    format="markdown-with-images",
-                    markdown_page_separator=self.PAGE_MARKER_TEMPLATE,
-                    image_output="external",
-                    image_dir=str(image_dir),
-                    quiet=True,
+                table_method = getattr(options, "opendataloader_table_method", "default")
+                markdown_with_html = bool(
+                    getattr(options, "opendataloader_markdown_with_html", False)
                 )
+                if table_method not in {"default", "cluster"}:
+                    raise OpenDataLoaderRuntimeError(
+                        "OpenDataLoader table_method 只支持 default 或 cluster",
+                        error_code="ODL_CONFIG_INVALID",
+                        retryable=False,
+                    )
+
+                run_report = self._process_runner.run(
+                    source=source,
+                    output_dir=output_dir,
+                    image_dir=image_dir,
+                    page_marker_template=self.PAGE_MARKER_TEMPLATE,
+                    limits=self._limits,
+                    table_method=table_method,
+                    markdown_with_html=markdown_with_html,
+                )
+                self.metadata["opendataloader_process"] = run_report.to_dict()
 
                 markdown_path = self._find_markdown_file(output_dir)
                 if markdown_path is None:
-                    self.metadata["opendataloader_backend_error"] = "未找到 Markdown 输出文件"
-                    return "", []
+                    raise OpenDataLoaderConversionError(
+                        "OpenDataLoader 未生成 Markdown 输出文件",
+                        error_code="ODL_MARKDOWN_MISSING",
+                        retryable=False,
+                    )
 
                 markdown = markdown_path.read_text(encoding="utf-8")
-                assets = self._collect_image_assets(output_dir, image_dir)
+                if not markdown.strip():
+                    raise OpenDataLoaderConversionError(
+                        "OpenDataLoader 生成了空 Markdown",
+                        error_code="ODL_MARKDOWN_EMPTY",
+                        retryable=False,
+                    )
+                assets = self._collect_image_assets(output_dir, image_dir, markdown)
                 self.metadata["opendataloader_markdown_file"] = str(
                     markdown_path.relative_to(output_dir)
                 )
                 self.metadata["opendataloader_image_count"] = len(assets)
+                self.metadata["opendataloader_table_method"] = table_method
+                self.metadata["opendataloader_markdown_with_html"] = markdown_with_html
+                page_map = self._image_page_map(markdown)
+                self.metadata["opendataloader_image_page_map"] = {
+                    source_path: list(page_numbers)
+                    for source_path, page_numbers in sorted(page_map.items())
+                }
+                unmapped = [asset.source_path for asset in assets if asset.page_number is None]
+                if unmapped:
+                    self.metadata["opendataloader_unmapped_image_assets"] = unmapped
                 return markdown, assets
-        except FileNotFoundError as exc:
+        except PdfReliabilityError as exc:
             self.metadata["opendataloader_backend_error"] = str(exc)
+            self.metadata["opendataloader_error_code"] = exc.error_code
+            self.metadata["opendataloader_retryable"] = exc.retryable
             logger.bind(
                 event="pdf_backend_failed",
                 outcome="failed",
                 backend=self.name,
-                stage="java_runtime",
-                error_type=type(exc).__name__,
+                stage="reliability_guard",
+                error_code=exc.error_code,
+                retryable=exc.retryable,
                 error_message=truncate_log_value(exc),
-                stack_trace=safe_exception_stack(exc),
-            ).error("OpenDataLoader Java 不可用")
-            return "", []
-        except subprocess.CalledProcessError as exc:
-            error_text = (exc.stderr or exc.stdout or exc.output or str(exc)).strip()
-            self.metadata["opendataloader_backend_error"] = error_text or str(exc)
-            logger.bind(
-                event="pdf_backend_failed",
-                outcome="failed",
-                backend=self.name,
-                stage="cli_convert",
-                cli_output=truncate_log_value(error_text or exc),
                 error_type=type(exc).__name__,
                 stack_trace=safe_exception_stack(exc),
-            ).error("OpenDataLoader CLI 执行失败")
-            return "", []
+            ).error("OpenDataLoader 可靠性保护阻断解析")
+            raise
         except Exception as exc:
             self.metadata["opendataloader_backend_error"] = str(exc)
             logger.bind(
@@ -120,43 +164,23 @@ class OpenDataLoaderBackend(BasePdfBackend):
                 error_message=truncate_log_value(exc),
                 stack_trace=safe_exception_stack(exc),
             ).error("OpenDataLoader 解析异常")
-            return "", []
+            raise OpenDataLoaderConversionError(
+                f"OpenDataLoader 解析异常: {type(exc).__name__}",
+                error_code="ODL_UNEXPECTED_FAILURE",
+                retryable=True,
+            ) from exc
 
     def _ensure_java_11_plus(self) -> str | None:
-        try:
-            result = subprocess.run(
-                ["java", "-version"],
-                capture_output=True,
-                text=True,
-                check=True,
-            )
-        except FileNotFoundError:
-            return "未检测到 java 命令，OpenDataLoader 需要 Java 11+"
-        except subprocess.CalledProcessError as exc:
-            return f"执行 java -version 失败: {exc}"
+        """Backward-compatible health helper used by focused runtime tests."""
 
-        version_output = (result.stderr or result.stdout or "").strip()
-        major_version = self._parse_java_major_version(version_output)
-        self.metadata["opendataloader_java_version"] = (
-            version_output.splitlines()[0] if version_output else ""
-        )
-        if major_version is None:
-            return f"无法识别 Java 版本: {version_output}"
-        if major_version < 11:
-            return f"当前 Java 版本为 {major_version}，OpenDataLoader 官方要求 Java 11+"
-        return None
+        health = self._health_checker.check()
+        self.metadata["opendataloader_runtime_health"] = health.to_dict()
+        self.metadata["opendataloader_java_version"] = health.java_version or ""
+        return None if health.ready else health.message
 
     @classmethod
     def _parse_java_major_version(cls, version_output: str) -> int | None:
-        match = re.search(r'version "([^"]+)"', version_output)
-        if not match:
-            return None
-        version = match.group(1)
-        if version.startswith("1."):
-            parts = version.split(".")
-            return int(parts[1]) if len(parts) > 1 and parts[1].isdigit() else None
-        major = version.split(".", 1)[0]
-        return int(major) if major.isdigit() else None
+        return parse_java_major_version(version_output)
 
     @staticmethod
     def _find_markdown_file(output_dir: Path) -> Path | None:
@@ -167,34 +191,77 @@ class OpenDataLoaderBackend(BasePdfBackend):
         self,
         output_dir: Path,
         image_dir: Path,
+        markdown: str,
     ) -> list[PdfBinaryAsset]:
         if not image_dir.exists():
             return []
 
         assets: list[PdfBinaryAsset] = []
+        page_map = self._image_page_map(markdown)
         next_index = 1
         for image_path in sorted(image_dir.rglob("*")):
             if not image_path.is_file():
                 continue
             ext = image_path.suffix.lstrip(".").lower() or "png"
+            source_path = image_path.relative_to(output_dir).as_posix()
+            pages = page_map.get(self._normalize_image_reference(source_path), ())
             assets.append(
                 PdfBinaryAsset(
                     kind="picture",
-                    page_number=self._guess_page_number(image_path.name),
+                    page_number=pages[0] if pages else None,
                     index=next_index,
                     ext=ext,
                     content=image_path.read_bytes(),
-                    source_path=image_path.relative_to(output_dir).as_posix(),
+                    source_path=source_path,
                 )
             )
             next_index += 1
         return assets
 
-    def _guess_page_number(self, filename: str) -> int:
-        match = self._PAGE_NUMBER_PATTERN.search(filename)
-        if not match:
-            return 1
-        try:
-            return int(match.group(1))
-        except ValueError:
-            return 1
+    @classmethod
+    def _image_page_map(cls, markdown: str) -> dict[str, tuple[int, ...]]:
+        """Map image references to ODL pages without using filename conventions."""
+
+        current_page: int | None = None
+        page_numbers_by_source: dict[str, list[int]] = {}
+        for line in (markdown or "").splitlines():
+            marker = cls._PAGE_MARKER_PATTERN.search(line)
+            if marker is not None:
+                current_page = int(marker.group(1))
+
+            references: list[str] = []
+            references.extend(
+                match.group("angle") or match.group("plain") or ""
+                for match in cls._MARKDOWN_IMAGE_PATTERN.finditer(line)
+            )
+            references.extend(
+                match.group("double")
+                or match.group("single")
+                or match.group("bare")
+                or ""
+                for match in cls._HTML_IMAGE_PATTERN.finditer(line)
+            )
+            if current_page is None:
+                continue
+            for raw_reference in references:
+                reference = cls._normalize_image_reference(raw_reference)
+                if not reference:
+                    continue
+                pages = page_numbers_by_source.setdefault(reference, [])
+                if current_page not in pages:
+                    pages.append(current_page)
+        return {
+            source_path: tuple(page_numbers)
+            for source_path, page_numbers in page_numbers_by_source.items()
+        }
+
+    @staticmethod
+    def _normalize_image_reference(raw_reference: str) -> str:
+        value = html.unescape(raw_reference or "").strip().strip("<>")
+        if not value:
+            return ""
+        parsed = urlsplit(value)
+        path = unquote(parsed.path or value).replace("\\", "/")
+        while path.startswith("./"):
+            path = path[2:]
+        return path.lstrip("/")

@@ -4,24 +4,23 @@ OpenAI Provider - 真实 API 集成
 """
 
 import time
-from typing import AsyncIterator, List, Union, Optional
+from typing import AsyncIterator, List, Optional, Union
 
 import httpx
 
 from app.rag.core.llm.base_provider import BaseProvider
+from app.rag.core.llm.exceptions import (
+    AuthenticationError,
+    ProviderConnectionError,
+    RateLimitError,
+)
 from app.rag.core.llm.interfaces import CapabilityType
 from app.rag.core.llm.providers._sse import iter_sse_json
 from app.rag.core.llm.response import (
+    EmbeddingResult,
     GenerateResult,
     StreamChunk,
-    EmbeddingResult,
     UsageInfo,
-)
-from app.rag.core.llm.exceptions import (
-    ProviderException,
-    AuthenticationError,
-    RateLimitError,
-    ProviderConnectionError,
 )
 
 
@@ -445,6 +444,7 @@ class OpenAICompatibleProvider(BaseProvider):
         return VisionResult(
             content=message.get("content") or "",
             model=response.get("model", model or self.model_name),
+            finish_reason=response["choices"][0].get("finish_reason"),
             usage=UsageInfo(
                 prompt_tokens=usage.get("prompt_tokens", 0),
                 completion_tokens=usage.get("completion_tokens", 0),

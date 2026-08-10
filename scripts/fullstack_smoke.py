@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import mimetypes
 import os
 import sys
 import time
@@ -14,6 +15,7 @@ import httpx
 BASE_URL = os.getenv("FULLSTACK_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
 USER_ID = os.getenv("FULLSTACK_USER_ID", "1")
 POLL_TIMEOUT = int(os.getenv("FULLSTACK_POLL_TIMEOUT_SECONDS", "420"))
+QUERY = os.getenv("FULLSTACK_SMOKE_QUERY", "天然气燃烧排放如何核算？").strip()
 HEADERS = {"X-User-Id": USER_ID, "Accept": "application/json"}
 
 
@@ -28,6 +30,13 @@ def active_model_id(models: list[dict], capability: str) -> int:
         if model.get("is_active") and model.get("capability") == capability:
             return int(model["id"])
     raise RuntimeError(f"缺少启用的 {capability} 模型配置")
+
+
+def optional_active_model_id(models: list[dict], capability: str) -> int | None:
+    for model in models:
+        if model.get("is_active") and model.get("capability") == capability:
+            return int(model["id"])
+    return None
 
 
 def consume_sse(response: httpx.Response) -> list[str]:
@@ -56,19 +65,23 @@ def main() -> int:
         dense_id = active_model_id(models, "EMBEDDING")
         sparse_id = active_model_id(models, "SPARSE_EMBEDDING")
         chat_id = active_model_id(models, "CHAT")
+        vision_id = optional_active_model_id(models, "VISION")
         dataset_name = f"前后端联调-{uuid4().hex[:8]}"
 
         try:
+            dataset_payload = {
+                "name": dataset_name,
+                "description": "自动化全栈联调临时数据集",
+                "dense_embedding_config_id": dense_id,
+                "sparse_embedding_config_id": sparse_id,
+                "chat_config_id": chat_id,
+            }
+            if vision_id is not None:
+                dataset_payload["vision_config_id"] = vision_id
             dataset = require(
                 client.post(
                     f"{BASE_URL}/api/v1/datasets",
-                    json={
-                        "name": dataset_name,
-                        "description": "自动化全栈联调临时数据集",
-                        "dense_embedding_config_id": dense_id,
-                        "sparse_embedding_config_id": sparse_id,
-                        "chat_config_id": chat_id,
-                    },
+                    json=dataset_payload,
                 )
             ).json()
             dataset_id = int(dataset["id"])
@@ -94,10 +107,14 @@ def main() -> int:
             if not file_path.is_file():
                 raise RuntimeError(f"联调文件不存在: {file_path}")
             with file_path.open("rb") as source:
+                content_type = (
+                    mimetypes.guess_type(file_path.name)[0]
+                    or "application/octet-stream"
+                )
                 uploaded = require(
                     client.post(
                         f"{BASE_URL}/api/v1/datasets/{dataset_id}/documents",
-                        files={"file": (file_path.name, source, "text/html")},
+                        files={"file": (file_path.name, source, content_type)},
                     )
                 ).json()
             document_id = int(uploaded["document_id"])
@@ -106,6 +123,7 @@ def main() -> int:
 
             deadline = time.monotonic() + POLL_TIMEOUT
             status = uploaded["status"]
+            current: dict = uploaded
             while time.monotonic() < deadline:
                 current = require(client.get(f"{BASE_URL}/api/v1/documents/{document_id}")).json()
                 status = current["status"]
@@ -114,13 +132,26 @@ def main() -> int:
                     break
                 time.sleep(2)
             if status != "READY":
-                raise RuntimeError(f"文档未成功完成解析，终态={status}")
+                quality = current.get("parse_quality") or {}
+                diagnostics = {
+                    "status": status,
+                    "error_code": current.get("error_code"),
+                    "error_message": current.get("error_message"),
+                    "quality_status": current.get("parse_quality_status"),
+                    "quality_warnings": quality.get("warnings"),
+                    "ocr_pages": quality.get("ocr_pages"),
+                    "low_confidence_pages": quality.get("low_confidence_pages"),
+                }
+                raise RuntimeError(
+                    "文档未成功完成解析："
+                    + json.dumps(diagnostics, ensure_ascii=False, separators=(",", ":"))
+                )
 
             recall = require(
                 client.post(
                     f"{BASE_URL}/api/v1/recall",
                     json={
-                        "query": "天然气燃烧排放如何核算？",
+                        "query": QUERY,
                         "dataset_ids": [dataset_id],
                         "include_content": True,
                     },
@@ -133,7 +164,7 @@ def main() -> int:
                 "POST",
                 f"{BASE_URL}/api/v1/rag/stream",
                 headers={**HEADERS, "Accept": "text/event-stream"},
-                json={"query": "天然气燃烧排放如何核算？", "dataset_ids": [dataset_id]},
+                json={"query": QUERY, "dataset_ids": [dataset_id]},
                 timeout=420.0,
             ) as response:
                 require(response)

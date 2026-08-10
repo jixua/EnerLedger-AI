@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react';
 import { ArrowRight, Database, FileText, Loader2, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
 import { Link, useNavigate } from 'react-router-dom';
+import { isDocumentRetrievalReady } from '../lib/parse-quality';
 import { useApp } from '../state/AppContext';
 
 function modelId(model) {
@@ -52,6 +53,7 @@ export function DatasetsPage() {
     dense_embedding_config_id: '',
     sparse_embedding_config_id: '',
     chat_config_id: '',
+    vision_config_id: '',
   });
 
   const activeModels = useMemo(() => models.filter((model) => model?.is_active !== false && model?.isActive !== false), [models]);
@@ -61,6 +63,7 @@ export function DatasetsPage() {
     [activeModels],
   );
   const chatModels = useMemo(() => activeModels.filter((model) => modelCapability(model) === 'CHAT'), [activeModels]);
+  const visionModels = useMemo(() => activeModels.filter((model) => modelCapability(model) === 'VISION'), [activeModels]);
   const canCreate = denseModels.length > 0 && sparseModels.length > 0;
   const normalizedKeyword = keyword.trim().toLowerCase();
   const filteredDatasets = useMemo(
@@ -83,6 +86,7 @@ export function DatasetsPage() {
       dense_embedding_config_id: denseModels.length === 1 ? String(modelId(denseModels[0])) : '',
       sparse_embedding_config_id: sparseModels.length === 1 ? String(modelId(sparseModels[0])) : '',
       chat_config_id: chatModels.length === 1 ? String(modelId(chatModels[0])) : '',
+      vision_config_id: '',
     });
     setCreateOpen(true);
   }
@@ -109,6 +113,7 @@ export function DatasetsPage() {
         dense_embedding_config_id: Number(form.dense_embedding_config_id),
         sparse_embedding_config_id: Number(form.sparse_embedding_config_id),
         chat_config_id: form.chat_config_id ? Number(form.chat_config_id) : null,
+        vision_config_id: form.vision_config_id ? Number(form.vision_config_id) : null,
       });
       setCreateOpen(false);
       if (created?.id) navigate(`/datasets/${created.id}`);
@@ -187,7 +192,7 @@ export function DatasetsPage() {
         <section className="dataset-grid" aria-label="数据集列表">
           {filteredDatasets.map((dataset) => {
             const items = datasetDocuments(documents, dataset.id);
-            const readyCount = items.filter((document) => document.status === 'READY').length;
+            const readyCount = items.filter(isDocumentRetrievalReady).length;
             return (
               <article className="dataset-card" key={dataset.id}>
                 <button type="button" className="dataset-card__main" onClick={() => navigate(`/datasets/${dataset.id}`)}>
@@ -203,7 +208,7 @@ export function DatasetsPage() {
                 </button>
                 <footer className="dataset-card__footer">
                   <span><FileText size={13} /> {items.length} 个文档</span>
-                  <span>{readyCount} 个可用</span>
+                  <span>{readyCount} 个可检索</span>
                   <span>更新于 {formatDate(dataset.updated_at ?? dataset.updatedAt)}</span>
                   <span className="dataset-card__pending-actions">
                     <button type="button" className="icon-button icon-button--quiet" onClick={() => navigate(`/datasets/${dataset.id}?tab=settings`)} aria-label={`编辑 ${dataset.name}`}><Pencil size={13} /></button>
@@ -260,13 +265,24 @@ export function DatasetsPage() {
                   </select>
                 </label>
               </div>
-              <label className="form-field">
-                <span>对话模型 <small>可选，未绑定时需在对话中选择</small></span>
-                <select value={form.chat_config_id} onChange={(event) => updateForm('chat_config_id', event.target.value)}>
-                  <option value="">暂不绑定</option>
-                  {chatModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}
-                </select>
-              </label>
+              <div className="form-grid form-grid--two">
+                <label className="form-field">
+                  <span>对话模型 <small>可选</small></span>
+                  <select value={form.chat_config_id} onChange={(event) => updateForm('chat_config_id', event.target.value)}>
+                    <option value="">暂不绑定</option>
+                    {chatModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}
+                  </select>
+                  <small>未绑定时，可在对话中选择模型。</small>
+                </label>
+                <label className="form-field">
+                  <span>PDF OCR / 视觉模型 <small>可选</small></span>
+                  <select value={form.vision_config_id} onChange={(event) => updateForm('vision_config_id', event.target.value)}>
+                    <option value="">暂不绑定</option>
+                    {visionModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}
+                  </select>
+                  <small>仅在 PDF 需要 OCR、图表解释或页面补全时调用；未绑定时，相应 PDF 会被质量门禁阻断。</small>
+                </label>
+              </div>
 
               {formError ? <p className="form-error" role="alert">{formError}</p> : null}
 

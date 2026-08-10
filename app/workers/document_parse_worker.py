@@ -22,6 +22,7 @@ configure_nltk_data_path()
 
 from app.domain.models import Document  # noqa: E402
 from app.rag.config import settings  # noqa: E402
+from app.rag.core.parser.pdf.reliability import OpenDataLoaderHealthChecker  # noqa: E402
 from app.rag.database import (  # noqa: E402
     close_database,
     get_db_context,
@@ -90,6 +91,12 @@ class DocumentParseWorker:
         self.stop_event = asyncio.Event()
 
     async def run(self) -> None:
+        health = await asyncio.to_thread(
+            OpenDataLoaderHealthChecker(
+                timeout_seconds=settings.OPENDATALOADER_HEALTHCHECK_TIMEOUT_SECONDS
+            ).check
+        )
+        health.require_ready()
         Path(settings.PARSE_TEMP_DIR).mkdir(parents=True, exist_ok=True)
         consumers = [
             asyncio.create_task(
@@ -183,8 +190,21 @@ class DocumentParseWorker:
             # 正常 stop 不会取消正在处理的任务；进程被强制取消时让 lease 自然过期回收。
             raise
         except Exception as exc:
+            queue_error = self._queue_failure(exc)
+            retryable = bool(getattr(queue_error, "retryable", True))
+            error_code = getattr(queue_error, "error_code", None)
+            parse_quality_status = getattr(queue_error, "quality_status", None)
+            parse_quality = getattr(queue_error, "quality_report", None)
             async with self.session_context_factory() as db:
-                target_status = await self.queue.fail_or_retry(db, claim, exc, retryable=True)
+                target_status = await self.queue.fail_or_retry(
+                    db,
+                    claim,
+                    queue_error,
+                    retryable=retryable,
+                    error_code=error_code,
+                    parse_quality_status=parse_quality_status,
+                    parse_quality=parse_quality if isinstance(parse_quality, dict) else None,
+                )
             logger.bind(
                 event="document_parse_failed",
                 document_id=claim.document_id,
@@ -196,6 +216,37 @@ class DocumentParseWorker:
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await heartbeat
+
+    @classmethod
+    def _queue_failure(cls, error: Exception) -> Exception:
+        """Preserve the primary parser error when cleanup also failed.
+
+        ``SimpleDocumentIngestionService`` may raise an ``ExceptionGroup`` containing
+        the quality/reliability failure plus rollback or object-cleanup errors.  Queue
+        retry semantics and the persisted quality report must come from the primary
+        parser failure rather than from the wrapper group.
+        """
+
+        if not isinstance(error, BaseExceptionGroup):
+            return error
+        flattened: list[Exception] = []
+        for child in error.exceptions:
+            if isinstance(child, Exception):
+                selected = cls._queue_failure(child)
+                flattened.append(selected)
+        if not flattened:
+            return error
+        return next(
+            (item for item in flattened if isinstance(getattr(item, "quality_report", None), dict)),
+            next(
+                (
+                    item
+                    for item in flattened
+                    if isinstance(getattr(item, "retryable", None), bool)
+                ),
+                flattened[0],
+            ),
+        )
 
     async def _heartbeat(self, claim: DocumentClaim, lease_lost: asyncio.Event) -> None:
         # stop 只停止领取新任务；已领取任务在完成前仍必须续租。
