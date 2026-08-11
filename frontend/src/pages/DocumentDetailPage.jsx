@@ -101,7 +101,7 @@ function findDocument(documents, targetId) {
   return Object.values(documents || {}).flat().find((item) => Number(documentId(item)) === Number(targetId));
 }
 
-function BoundaryMarker({ entry, approximate = false }) {
+function BoundaryMarker({ entry, approximate = false, renderAnchor = true }) {
   const { boundary, readerIndex, anchorId } = entry;
   const sequence = readerIndex + 1;
   const previousSequence = sequence - 1;
@@ -118,7 +118,7 @@ function BoundaryMarker({ entry, approximate = false }) {
     : `分片 ${String(previousSequence).padStart(2, "0")} 结束 · 分片 ${String(sequence).padStart(2, "0")} 开始`;
 
   return (
-    <div id={anchorId} className="document-chunk-boundary__item" data-chunk-sequence={sequence}>
+    <div id={renderAnchor ? anchorId : undefined} className="document-chunk-boundary__item" data-chunk-sequence={sequence}>
       <details>
         <summary aria-label={label}>
           <Layers3 size={14} aria-hidden="true" />
@@ -138,6 +138,51 @@ function BoundaryMarker({ entry, approximate = false }) {
   );
 }
 
+function GroupedBoundaryMarker({ entries, approximate = false }) {
+  const firstEntry = entries[0];
+  const lastEntry = entries[entries.length - 1];
+  const firstChunk = firstEntry.readerIndex === 0 ? 1 : firstEntry.readerIndex;
+  const lastChunk = lastEntry.readerIndex + 1;
+  const chunkRange = firstChunk === lastChunk
+    ? `分片 ${String(lastChunk).padStart(2, "0")}`
+    : `分片 ${String(firstChunk).padStart(2, "0")}–${String(lastChunk).padStart(2, "0")}`;
+
+  return (
+    <div className="document-chunk-boundary__cluster">
+      {entries.map((entry) => (
+        <span
+          key={entry.anchorId}
+          id={entry.anchorId}
+          className="document-chunk-boundary__anchor"
+          data-chunk-sequence={entry.readerIndex + 1}
+          aria-hidden="true"
+        />
+      ))}
+      <details>
+        <summary aria-label={`此处包含 ${entries.length} 个分片边界`}>
+          <Layers3 size={14} aria-hidden="true" />
+          <span>此段内包含 {entries.length} 个分片边界</span>
+          {approximate ? <em>近似位置</em> : null}
+          <small>{chunkRange} · 同一表格或段落内部</small>
+        </summary>
+        <div className="document-chunk-boundary__cluster-body">
+          <p>这些切点位于同一表格或段落内部，正文显示在相邻文档内容中，不是空分片。</p>
+          <div className="document-chunk-boundary__cluster-list">
+            {entries.map((entry) => (
+              <BoundaryMarker
+                key={entry.anchorId}
+                entry={entry}
+                approximate={approximate}
+                renderAnchor={false}
+              />
+            ))}
+          </div>
+        </div>
+      </details>
+    </div>
+  );
+}
+
 function BoundaryGroup({ entries, approximate = false }) {
   if (!entries.length) return null;
   return (
@@ -148,7 +193,9 @@ function BoundaryGroup({ entries, approximate = false }) {
     >
       <span className="document-chunk-boundary__line" aria-hidden="true" />
       <div className="document-chunk-boundary__items">
-        {entries.map((entry) => <BoundaryMarker key={entry.anchorId} entry={entry} approximate={approximate} />)}
+        {entries.length > 1
+          ? <GroupedBoundaryMarker entries={entries} approximate={approximate} />
+          : <BoundaryMarker entry={entries[0]} approximate={approximate} />}
       </div>
       <span className="document-chunk-boundary__line" aria-hidden="true" />
     </div>

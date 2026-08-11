@@ -1078,6 +1078,8 @@
 .document-chunk-boundary__line { height: 1px; background: color-mix(in srgb, var(--action) 28%, var(--hairline)); }
 .document-chunk-boundary__items { min-width: 0; display: grid; justify-items: center; gap: 6px; }
 .document-chunk-boundary__item { min-width: 0; max-width: 100%; scroll-margin-top: 24px; }
+.document-chunk-boundary__cluster { position: relative; min-width: 0; max-width: min(720px, 100%); }
+.document-chunk-boundary__anchor { position: absolute; inset: 0 auto auto 0; width: 1px; height: 1px; scroll-margin-top: 24px; pointer-events: none; }
 .document-chunk-boundary details { min-width: 0; text-align: center; }
 .document-chunk-boundary summary { display: inline-flex; max-width: 100%; align-items: center; justify-content: center; flex-wrap: wrap; gap: 5px 8px; padding: 6px 10px; border: 1px solid color-mix(in srgb, var(--action) 24%, var(--hairline)); border-radius: var(--radius-pill); background: color-mix(in srgb, var(--action) 5%, var(--surface)); color: var(--action); cursor: pointer; list-style: none; font-size: 12px; font-weight: 650; line-height: 1.35; }
 .document-chunk-boundary summary::-webkit-details-marker { display: none; }
@@ -1087,6 +1089,10 @@
 .document-chunk-boundary summary em { padding: 2px 6px; border-radius: var(--radius-pill); background: var(--warning-soft); color: var(--warning); font-size: 10px; font-style: normal; font-weight: 650; }
 .document-chunk-boundary__detail { max-width: 620px; display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: 5px 12px; margin: 8px auto 0; color: var(--muted); font-size: 11px; line-height: 1.5; }
 .document-chunk-boundary__detail code { max-width: 100%; padding: 2px 5px; overflow-wrap: anywhere; border-radius: 4px; background: var(--surface-soft); font: 500 10px/1.4 var(--font-mono); }
+.document-chunk-boundary__cluster-body { max-width: 680px; margin: 10px auto 0; padding: 12px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface-soft); }
+.document-chunk-boundary__cluster-body > p { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.55; }
+.document-chunk-boundary__cluster-list { display: grid; justify-items: center; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--hairline); }
+.document-chunk-boundary__cluster-list summary { padding: 5px 9px; background: var(--surface); font-size: 11px; }
 .document-reader-image-state { min-height: 84px; display: inline-flex; align-items: center; justify-content: center; gap: 9px; width: 100%; margin: 14px 0; padding: 14px; border: 1px dashed var(--hairline-strong); border-radius: 8px; background: var(--surface-soft); color: var(--muted); font-size: 12px; }
 .document-reader-image-state > span { display: inline-flex; flex-direction: column; gap: 3px; }
 .document-reader-image-state small { color: var(--muted); font-size: 11px; }
