@@ -109,8 +109,10 @@ function boundaryNode(entries, approximate) {
 }
 
 function isParserPageMarker(node) {
-  return node?.type === "html"
-    && /^\s*<!--\s*ODL_PAGE\s*:\s*\d+\s*-->\s*$/i.test(String(node.value ?? ""));
+  if (node?.type !== "html") return false;
+  const value = String(node.value ?? "");
+  return /^\s*<!--\s*ODL_PAGE\s*:\s*\d+\s*-->\s*$/i.test(value)
+    || /^\s*<!--\s*PAGE_FALLBACK\s*:\s*(?:VISION|OCR)\s*-->\s*$/i.test(value);
 }
 
 /**

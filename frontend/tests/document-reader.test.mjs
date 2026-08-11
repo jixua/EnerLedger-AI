@@ -97,12 +97,14 @@ test("createDocumentBoundaryPlugin exposes a remark transformer", () => {
   assert.equal(tree.children[0].type, "documentChunkBoundary");
 });
 
-test("parser-only ODL page markers stay out of the continuous reading document", () => {
+test("parser-only page markers stay out of the continuous reading document", () => {
   const tree = {
     type: "root",
     children: [
       { type: "html", value: "<!-- ODL_PAGE:1 -->", position: { start: { line: 1 }, end: { line: 1 } } },
-      { type: "heading", depth: 1, children: [], position: { start: { line: 3 }, end: { line: 3 } } },
+      { type: "html", value: "<!-- PAGE_FALLBACK:VISION -->", position: { start: { line: 2 }, end: { line: 2 } } },
+      { type: "html", value: "<!-- PAGE_FALLBACK:OCR -->", position: { start: { line: 3 }, end: { line: 3 } } },
+      { type: "heading", depth: 1, children: [], position: { start: { line: 4 }, end: { line: 4 } } },
       { type: "html", value: "<!-- keep this author comment -->", position: { start: { line: 5 }, end: { line: 5 } } },
     ],
   };
@@ -111,6 +113,8 @@ test("parser-only ODL page markers stay out of the continuous reading document",
   insertDocumentBoundaryNodes(tree, normalized, "line");
 
   assert.equal(tree.children.some((node) => node.value === "<!-- ODL_PAGE:1 -->"), false);
+  assert.equal(tree.children.some((node) => node.value === "<!-- PAGE_FALLBACK:VISION -->"), false);
+  assert.equal(tree.children.some((node) => node.value === "<!-- PAGE_FALLBACK:OCR -->"), false);
   assert.equal(tree.children.some((node) => node.value === "<!-- keep this author comment -->"), true);
   assert.equal(tree.children[0].type, "documentChunkBoundary");
   assert.equal(tree.children[1].type, "heading");
