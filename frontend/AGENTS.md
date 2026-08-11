@@ -12,6 +12,7 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 
 - The application home is conversation-first. `/` is the primary conversation screen and `/playground` is only a compatibility redirect; do not reintroduce a dashboard hero ahead of the composer.
 - Follow LinkRag's single-message-column conversation anatomy: centered empty composer, bottom-docked composer after the first message, dataset/model controls inside the composer, and sources in an on-demand drawer.
+- Conversation answers must render valid `[片段N]` mentions as clickable citation chips. Clicking one opens the right-side `召回片段` drawer, scrolls to and highlights the matching citation, while the message-level recall action exposes every hit and distinguishes hits that actually entered the answer context.
 - Conversation composer dataset/model selectors use mutually exclusive custom popovers. Dataset selection remains multi-select with an explicit `完成` action plus outside-click/Escape dismissal; model selection is single-select and closes immediately after selection. Do not use native select menus for these controls.
 - The conversation composer exposes focus only on its outer shell. The inner textarea must not render a second border, outline, or focus shadow.
 - Use standard product terms: `对话`, `新建对话`, `文档`, `数据集`, `混合检索`, `召回片段`, `来源与引用`. Do not use `知识问答`, `发起问答`, or `知识文件` in the UI.
@@ -24,3 +25,4 @@ Build app UI in `src/`. Keep `.openai/hosting.json`, `worker/index.js`, `scripts
 - Real API mode is the default. Backend/network failures must be shown explicitly and must not silently replace business data with preview records. Preview data is allowed only when `VITE_DEMO_MODE=true` is deliberately configured.
 - Document upload is asynchronous: successful uploads are actively dispatched through RabbitMQ and normally return `QUEUED`; MySQL remains the status and lease source of truth. Do not describe upload as synchronous parsing or claim that there is a separate task table.
 - While any document is `QUEUED` or `PROCESSING`, refresh document state from the backend at a bounded interval; manual refresh remains available. Do not simulate queue progress in real API mode.
+- Real API mode requires the single administrator login. Store and send the returned Bearer token, return to `/login` on 401, and never add a registration entry point or restore the trusted `X-User-Id` header.

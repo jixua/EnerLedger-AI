@@ -5,6 +5,8 @@ def test_openapi_contains_every_frontend_runtime_endpoint() -> None:
     paths = app.openapi()["paths"]
     required = {
         ("get", "/health/live"),
+        ("post", "/api/v1/auth/login"),
+        ("get", "/api/v1/auth/me"),
         ("get", "/api/v1/system/status"),
         ("get", "/api/v1/llm/configs"),
         ("post", "/api/v1/llm/configs"),
@@ -38,6 +40,12 @@ def test_openapi_contains_every_frontend_runtime_endpoint() -> None:
     )
 
     assert missing == []
+
+
+def test_backend_does_not_expose_registration_endpoint() -> None:
+    paths = app.openapi()["paths"]
+
+    assert all("register" not in path for path in paths)
 
 
 def test_document_and_model_responses_do_not_expose_secrets_or_queue_tokens() -> None:

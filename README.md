@@ -11,7 +11,7 @@
 - 上传入口支持 PDF、DOC/DOCX、HTML/HTM；旧版二进制 `.doc` 由
   LibreOffice 独立进程限时转换为 DOCX，再进入同一套 Mammoth 结构解析。
 - 文档上传后立即向 RabbitMQ 发布只携带文档 ID 的持久消息，独立 `parse-worker` 通过 `basic_consume` 主动接收并完成解析、切分和三路索引；MySQL 仅保存状态、租约与幂等真值。
-- MySQL 只保留 `dataset`、`document`、`document_chunk`、`llm_config` 四张业务表。
+- MySQL 只保留 `dataset`、`document`、`document_chunk`、`llm_config` 四张业务表；单管理员身份由部署配置提供，不新增用户表，也不提供注册接口。
 - 不建立解析日志、阶段流水线、会话、消息、用量日志、厂商目录或模型目录表。
 - `document.status` 使用 `QUEUED`、`PROCESSING`、`READY`、`FAILED`。只有 `READY` 文档可以参与检索。
 - `POST /api/v1/rag/stream` 在一次请求中完成三路召回、上下文拼装和 LLM SSE 输出；当前不持久化会话或回答历史。
@@ -118,7 +118,7 @@ docker compose exec api alembic current
 docker compose exec api alembic heads
 ```
 
-正常结果应指向 `0005_dataset_vision_config`。
+正常结果应指向 `0006_document_dispatch_outbox`。
 
 ## 本机开发启动
 
@@ -189,26 +189,27 @@ Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。
 
 | 顺序 | 接口 | 作用 |
 | --- | --- | --- |
-| 1 | `POST /api/v1/llm/configs` | 分别创建 Dense、Sparse、Chat，以及按需创建 Vision 配置 |
-| 2 | `POST /api/v1/datasets` | 绑定模型配置并创建数据集 |
-| 3 | `POST /api/v1/datasets/{dataset_id}/documents` | 流式上传原文件，返回 `202 + QUEUED` |
-| 4 | `GET /api/v1/documents/{document_id}` | 查询排队、处理、成功或失败状态 |
-| 5 | `GET /api/v1/documents/{document_id}/preview/content` | 流式读取当前版本的完整解析 Markdown |
-| 6 | `GET /api/v1/documents/{document_id}/preview/map` | 一次读取当前版本的主体分片边界图 |
-| 7 | `GET /api/v1/documents/{document_id}/preview/versions/{version}/assets/{asset_ref}` | 租户校验后流式读取 Markdown 内的私有图片 |
-| 8 | `GET /api/v1/documents/{document_id}/chunks` | 按当前文档版本分页查看分片正文、顺序、类型与来源信息 |
-| 9 | `GET /api/v1/documents` | 按用户查询全局解析队列，可按数据集和状态筛选 |
-| 10 | `POST /api/v1/recall` | 仅执行三路召回与融合 |
-| 11 | `POST /api/v1/rag/stream` | 混合检索后用 Chat 模型流式生成回复 |
-| 12 | `GET /api/v1/system/status` | 查询中间件、持久队列和可观测 worker 状态 |
+| 1 | `POST /api/v1/auth/login` | 使用部署配置中的管理员账号换取 Bearer JWT |
+| 2 | `POST /api/v1/llm/configs` | 分别创建 Dense、Sparse、Chat，以及按需创建 Vision 配置 |
+| 3 | `POST /api/v1/datasets` | 绑定模型配置并创建数据集 |
+| 4 | `POST /api/v1/datasets/{dataset_id}/documents` | 流式上传原文件，返回 `202 + QUEUED` |
+| 5 | `GET /api/v1/documents/{document_id}` | 查询排队、处理、成功或失败状态 |
+| 6 | `GET /api/v1/documents/{document_id}/preview/content` | 流式读取当前版本的完整解析 Markdown |
+| 7 | `GET /api/v1/documents/{document_id}/preview/map` | 一次读取当前版本的主体分片边界图 |
+| 8 | `GET /api/v1/documents/{document_id}/preview/versions/{version}/assets/{asset_ref}` | 租户校验后流式读取 Markdown 内的私有图片 |
+| 9 | `GET /api/v1/documents/{document_id}/chunks` | 按当前文档版本分页查看分片正文、顺序、类型与来源信息 |
+| 10 | `GET /api/v1/documents` | 按用户查询全局解析队列，可按数据集和状态筛选 |
+| 11 | `POST /api/v1/recall` | 仅执行三路召回与融合 |
+| 12 | `POST /api/v1/rag/stream` | 混合检索后用 Chat 模型流式生成回复 |
+| 13 | `GET /api/v1/system/status` | 查询中间件、持久队列和可观测 worker 状态 |
 
-当前接口均使用 `X-User-Id: <正整数>` 作为临时租户边界；这不是生产级鉴权。接口字段以运行中的 OpenAPI `/docs` 为准。
+除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。当前产品只配置一个管理员，不提供注册入口；管理员密码只以 scrypt 哈希保存在部署环境中。接口字段以运行中的 OpenAPI `/docs` 为准。
 
 SSE 示例：
 
 ```bash
 curl -N http://127.0.0.1:8000/api/v1/rag/stream \
-  -H 'X-User-Id: 1' \
+  -H 'Authorization: Bearer <登录接口返回的 access_token>' \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream' \
   -d '{"query":"企业天然气燃烧排放如何核算？","dataset_ids":[1]}'
@@ -223,9 +224,11 @@ curl -N http://127.0.0.1:8000/api/v1/rag/stream \
 - `READY`：Markdown/资产、PDF 质量门禁与三路索引均完成，可以召回。
 - `FAILED`：自动退避重试耗尽后失败，原因记录在 `error_code/error_message`，不会参与召回。
 
-解析队列直接复用现有 MySQL 8 的 `document` 表，通过 `FOR UPDATE SKIP LOCKED`、
-可续租 lease 和 token CAS 实现多 worker 竞争、崩溃回收与旧 worker fencing；没有新增
-Redis/RabbitMQ/Kafka，也没有增加第五张业务表。失败任务按
+RabbitMQ 负责主动投递，MySQL `document` 行同时保存解析 lease 和 outbox 投递状态。
+文档状态与待投递标记在一次事务内提交；API 随后尝试发布，后台补偿器会用
+`FOR UPDATE SKIP LOCKED` 领取未投递或投递 lease 已过期的记录。因此进程在数据库提交后、
+RabbitMQ 确认前后崩溃都能恢复；极端窗口可能重复投递，但文档版本和 lease fencing 会拒绝
+重复处理。该方案不增加第五张业务表。失败任务按
 `DOCUMENT_QUEUE_RETRY_DELAYS_SECONDS` 退避，达到 `DOCUMENT_QUEUE_MAX_ATTEMPTS` 后收敛为
 `FAILED`。可使用 `POST /api/v1/documents/{id}/retry` 重试失败/过期任务，或使用
 `POST /api/v1/documents/{id}/reparse` 基于同一原文件创建新版本；重新解析版本递增，普通
@@ -276,7 +279,7 @@ Markdown，并在 `X-Document-Version` 响应头中返回版本；`preview/map` 
 前端应校验两个接口的版本一致后，再按从 0 开始的 `start_line/end_line` 绘制分割线。
 对私有 MinIO 中属于当前 Markdown 目录的图片，`preview/content` 会在流出前重写为
 `preview/.../assets/{asset_ref}` 代理地址，不会暴露 bucket 或完整 object key。资产代理
-会重新校验 `X-User-Id`、READY 状态、当前版本和路径边界。因此前端渲染图片时
+会重新校验 Bearer JWT、READY 状态、当前版本和路径边界。因此前端渲染图片时
 需先使用当前 API 身份头 `fetch` 该地址，再将返回的 Blob URL 交给 `<img>`；浏览器
 原生 `<img src>` 不会自动携带自定义请求头。
 

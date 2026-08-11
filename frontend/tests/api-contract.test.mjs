@@ -20,7 +20,7 @@ const originalFetch = globalThis.fetch;
 
 afterEach(() => {
   globalThis.fetch = originalFetch;
-  configureApi({ baseUrl: "", userId: "1" });
+  configureApi({ baseUrl: "", accessToken: "" });
 });
 
 function jsonResponse(payload, status = 200) {
@@ -30,8 +30,8 @@ function jsonResponse(payload, status = 200) {
   });
 }
 
-test("document queue list uses real global endpoint and tenant header", async () => {
-  configureApi({ baseUrl: "http://api.local", userId: "7" });
+test("document queue list uses real global endpoint and bearer token", async () => {
+  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
   let captured;
   globalThis.fetch = async (url, init) => {
     captured = { url, init };
@@ -41,7 +41,8 @@ test("document queue list uses real global endpoint and tenant header", async ()
   const result = await listAllDocuments({ status: "processing" });
 
   assert.equal(captured.url, "http://api.local/api/v1/documents?status=PROCESSING");
-  assert.equal(captured.init.headers.get("X-User-Id"), "7");
+  assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
+  assert.equal(captured.init.headers.get("X-User-Id"), null);
   assert.equal(result[0].document_id, 19);
 });
 
@@ -83,8 +84,8 @@ test("dataset create and update keep the optional vision model binding", async (
   assert.deepEqual(JSON.parse(requests[1].init.body), { vision_config_id: null });
 });
 
-test("document chunks request keeps pagination, filters and tenant header", async () => {
-  configureApi({ baseUrl: "http://api.local", userId: "7" });
+test("document chunks request keeps pagination, filters and bearer token", async () => {
+  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
   let captured;
   globalThis.fetch = async (url, init) => {
     captured = { url, init };
@@ -102,11 +103,11 @@ test("document chunks request keeps pagination, filters and tenant header", asyn
     captured.url,
     "http://api.local/api/v1/documents/31/chunks?offset=20&limit=10&q=%E6%8E%92%E6%94%BE%E5%9B%A0%E5%AD%90+50%25&chunk_type=table",
   );
-  assert.equal(captured.init.headers.get("X-User-Id"), "7");
+  assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
 });
 
 test("document preview content reads markdown and the response version", async () => {
-  configureApi({ baseUrl: "http://api.local", userId: "7" });
+  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
   const controller = new AbortController();
   let captured;
   globalThis.fetch = async (url, init) => {
@@ -124,7 +125,7 @@ test("document preview content reads markdown and the response version", async (
 
   assert.equal(captured.url, "http://api.local/api/v1/documents/31/preview/content");
   assert.equal(captured.init.headers.get("Accept"), "text/markdown");
-  assert.equal(captured.init.headers.get("X-User-Id"), "7");
+  assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
   assert.equal(captured.init.signal, controller.signal);
   assert.deepEqual(result, { content: "# 核算报告\n\n正文", documentVersion: 3 });
 });
@@ -152,12 +153,12 @@ test("document preview map keeps the complete boundary contract", async () => {
   const result = await getDocumentPreviewMap(31);
 
   assert.equal(captured.url, "/api/v1/documents/31/preview/map");
-  assert.equal(captured.init.headers.get("X-User-Id"), "1");
+  assert.equal(captured.init.headers.get("Authorization"), null);
   assert.deepEqual(result, payload);
 });
 
-test("protected document images are fetched as blobs with the tenant header", async () => {
-  configureApi({ baseUrl: "http://api.local", userId: "7" });
+test("protected document images are fetched as blobs with the bearer token", async () => {
+  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
   const controller = new AbortController();
   let captured;
   globalThis.fetch = async (url, init) => {
@@ -173,7 +174,7 @@ test("protected document images are fetched as blobs with the tenant header", as
 
   assert.equal(captured.url, `http://api.local${source}`);
   assert.equal(captured.init.headers.get("Accept"), "image/*");
-  assert.equal(captured.init.headers.get("X-User-Id"), "7");
+  assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
   assert.equal(captured.init.signal, controller.signal);
   assert.equal(blob.type, "image/png");
   assert.equal(isDocumentPreviewAssetUrl(source), true);

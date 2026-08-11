@@ -5,6 +5,7 @@ from app.rag.bootstrap import configure_nltk_data_path
 
 configure_nltk_data_path()
 
+import asyncio
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -13,9 +14,11 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.rag.config import settings
 from app.rag.database import close_database, init_database
 from app.rag.observability.logging import logger, setup_logger
+from app.services.document_dispatch import run_document_dispatch_reconciler
 
 setup_logger()
 
+from app.api.auth import router as auth_router
 from app.api.datasets import router as datasets_router
 from app.api.documents import router as documents_router
 from app.api.llm import router as llm_router
@@ -27,7 +30,14 @@ from app.api.system import router as system_router
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_database()
+    dispatch_stop = asyncio.Event()
+    dispatch_task = asyncio.create_task(
+        run_document_dispatch_reconciler(dispatch_stop),
+        name="document-dispatch-reconciler",
+    )
     yield
+    dispatch_stop.set()
+    await dispatch_task
     from app.rag.application.recall_pipeline_provider import (
         close_recall_pipeline_resources,
     )
@@ -52,9 +62,10 @@ app.add_middleware(
     allow_origins=settings.cors_allow_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Accept", "Content-Type", "X-Request-Id", "X-User-Id"],
+    allow_headers=["Accept", "Authorization", "Content-Type", "X-Request-Id"],
     expose_headers=["Location", "X-Request-Id", "X-Document-Version"],
 )
+app.include_router(auth_router)
 app.include_router(llm_router)
 app.include_router(datasets_router)
 app.include_router(documents_router)

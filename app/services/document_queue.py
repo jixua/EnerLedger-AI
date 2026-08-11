@@ -16,6 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.models import Document
 from app.domain.time import utc_now
 from app.rag.config import settings
+from app.services.document_dispatch import mark_document_dispatch_pending
 
 DOCUMENT_STATUS_QUEUED = "QUEUED"
 DOCUMENT_STATUS_PROCESSING = "PROCESSING"
@@ -40,6 +41,7 @@ def reset_document_for_queue(document: Document, *, reparse: bool) -> None:
     document.error_message = None
     document.parse_quality_status = None
     document.parse_quality = None
+    mark_document_dispatch_pending(document, now=now)
     if reparse:
         document.version = int(document.version or 1) + 1
         document.reparse_requested = True

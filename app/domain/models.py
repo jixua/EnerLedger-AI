@@ -70,6 +70,7 @@ class Document(Base):
         Index("idx_document_user_status", "user_id", "status"),
         Index("idx_document_queue_available", "status", "available_at", "id"),
         Index("idx_document_lease_expiry", "status", "lease_expires_at", "id"),
+        Index("idx_document_dispatch_available", "dispatch_status", "dispatch_available_at", "id"),
     )
 
     id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
@@ -105,6 +106,16 @@ class Document(Base):
     reparse_requested: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=False, server_default="0"
     )
+    dispatch_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="PENDING", server_default="PENDING"
+    )
+    dispatch_attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    dispatch_available_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dispatch_lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dispatch_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dispatch_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
     page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
     parse_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)

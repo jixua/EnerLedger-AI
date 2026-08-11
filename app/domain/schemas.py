@@ -22,6 +22,23 @@ ProtocolName = Annotated[
 ]
 
 
+class AdminLogin(BaseModel):
+    username: str = Field(min_length=1, max_length=64)
+    password: SecretStr = Field(min_length=1, max_length=256)
+
+
+class AuthToken(BaseModel):
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
+    expires_at: datetime
+
+
+class CurrentAdmin(BaseModel):
+    user_id: int
+    username: str
+    role: Literal["admin"] = "admin"
+
+
 class DatasetCreate(BaseModel):
     name: str = Field(min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)

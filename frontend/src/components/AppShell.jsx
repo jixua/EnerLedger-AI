@@ -9,11 +9,13 @@ import {
   PanelLeftClose,
   PanelLeftOpen,
   Plus,
+  LogOut,
   Workflow,
   X,
 } from "lucide-react";
 import { useApp } from "../state/AppContext";
 import { Button, IconButton } from "./ui";
+import { useAuth } from "../state/AuthContext";
 
 const navigation = [
   { to: "/", label: "对话", icon: MessageSquareText, end: true },
@@ -86,6 +88,7 @@ export function AppShell() {
   const navigate = useNavigate();
   const viewportRef = useRef(null);
   const { apiReachable, isDemo, lastError } = useApp();
+  const { admin, logout } = useAuth();
   const breadcrumb = useMemo(() => getBreadcrumb(location.pathname), [location.pathname]);
 
   useEffect(() => {
@@ -107,7 +110,9 @@ export function AppShell() {
             <strong>{breadcrumb}</strong>
           </div>
           <div className="topbar__actions">
+            <span className="admin-identity" title="当前管理员"><strong>{admin?.username}</strong><small>管理员</small></span>
             <Button onClick={() => navigate(`/?new=${Date.now()}`)}><Plus size={16} />新建对话</Button>
+            <IconButton label="退出登录" onClick={logout}><LogOut size={17} /></IconButton>
           </div>
         </header>
         {lastError && !isDemo ? (

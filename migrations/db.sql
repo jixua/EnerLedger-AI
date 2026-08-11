@@ -64,6 +64,12 @@ CREATE TABLE document (
     error_code VARCHAR(64) NULL,
     error_message VARCHAR(1000) NULL,
     reparse_requested TINYINT(1) NOT NULL DEFAULT 0,
+    dispatch_status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+    dispatch_attempt_count INT NOT NULL DEFAULT 0,
+    dispatch_available_at DATETIME NULL,
+    dispatch_lease_token VARCHAR(64) NULL,
+    dispatch_lease_expires_at DATETIME NULL,
+    dispatch_error VARCHAR(1000) NULL,
     page_count INT NULL,
     chunk_count INT NOT NULL DEFAULT 0,
     parse_time_ms INT NULL,
@@ -75,7 +81,8 @@ CREATE TABLE document (
     KEY idx_document_dataset_created (dataset_id, created_at),
     KEY idx_document_user_status (user_id, status),
     KEY idx_document_queue_available (status, available_at, id),
-    KEY idx_document_lease_expiry (status, lease_expires_at, id)
+    KEY idx_document_lease_expiry (status, lease_expires_at, id),
+    KEY idx_document_dispatch_available (dispatch_status, dispatch_available_at, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE document_chunk (

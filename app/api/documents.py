@@ -32,7 +32,7 @@ from app.rag.database import get_db
 from app.rag.models.chunk_record import ChunkRecordDB
 from app.rag.observability.logging import logger
 from app.rag.services.storage.factory import StorageFactory
-from app.services.document_dispatch import DocumentParseDispatcher
+from app.services.document_dispatch import DocumentParseDispatcher, mark_document_dispatch_pending
 from app.services.document_ingestion import SimpleDocumentIngestionService
 from app.services.document_queue import (
     DOCUMENT_STATUS_FAILED,
@@ -71,30 +71,9 @@ _PREVIEW_IMAGE_CONTENT_TYPES = {
 
 
 async def _dispatch_document(db: AsyncSession, document: Document) -> None:
-    """Publish after commit; make a failed publish visible and manually retryable."""
+    """Try immediate publish; durable outbox reconciliation owns recovery."""
 
-    try:
-        await DocumentParseDispatcher().dispatch(document)
-    except Exception as exc:
-        document.status = DOCUMENT_STATUS_FAILED
-        document.available_at = None
-        document.finished_at = utc_now()
-        document.error_code = "DOCUMENT_DISPATCH_FAILED"
-        document.error_message = f"{type(exc).__name__}: RabbitMQ 解析任务发布失败"[:1000]
-        await db.commit()
-        logger.bind(
-            event="document_dispatch_failed",
-            document_id=document.id,
-            error_type=type(exc).__name__,
-        ).error("文档已保存，但 RabbitMQ 解析任务发布失败")
-        raise HTTPException(
-            status_code=503,
-            detail={
-                "code": "DOCUMENT_DISPATCH_FAILED",
-                "message": "解析队列暂时不可用，文档已保存，可稍后重试",
-                "document_id": int(document.id),
-            },
-        ) from None
+    await DocumentParseDispatcher().dispatch(document)
 
 
 async def _owned_dataset(
@@ -710,6 +689,7 @@ async def upload_and_queue_document(
         available_at=now,
         queued_at=now,
     )
+    mark_document_dispatch_pending(document, now=now)
     try:
         db.add(document)
         await db.commit()
@@ -972,7 +952,7 @@ async def stream_document_preview_asset(
     """流式返回当前 READY 版本 Markdown 内的私有图片资产。
 
     ``asset_ref`` 只承载 Markdown 目录内的 URL-safe 相对路径；服务端会
-    重新校验 ``X-User-Id`` 租户、文档当前版本与路径边界，对外不返回
+    重新校验 Bearer JWT 对应的用户、文档当前版本与路径边界，对外不返回
     bucket 或完整 object key。
     """
 

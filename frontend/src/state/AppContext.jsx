@@ -67,7 +67,7 @@ function groupDocuments(items) {
 
 export function AppProvider({ children }) {
   const forcedDemo = import.meta.env.VITE_DEMO_MODE === "true";
-  const userId = Number(import.meta.env.VITE_API_USER_ID || 1);
+  const userId = 1;
   const [datasets, setDatasets] = useState([]);
   const [models, setModels] = useState([]);
   const [documents, setDocuments] = useState({});

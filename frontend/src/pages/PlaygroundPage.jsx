@@ -7,8 +7,8 @@ import {
   CircleAlert,
   Copy,
   Database,
-  FileText,
   LoaderCircle,
+  Search,
   Square,
   Sparkles,
   X,
@@ -18,6 +18,11 @@ import remarkGfm from "remark-gfm";
 import { Link, useLocation } from "react-router-dom";
 
 import { isDocumentRetrievalReady } from "../lib/parse-quality";
+import {
+  findHitByCitationIndex,
+  linkifyRecallChunkMentions,
+  recallChunkNumberFromHref,
+} from "../lib/recall-evidence";
 import { useApp } from "../state/AppContext";
 
 const SUGGESTED_QUESTIONS = [
@@ -62,10 +67,6 @@ function pageText(hit) {
   return page !== undefined && page !== null ? `第 ${page} 页` : "页码未记录";
 }
 
-function hitCitation(hit, index) {
-  return hit.citation_index ?? hit.citationIndex ?? index + 1;
-}
-
 function updateMessage(messages, messageId, updater) {
   return messages.map((message) => message.id === messageId ? updater(message) : message);
 }
@@ -94,6 +95,7 @@ export function PlaygroundPage() {
   const [question, setQuestion] = useState("");
   const [messages, setMessages] = useState([]);
   const [sourceMessageId, setSourceMessageId] = useState(null);
+  const [activeCitationIndex, setActiveCitationIndex] = useState(null);
   const [copiedMessageId, setCopiedMessageId] = useState(null);
   const [openSelector, setOpenSelector] = useState(null);
   const abortRef = useRef(null);
@@ -102,6 +104,7 @@ export function PlaygroundPage() {
   const controlsRef = useRef(null);
   const datasetTriggerRef = useRef(null);
   const modelTriggerRef = useRef(null);
+  const sourceCardRefs = useRef(new Map());
 
   const retrievalReadyCounts = useMemo(() => {
     const counts = new Map();
@@ -147,9 +150,10 @@ export function PlaygroundPage() {
   const isRunning = messages.some((message) => message.role === "assistant" && ["recalling", "generating"].includes(message.status));
   const canSubmit = Boolean(question.trim() && selectedDatasetIds.length && (!needsExplicitModel || selectedModelId) && !isRunning);
   const sourceMessage = messages.find((message) => message.id === sourceMessageId);
-  const citedSourceHits = (sourceMessage?.hits ?? []).filter(
+  const sourceHits = sourceMessage?.hits ?? [];
+  const citedSourceCount = sourceHits.filter(
     (hit) => hit.citation_index !== null && hit.citation_index !== undefined,
-  );
+  ).length;
 
   useEffect(() => {
     setSelectedDatasetIds((current) => {
@@ -166,6 +170,7 @@ export function PlaygroundPage() {
     setMessages([]);
     setQuestion("");
     setSourceMessageId(null);
+    setActiveCitationIndex(null);
     setOpenSelector(null);
   }, [location.search]);
 
@@ -207,6 +212,14 @@ export function PlaygroundPage() {
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    if (!sourceMessageId || !activeCitationIndex) return undefined;
+    const frame = window.requestAnimationFrame(() => {
+      sourceCardRefs.current.get(activeCitationIndex)?.scrollIntoView({ block: "center", behavior: "smooth" });
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [activeCitationIndex, sourceMessageId]);
 
   function toggleDataset(datasetId) {
     const normalized = String(datasetId);
@@ -313,6 +326,28 @@ export function PlaygroundPage() {
 
   function stopGeneration() {
     abortRef.current?.abort();
+  }
+
+  function closeSourceDrawer() {
+    setSourceMessageId(null);
+    setActiveCitationIndex(null);
+  }
+
+  function openSourceDrawer(message, citationIndex = null) {
+    setSourceMessageId(message.id);
+    setActiveCitationIndex(citationIndex);
+  }
+
+  function handleRecallChunkLinkClick(event, message) {
+    if (!(event.target instanceof Element)) return;
+    const anchor = event.target.closest('a[href^="#recall-chunk-"]');
+    if (!anchor || !event.currentTarget.contains(anchor)) return;
+
+    const citationIndex = recallChunkNumberFromHref(anchor.getAttribute("href"));
+    if (!findHitByCitationIndex(message.hits, citationIndex)) return;
+
+    event.preventDefault();
+    openSourceDrawer(message, citationIndex);
   }
 
   async function copyMessage(message) {
@@ -504,7 +539,13 @@ export function PlaygroundPage() {
                     {["recalling", "generating"].includes(message.status) ? <LoaderCircle className="spin" size={14} /> : message.status === "error" ? <CircleAlert size={14} /> : <Check size={14} />}
                     <span>{STATUS_COPY[message.status] || "处理中"}</span>
                   </div> : null}
-                  {message.content ? <div className="chat-markdown"><ReactMarkdown remarkPlugins={[remarkGfm]}>{message.content}</ReactMarkdown></div> : null}
+                  {message.content ? (
+                    <div className="chat-markdown" onClickCapture={(event) => handleRecallChunkLinkClick(event, message)}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                        {linkifyRecallChunkMentions(message.content, message.hits)}
+                      </ReactMarkdown>
+                    </div>
+                  ) : null}
                   {!message.content && message.status === "empty" ? <p className="chat-message__empty">根据已选择的数据集，暂未找到可以支持回答的相关内容。</p> : null}
                   {!message.content && ["recalling", "generating"].includes(message.status) ? (
                     <div className="typing-line"><span /><span /><span /></div>
@@ -513,7 +554,7 @@ export function PlaygroundPage() {
                   {message.failedSources?.length ? <p className="chat-message__warning">部分检索服务暂时不可用，本次回答可能不完整。</p> : null}
                   {!["recalling", "generating"].includes(message.status) ? (
                     <footer className="chat-message__actions">
-                      {message.hits?.some((hit) => hit.citation_index !== null && hit.citation_index !== undefined) ? <button type="button" onClick={() => setSourceMessageId(message.id)}><FileText size={14} />查看 {message.hits.filter((hit) => hit.citation_index !== null && hit.citation_index !== undefined).length} 个引用</button> : null}
+                      {message.hits?.length ? <button type="button" onClick={() => openSourceDrawer(message)}><Search size={14} />查看 {message.hits.length} 个召回片段</button> : null}
                       {message.content ? <button type="button" onClick={() => copyMessage(message)}>{copiedMessageId === message.id ? <Check size={14} /> : <Copy size={14} />}{copiedMessageId === message.id ? "已复制" : "复制"}</button> : null}
                     </footer>
                   ) : null}
@@ -528,37 +569,58 @@ export function PlaygroundPage() {
 
       {sourceMessage ? (
         <div className="source-drawer-layer" role="presentation">
-          <button type="button" className="source-drawer-scrim" aria-label="关闭来源" onClick={() => setSourceMessageId(null)} />
+          <button type="button" className="source-drawer-scrim" aria-label="关闭召回片段" onClick={closeSourceDrawer} />
           <aside className="source-drawer" role="dialog" aria-modal="true" aria-labelledby="source-drawer-title">
             <header className="source-drawer__header">
-              <div><h2 id="source-drawer-title">引用来源</h2><p>以下内容用于生成本次回答。</p></div>
-              <button type="button" className="icon-button" onClick={() => setSourceMessageId(null)} aria-label="关闭"><X size={18} /></button>
+              <div>
+                <h2 id="source-drawer-title">召回片段</h2>
+                <p>本轮召回 {sourceHits.length} 个片段，其中 {citedSourceCount} 个进入回答上下文。</p>
+              </div>
+              <button type="button" className="icon-button" onClick={closeSourceDrawer} aria-label="关闭"><X size={18} /></button>
             </header>
             <ol className="source-drawer__list">
-              {citedSourceHits.map((hit, index) => (
-                <li className="source-detail-card" key={hit.chunk_id ?? `${hit.doc_id}-${index}`}>
-                  <div className="source-detail-card__top">
-                    <span className="citation-chip">引用 {hitCitation(hit, index)}</span>
-                    <span className="source-score">相关度 {scoreText(hit.fused_score)}</span>
-                  </div>
-                  <h3>{hit.filename || `文档 #${hit.doc_id}`}</h3>
-                  <div className="source-detail-card__meta">
-                    <span>{pageText(hit)}</span>
-                    <span>版本 {hit.document_version ?? hit.version ?? "—"}</span>
-                    <span>片段 {hit.chunk_index ?? hit.chunk_id ?? "—"}</span>
-                  </div>
-                  <p>{hit.content || "该引用暂无可展示内容。"}</p>
-                  <details className="source-detail-card__diagnostics">
-                    <summary>检索详情</summary>
-                    <div className="source-route-scores">
-                      <span><small>关键词</small><strong>{scoreText(hit.scores?.bm25)}</strong></span>
-                      <span><small>稀疏向量</small><strong>{scoreText(hit.scores?.sparse)}</strong></span>
-                      <span><small>稠密向量</small><strong>{scoreText(hit.scores?.dense)}</strong></span>
+              {sourceHits.map((hit, index) => {
+                const citationIndex = Number(hit.citation_index ?? hit.citationIndex) || null;
+                const active = citationIndex !== null && citationIndex === activeCitationIndex;
+                return (
+                  <li
+                    className={`source-detail-card${active ? " is-active" : ""}`}
+                    key={hit.chunk_id ?? `${hit.doc_id}-${index}`}
+                    ref={(node) => {
+                      if (!citationIndex) return;
+                      if (node) sourceCardRefs.current.set(citationIndex, node);
+                      else sourceCardRefs.current.delete(citationIndex);
+                    }}
+                    aria-current={active ? "true" : undefined}
+                  >
+                    <div className="source-detail-card__top">
+                      <div className="source-detail-card__labels">
+                        <span className={`citation-chip${citationIndex ? " citation-chip--used" : ""}`}>
+                          {citationIndex ? `片段 ${citationIndex}` : `召回 ${hit.result_rank ?? index + 1}`}
+                        </span>
+                        {citationIndex ? <span className="source-usage-chip">用于回答</span> : null}
+                      </div>
+                      <span className="source-score">相关度 {scoreText(hit.fused_score)}</span>
                     </div>
-                    <small>检索序号 {hit.result_rank ?? "—"}</small>
-                  </details>
-                </li>
-              ))}
+                    <h3>{hit.filename || `文档 #${hit.doc_id}`}</h3>
+                    <div className="source-detail-card__meta">
+                      <span>{pageText(hit)}</span>
+                      <span>版本 {hit.document_version ?? hit.version ?? "—"}</span>
+                      <span>片段 {hit.chunk_index ?? hit.chunk_id ?? "—"}</span>
+                    </div>
+                    <p>{hit.content || "该引用暂无可展示内容。"}</p>
+                    <details className="source-detail-card__diagnostics">
+                      <summary>检索详情</summary>
+                      <div className="source-route-scores">
+                        <span><small>关键词</small><strong>{scoreText(hit.scores?.bm25)}</strong></span>
+                        <span><small>稀疏向量</small><strong>{scoreText(hit.scores?.sparse)}</strong></span>
+                        <span><small>稠密向量</small><strong>{scoreText(hit.scores?.dense)}</strong></span>
+                      </div>
+                      <small>检索序号 {hit.result_rank ?? "—"}</small>
+                    </details>
+                  </li>
+                );
+              })}
             </ol>
           </aside>
         </div>

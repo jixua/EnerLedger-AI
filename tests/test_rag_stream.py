@@ -154,6 +154,8 @@ async def test_event_stream_passes_recall_context_and_emits_answer_events(
     assert "[片段1] 报告将组织边界与运营边界共同作为能碳核算边界。" in prompt
     assert "该报告的能碳核算边界是什么？" in prompt
     assert provider.calls[0]["system_prompt"] == rag_module.RAG_GENERATION_SYSTEM_PROMPT
+    assert "[片段N]" in provider.calls[0]["system_prompt"]
+    assert "N 只能是参考片段中真实存在的阿拉伯数字编号" in provider.calls[0]["system_prompt"]
     assert provider.close_calls == 1
 
 

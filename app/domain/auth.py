@@ -1,29 +1,147 @@
-"""当前无前端阶段的临时身份边界。"""
+"""Single-administrator JWT authentication boundary."""
 
+from __future__ import annotations
+
+import base64
+import hashlib
+import hmac
+import secrets
+from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
-from fastapi import Header, HTTPException, status
+import jwt
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jwt import InvalidTokenError
+
+from app.rag.config import settings
+
+ADMIN_USER_ID = 1
+_SCHEME = "scrypt"
+_bearer = HTTPBearer(auto_error=False)
+
+
+def hash_admin_password(password: str, *, salt: bytes | None = None) -> str:
+    """Return a portable scrypt password hash for configuration/bootstrap tooling."""
+
+    if not password:
+        raise ValueError("管理员密码不能为空")
+    actual_salt = salt or secrets.token_bytes(16)
+    derived = hashlib.scrypt(
+        password.encode("utf-8"),
+        salt=actual_salt,
+        n=2**14,
+        r=8,
+        p=1,
+        dklen=32,
+    )
+    return ":".join(
+        (
+            _SCHEME,
+            "16384",
+            "8",
+            "1",
+            base64.urlsafe_b64encode(actual_salt).decode("ascii").rstrip("="),
+            base64.urlsafe_b64encode(derived).decode("ascii").rstrip("="),
+        )
+    )
+
+
+def verify_admin_password(password: str, encoded: str) -> bool:
+    try:
+        scheme, n, r, p, salt_text, hash_text = encoded.split(":", 5)
+        if scheme != _SCHEME:
+            return False
+        salt = base64.urlsafe_b64decode(salt_text + "=" * (-len(salt_text) % 4))
+        expected = base64.urlsafe_b64decode(hash_text + "=" * (-len(hash_text) % 4))
+        actual = hashlib.scrypt(
+            password.encode("utf-8"),
+            salt=salt,
+            n=int(n),
+            r=int(r),
+            p=int(p),
+            dklen=len(expected),
+        )
+    except (TypeError, ValueError):
+        return False
+    return hmac.compare_digest(actual, expected)
+
+
+def authenticate_admin(username: str, password: str) -> bool:
+    username_matches = hmac.compare_digest(username, settings.ADMIN_USERNAME)
+    password_matches = verify_admin_password(password, settings.ADMIN_PASSWORD_HASH)
+    return username_matches and password_matches
+
+
+def _jwt_secret() -> bytes:
+    configured = settings.JWT_SECRET.strip()
+    if configured:
+        return configured.encode("utf-8")
+    # Keep JWT and API-key encryption keys cryptographically separated even when the
+    # deployment chooses the single-secret bootstrap path.
+    return hashlib.sha256(
+        b"energy-carbon-rag:jwt:" + bytes.fromhex(settings.API_KEY_ENCRYPTION_SECRET)
+    ).digest()
+
+
+def create_access_token(*, now: datetime | None = None) -> tuple[str, datetime]:
+    issued_at = now or datetime.now(UTC)
+    expires_at = issued_at + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    token = jwt.encode(
+        {
+            "sub": str(ADMIN_USER_ID),
+            "username": settings.ADMIN_USERNAME,
+            "role": "admin",
+            "iat": issued_at,
+            "exp": expires_at,
+            "iss": settings.JWT_ISSUER,
+            "aud": settings.JWT_AUDIENCE,
+        },
+        _jwt_secret(),
+        algorithm="HS256",
+    )
+    return token, expires_at
+
+
+def decode_access_token(token: str) -> dict[str, object]:
+    try:
+        payload = jwt.decode(
+            token,
+            _jwt_secret(),
+            algorithms=["HS256"],
+            issuer=settings.JWT_ISSUER,
+            audience=settings.JWT_AUDIENCE,
+            options={"require": ["sub", "exp", "iat", "iss", "aud"]},
+        )
+    except InvalidTokenError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "INVALID_ACCESS_TOKEN", "message": "登录状态无效或已过期"},
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
+    if payload.get("sub") != str(ADMIN_USER_ID) or payload.get("role") != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "ADMIN_REQUIRED", "message": "需要管理员权限"},
+        )
+    return payload
+
+
+def get_current_admin(
+    credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+) -> dict[str, object]:
+    if credentials is None or credentials.scheme.lower() != "bearer":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "AUTH_REQUIRED", "message": "请先登录"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return decode_access_token(credentials.credentials)
 
 
 def get_user_id(
-    x_user_id: Annotated[str, Header(alias="X-User-Id")],
+    admin: Annotated[dict[str, object], Depends(get_current_admin)],
 ) -> int:
-    """从 ``X-User-Id`` 读取正整数用户 ID。
+    """Map the authenticated administrator to the existing data ownership boundary."""
 
-    这只是单体后端初期的信任边界，不等价于生产环境的身份认证。
-    后续接入 JWT / SSO 时，其他路由可保持依赖这个函数而无需改业务签名。
-    """
-
-    try:
-        user_id = int(x_user_id)
-    except (TypeError, ValueError) as exc:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-User-Id 必须是正整数",
-        ) from exc
-    if user_id <= 0:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="X-User-Id 必须是正整数",
-        )
-    return user_id
+    return int(admin["sub"])

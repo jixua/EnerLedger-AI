@@ -2,20 +2,14 @@ const env = import.meta.env ?? {};
 
 const runtimeConfig = {
   baseUrl: normalizeBaseUrl(env.VITE_API_BASE_URL ?? ""),
-  userId: normalizeUserId(env.VITE_API_USER_ID ?? "1"),
+  accessToken: typeof localStorage === "undefined"
+    ? ""
+    : localStorage.getItem("energy-carbon-access-token") || "",
 };
 
 function normalizeBaseUrl(value) {
   const normalized = String(value ?? "").trim();
   return normalized === "/" ? "" : normalized.replace(/\/+$/, "");
-}
-
-function normalizeUserId(value) {
-  const normalized = String(value ?? "").trim();
-  if (!/^[1-9]\d*$/.test(normalized)) {
-    throw new TypeError("userId 必须是正整数");
-  }
-  return normalized;
 }
 
 function appendQuery(path, query) {
@@ -81,9 +75,9 @@ export class ApiError extends Error {
   }
 }
 
-export function configureApi({ baseUrl, userId } = {}) {
+export function configureApi({ baseUrl, accessToken } = {}) {
   if (baseUrl !== undefined) runtimeConfig.baseUrl = normalizeBaseUrl(baseUrl);
-  if (userId !== undefined) runtimeConfig.userId = normalizeUserId(userId);
+  if (accessToken !== undefined) setApiAccessToken(accessToken);
   return getApiConfig();
 }
 
@@ -92,9 +86,16 @@ export function setApiBaseUrl(baseUrl) {
   return runtimeConfig.baseUrl;
 }
 
-export function setApiUserId(userId) {
-  runtimeConfig.userId = normalizeUserId(userId);
-  return runtimeConfig.userId;
+export function setApiAccessToken(accessToken) {
+  runtimeConfig.accessToken = String(accessToken || "").trim();
+  if (typeof localStorage !== "undefined") {
+    if (runtimeConfig.accessToken) {
+      localStorage.setItem("energy-carbon-access-token", runtimeConfig.accessToken);
+    } else {
+      localStorage.removeItem("energy-carbon-access-token");
+    }
+  }
+  return runtimeConfig.accessToken;
 }
 
 export function getApiConfig() {
@@ -113,8 +114,8 @@ export function createApiHeaders(headers = {}, { json = false, auth = true } = {
   if (json && !result.has("Content-Type")) {
     result.set("Content-Type", "application/json");
   }
-  if (auth && !result.has("X-User-Id")) {
-    result.set("X-User-Id", runtimeConfig.userId);
+  if (auth && runtimeConfig.accessToken && !result.has("Authorization")) {
+    result.set("Authorization", `Bearer ${runtimeConfig.accessToken}`);
   }
   return result;
 }
@@ -161,7 +162,13 @@ export async function apiRequest(
     });
   }
 
-  if (!response.ok) throw await readApiError(response);
+  if (!response.ok) {
+    if (auth && response.status === 401) {
+      setApiAccessToken("");
+      if (typeof window !== "undefined") window.dispatchEvent(new Event("auth:expired"));
+    }
+    throw await readApiError(response);
+  }
   if (response.status === 204) return null;
 
   const contentType = response.headers.get("content-type") ?? "";
@@ -172,6 +179,19 @@ export async function apiRequest(
 
 export function getHealth({ signal } = {}) {
   return apiRequest("/health/live", { signal, auth: false });
+}
+
+export function loginAdmin(username, password, { signal } = {}) {
+  return apiRequest("/api/v1/auth/login", {
+    method: "POST",
+    body: { username, password },
+    signal,
+    auth: false,
+  });
+}
+
+export function getCurrentAdmin({ signal } = {}) {
+  return apiRequest("/api/v1/auth/me", { signal });
 }
 
 export function getSystemStatus({ signal } = {}) {

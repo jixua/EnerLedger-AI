@@ -102,6 +102,12 @@ class Settings(BaseSettings):
     API_KEY_ENCRYPTION_SECRET: str = (
         "0000000000000000000000000000000000000000000000000000000000000000"
     )
+    ADMIN_USERNAME: str = "root"
+    ADMIN_PASSWORD_HASH: str = ""
+    JWT_SECRET: str = ""
+    JWT_ISSUER: str = "energy-carbon-rag"
+    JWT_AUDIENCE: str = "energy-carbon-web"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=480, ge=5, le=10080)
 
     # ==========================================
     # 召回执行配置 (Recall Pipeline)
@@ -607,6 +613,10 @@ class Settings(BaseSettings):
     DOCUMENT_QUEUE_MAX_ATTEMPTS: int = Field(default=3, gt=0)
     DOCUMENT_QUEUE_RETRY_DELAYS_SECONDS: str = "30,120,600"
     DOCUMENT_QUEUE_WORKER_CONCURRENCY: int = Field(default=1, ge=1, le=16)
+    DOCUMENT_DISPATCH_POLL_SECONDS: float = Field(default=2.0, gt=0, le=60)
+    DOCUMENT_DISPATCH_RETRY_SECONDS: int = Field(default=5, ge=1, le=3600)
+    DOCUMENT_DISPATCH_LEASE_SECONDS: int = Field(default=30, ge=5, le=300)
+    DOCUMENT_DISPATCH_BATCH_SIZE: int = Field(default=20, ge=1, le=200)
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
@@ -687,6 +697,10 @@ class Settings(BaseSettings):
 
     @model_validator(mode="after")
     def validate_document_queue_settings(self) -> "Settings":
+        if not self.ADMIN_USERNAME.strip():
+            raise ValueError("ADMIN_USERNAME must not be empty")
+        if not self.ADMIN_PASSWORD_HASH.startswith("scrypt:"):
+            raise ValueError("ADMIN_PASSWORD_HASH must be a generated scrypt hash")
         if self.DOCUMENT_QUEUE_HEARTBEAT_SECONDS >= self.DOCUMENT_QUEUE_LEASE_SECONDS:
             raise ValueError(
                 "DOCUMENT_QUEUE_HEARTBEAT_SECONDS must be less than "

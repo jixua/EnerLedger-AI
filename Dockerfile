@@ -1,5 +1,3 @@
-# syntax=docker/dockerfile:1
-
 # OpenDataLoader 运行时需要 Java 11+；固定使用 Java 21 JRE，并把它复制进 Python 镜像。
 FROM eclipse-temurin:21-jre-jammy AS java-runtime
 

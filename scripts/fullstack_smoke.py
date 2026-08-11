@@ -13,10 +13,11 @@ from uuid import uuid4
 import httpx
 
 BASE_URL = os.getenv("FULLSTACK_BASE_URL", "http://127.0.0.1:8000").rstrip("/")
-USER_ID = os.getenv("FULLSTACK_USER_ID", "1")
+ADMIN_USERNAME = os.getenv("FULLSTACK_ADMIN_USERNAME", "root")
+ADMIN_PASSWORD = os.getenv("FULLSTACK_ADMIN_PASSWORD", "")
 POLL_TIMEOUT = int(os.getenv("FULLSTACK_POLL_TIMEOUT_SECONDS", "420"))
 QUERY = os.getenv("FULLSTACK_SMOKE_QUERY", "天然气燃烧排放如何核算？").strip()
-HEADERS = {"X-User-Id": USER_ID, "Accept": "application/json"}
+HEADERS = {"Accept": "application/json"}
 
 
 def require(response: httpx.Response) -> httpx.Response:
@@ -57,6 +58,15 @@ def main() -> int:
     document_terminal = False
     with httpx.Client(timeout=60.0, headers=HEADERS) as client:
         require(client.get(f"{BASE_URL}/health/live", headers={"Accept": "application/json"}))
+        if not ADMIN_PASSWORD:
+            raise RuntimeError("必须通过 FULLSTACK_ADMIN_PASSWORD 提供管理员密码")
+        token = require(
+            client.post(
+                f"{BASE_URL}/api/v1/auth/login",
+                json={"username": ADMIN_USERNAME, "password": ADMIN_PASSWORD},
+            )
+        ).json()["access_token"]
+        client.headers["Authorization"] = f"Bearer {token}"
         system = require(client.get(f"{BASE_URL}/api/v1/system/status")).json()
         if system.get("status") not in {"ok", "degraded"}:
             raise RuntimeError(f"系统状态异常: {system.get('status')}")
@@ -163,7 +173,7 @@ def main() -> int:
             with client.stream(
                 "POST",
                 f"{BASE_URL}/api/v1/rag/stream",
-                headers={**HEADERS, "Accept": "text/event-stream"},
+                headers={"Accept": "text/event-stream"},
                 json={"query": QUERY, "dataset_ids": [dataset_id]},
                 timeout=420.0,
             ) as response:
