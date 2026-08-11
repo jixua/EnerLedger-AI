@@ -23,6 +23,7 @@ from .stage_models import (
     StageIdFactory,
 )
 from .structural_boundaries import (
+    META_STRUCTURAL_HEADING,
     BoundaryStrength,
     StructuralBoundary,
     StructuralBoundaryDetector,
@@ -149,17 +150,25 @@ class CandidateBoundaryChunker:
         return unique
 
     @staticmethod
-    def _is_heading_only(elements: list[MarkdownElement]) -> bool:
+    def _is_heading_only(
+        elements: list[MarkdownElement],
+        structural_heading_flags: list[bool] | None = None,
+    ) -> bool:
         """
         判断当前 buffer 是否只包含标题元素。
 
         Args:
             elements: 当前 buffer 内的元素列表。
+            structural_heading_flags: 与 elements 对齐的结构标题标记。
 
         Returns:
             bool: 非空且全部为标题时返回 True。
         """
-        return bool(elements) and all(element.type == ElementType.HEADING for element in elements)
+        flags = structural_heading_flags or [False] * len(elements)
+        return bool(elements) and len(flags) == len(elements) and all(
+            element.type == ElementType.HEADING or is_structural_heading
+            for element, is_structural_heading in zip(elements, flags, strict=True)
+        )
 
     @staticmethod
     def _is_isolated_source_element(element: MarkdownElement) -> bool:
@@ -294,6 +303,7 @@ class CandidateBoundaryChunker:
         self,
         element: MarkdownElement,
         buffer_elements: list[MarkdownElement],
+        buffer_structural_heading_flags: list[bool],
         buffer_token_count: int,
         deepest_heading_level: int | None,
         structural_boundary: StructuralBoundary | None = None,
@@ -304,6 +314,7 @@ class CandidateBoundaryChunker:
         Args:
             element: 即将进入 buffer 的元素。
             buffer_elements: 当前 buffer 内的元素。
+            buffer_structural_heading_flags: 当前 buffer 中的结构标题标记。
             buffer_token_count: 当前 buffer 的 token 数。
             deepest_heading_level: 当前文档参与动态保护的最深标题层级。
 
@@ -317,7 +328,7 @@ class CandidateBoundaryChunker:
         if not is_markdown_heading and structural_boundary is None:
             return False
 
-        if self._is_heading_only(buffer_elements):
+        if self._is_heading_only(buffer_elements, buffer_structural_heading_flags):
             return False
 
         # 「第…章」是明确的上位结构，即使前一章很短也不与下一章混合。
@@ -496,6 +507,7 @@ class CandidateBoundaryChunker:
         source_element_indexes: list[int],
         heading_trails: list[list[str]],
         neighbor_elements: list[tuple[MarkdownElement | None, MarkdownElement | None]],
+        structural_heading_indexes: set[int],
         id_factory: StageIdFactory,
     ) -> _ChunkBundle:
         """
@@ -506,6 +518,7 @@ class CandidateBoundaryChunker:
             source_element_indexes: 与 elements 对齐的 SplitInput 原始元素索引。
             heading_trails: 元素对应的标题路径快照。
             neighbor_elements: 元素在完整文档序列中的前后相邻元素。
+            structural_heading_indexes: 当前粗分片内的结构标题源元素索引。
             id_factory: coarse ID 生成器。
 
         Returns:
@@ -517,6 +530,9 @@ class CandidateBoundaryChunker:
             neighbor_elements,
             source_element_indexes=source_element_indexes,
         )
+        for view in derived_result.element_views:
+            if view.element_index in structural_heading_indexes:
+                view.metadata[META_STRUCTURAL_HEADING] = True
         content = derived_result.mixed_content
         unique_heading_trails = self._unique_heading_trails(heading_trails)
         element_types = sorted({element.type.value for element in elements})
@@ -610,6 +626,7 @@ class CandidateBoundaryChunker:
         buffer_source_element_indexes: list[int] = []
         buffer_heading_trails: list[list[str]] = []
         buffer_neighbor_elements: list[tuple[MarkdownElement | None, MarkdownElement | None]] = []
+        buffer_structural_heading_flags: list[bool] = []
         buffer_token_count = 0
 
         def flush_buffer() -> None:
@@ -632,6 +649,15 @@ class CandidateBoundaryChunker:
                     source_element_indexes=buffer_source_element_indexes,
                     heading_trails=buffer_heading_trails,
                     neighbor_elements=buffer_neighbor_elements,
+                    structural_heading_indexes={
+                        source_index
+                        for source_index, is_structural_heading in zip(
+                            buffer_source_element_indexes,
+                            buffer_structural_heading_flags,
+                            strict=True,
+                        )
+                        if is_structural_heading
+                    },
                     id_factory=id_factory,
                 )
             )
@@ -639,6 +665,7 @@ class CandidateBoundaryChunker:
             buffer_source_element_indexes.clear()
             buffer_heading_trails.clear()
             buffer_neighbor_elements.clear()
+            buffer_structural_heading_flags.clear()
             buffer_token_count = 0
 
         visible_entries = [
@@ -657,6 +684,7 @@ class CandidateBoundaryChunker:
                 buffer_elements.append(element)
                 buffer_source_element_indexes.append(source_element_index)
                 buffer_heading_trails.append(heading_tracker.current_trail())
+                buffer_structural_heading_flags.append(False)
                 buffer_neighbor_elements.append(
                     self._semantic_neighbor_elements(split_input.elements, source_element_index)
                 )
@@ -664,17 +692,21 @@ class CandidateBoundaryChunker:
                 flush_buffer()
                 continue
 
+            structural_boundary = structural_boundaries.get(source_element_index)
             if self._should_flush_before(
                 element,
                 buffer_elements,
+                buffer_structural_heading_flags,
                 buffer_token_count,
                 deepest_heading_level,
-                structural_boundaries.get(source_element_index),
+                structural_boundary,
             ):
                 flush_buffer()
 
-            structural_boundary = structural_boundaries.get(source_element_index)
-            if structural_boundary is not None and structural_boundary.kind != "legal_article":
+            is_structural_heading = (
+                structural_boundary is not None and structural_boundary.kind != "legal_article"
+            )
+            if is_structural_heading:
                 heading_tracker.observe_structural_heading(
                     structural_boundary.text,
                     level=structural_boundary.level,
@@ -685,6 +717,7 @@ class CandidateBoundaryChunker:
             buffer_elements.append(element)
             buffer_source_element_indexes.append(source_element_index)
             buffer_heading_trails.append(heading_tracker.current_trail())
+            buffer_structural_heading_flags.append(is_structural_heading)
             buffer_neighbor_elements.append(
                 self._semantic_neighbor_elements(split_input.elements, source_element_index)
             )

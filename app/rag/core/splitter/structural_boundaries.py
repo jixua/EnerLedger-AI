@@ -8,6 +8,8 @@ from enum import StrEnum
 from app.rag.core.markdown_parser import ElementType, MarkdownElement
 from app.rag.core.markdown_parser.structural_classifier import StructuralTextClassifier
 
+META_STRUCTURAL_HEADING = "structural_heading"
+
 
 class BoundaryStrength(StrEnum):
     """边界强度：hard 不允许跨上位结构合并，candidate 受 token 软下限约束。"""
@@ -209,4 +211,9 @@ class StructuralBoundaryDetector:
         return boundaries
 
 
-__all__ = ["BoundaryStrength", "StructuralBoundary", "StructuralBoundaryDetector"]
+__all__ = [
+    "META_STRUCTURAL_HEADING",
+    "BoundaryStrength",
+    "StructuralBoundary",
+    "StructuralBoundaryDetector",
+]

@@ -32,6 +32,7 @@ from .stage_models import (
     FinalChunkSet,
     StageIdFactory,
 )
+from .structural_boundaries import META_STRUCTURAL_HEADING
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,10 @@ class _Atom:
 
     @property
     def is_heading(self) -> bool:
-        return self.element_type == HEADING_TYPE_VALUE
+        return (
+            self.element_type == HEADING_TYPE_VALUE
+            or self.metadata.get(META_STRUCTURAL_HEADING) is True
+        )
 
     def display_text(self, content: str) -> str:
         """从所属 content 还原 display_text（不缓存，保证与切片一致）。"""
@@ -176,6 +180,11 @@ class _AtomBuilder:
 
     def _text_atom(self, content: str, start: int, end: int, view: ElementView) -> _Atom:
         display = content[start:end]
+        score_text = (
+            None
+            if view.metadata.get(META_STRUCTURAL_HEADING) is True
+            else self._score_text_of(view.element_type, view.semantic_text, display)
+        )
         return _Atom(
             kind="text",
             element_type=view.element_type,
@@ -187,7 +196,7 @@ class _AtomBuilder:
             content_end=end,
             token_count=self._count(display),
             element_id=None,
-            score_text=self._score_text_of(view.element_type, view.semantic_text, display),
+            score_text=score_text,
             metadata=dict(view.metadata),
         )
 
