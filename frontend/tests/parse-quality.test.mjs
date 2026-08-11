@@ -44,12 +44,12 @@ test("missing PDF quality is historical and never silently considered usable", (
   assert.equal(isDocumentQualityUsable({ file_type: "docx" }), true);
 });
 
-test("retrieval readiness requires READY and honors the backend-derived flag", () => {
+test("retrieval readiness follows the non-blocking READY business status", () => {
   assert.equal(isDocumentRetrievalReady({ status: "PROCESSING", retrieval_ready: true }), false);
   assert.equal(isDocumentRetrievalReady({ status: "READY", retrieval_ready: true }), true);
-  assert.equal(isDocumentRetrievalReady({ status: "READY", retrieval_ready: false, file_type: "docx" }), false);
+  assert.equal(isDocumentRetrievalReady({ status: "READY", retrieval_ready: false, file_type: "docx" }), true);
   assert.equal(isDocumentRetrievalReady({ status: "READY", file_type: "pdf", parse_quality_status: "PASSED" }), true);
-  assert.equal(isDocumentRetrievalReady({ status: "READY", file_type: "pdf", parse_quality_status: "LEGACY_UNCHECKED" }), false);
+  assert.equal(isDocumentRetrievalReady({ status: "READY", file_type: "pdf", parse_quality_status: "LEGACY_UNCHECKED" }), true);
 });
 
 test("OCR and low-confidence pages support explicit lists and per-page aliases", () => {
@@ -186,11 +186,11 @@ test("dataset create and settings send the optional VISION binding with reparse 
   assert.match(datasetDetailSource, /现有文档将生成新版本、重新解析并重建检索索引/);
 });
 
-test("quality status is visible in document list, detail and parsing queue", () => {
-  assert.match(datasetDetailSource, /<ParseQualityInline document=\{document\} \/>/);
-  assert.match(documentDetailSource, /<ParseQualitySummary document=\{document\} \/>/);
-  assert.match(documentDetailSource, /当前正文未通过质量门禁/);
-  assert.match(tasksSource, /<ParseQualityInline document=\{document\} \/>/);
+test("quality diagnostics stay hidden and never block READY documents", () => {
+  assert.doesNotMatch(datasetDetailSource, /ParseQualityInline/);
+  assert.doesNotMatch(documentDetailSource, /ParseQuality/);
+  assert.doesNotMatch(documentDetailSource, /当前正文未通过质量门禁/);
+  assert.doesNotMatch(tasksSource, /ParseQualityInline/);
   assert.match(datasetListSource, /items\.filter\(isDocumentRetrievalReady\)/);
   assert.match(datasetDetailSource, /datasetDocuments\.filter\(isDocumentRetrievalReady\)/);
   assert.match(tasksSource, /counts\.RETRIEVAL_READY/);

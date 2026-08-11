@@ -280,7 +280,7 @@ export function DatasetsPage() {
                     <option value="">暂不绑定</option>
                     {visionModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}
                   </select>
-                  <small>仅在 PDF 需要 OCR、图表解释或页面补全时调用；未绑定时，相应 PDF 会被质量门禁阻断。</small>
+                  <small>仅在 PDF 需要 OCR、图表解释或页面补全时调用；未绑定不会阻止文档完成解析和检索。</small>
                 </label>
               </div>
 

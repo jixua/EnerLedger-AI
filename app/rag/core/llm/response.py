@@ -2,7 +2,7 @@
 统一响应模型
 """
 
-from typing import Any, List, Optional
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -31,14 +31,14 @@ class StreamChunk(BaseModel):
     delta: str
     is_end: bool = False
     content: str = ""
-    usage: Optional[UsageInfo] = None
+    usage: UsageInfo | None = None
 
 
 class EmbeddingResult(BaseModel):
     """向量化结果"""
 
     model: str
-    embeddings: List[List[float]]
+    embeddings: list[list[float]]
     usage: UsageInfo
 
 
@@ -50,15 +50,24 @@ class SparseEmbedding(BaseModel):
     token_id 后再填入本结构，框架层不感知词形。
     """
 
-    indices: List[int]
-    values: List[float]
+    indices: list[int]
+    values: list[float]
 
 
 class SparseEmbeddingResult(BaseModel):
     """稀疏向量化结果（与 dense ``EmbeddingResult`` 对称，逐条文本一组稀疏维度）。"""
 
     model: str
-    embeddings: List[SparseEmbedding]
+    embeddings: list[SparseEmbedding]
+    usage: UsageInfo
+
+
+class HybridEmbeddingResult(BaseModel):
+    """同一次模型调用返回的稠密与稀疏向量。"""
+
+    model: str
+    dense_embeddings: list[list[float]]
+    sparse_embeddings: list[SparseEmbedding]
     usage: UsageInfo
 
 
@@ -74,7 +83,7 @@ class RerankResult(BaseModel):
     """语义重排结果"""
 
     model: str
-    results: List[RerankItem]
+    results: list[RerankItem]
     usage: UsageInfo
 
 
@@ -85,14 +94,14 @@ class VisionResult(BaseModel):
     model: str
     usage: UsageInfo
     # 厂商结束原因用于识别 token 截断；缺失时保持兼容旧 provider。
-    finish_reason: Optional[str] = None
+    finish_reason: str | None = None
 
 
 class ToolCallResult(BaseModel):
     """工具调用结果"""
 
-    tool_calls: List[dict]
-    content: Optional[str] = None
+    tool_calls: list[dict]
+    content: str | None = None
     model: str
     usage: UsageInfo
 

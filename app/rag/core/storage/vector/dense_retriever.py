@@ -156,7 +156,13 @@ class DenseRetriever:
                 raise RecallFatalError(f"Dataset {dataset_id} execution context is required")
             search_kwargs = {}
             if context is not None:
-                search_kwargs["resolved_model"] = context.dense_embedding
+                # 联合向量 provider 的 dense 与 sparse 必须使用同一个模型空间。
+                # Qwen dense 绑定仍只给语义切片使用；最终索引和查询改用 Ark 联合模型。
+                sparse_model = context.sparse_embedding
+                if callable(getattr(sparse_model.provider, "embed_hybrid", None)):
+                    search_kwargs["resolved_model"] = sparse_model
+                else:
+                    search_kwargs["resolved_model"] = context.dense_embedding
             try:
                 result = await self._backend.search_dense_chunks(
                     query=query,

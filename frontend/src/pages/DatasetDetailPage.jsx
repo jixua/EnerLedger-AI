@@ -21,7 +21,6 @@ import {
   X,
 } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
-import { ParseQualityInline } from "../components/ParseQuality";
 import { UploadDialog } from "../components/UploadDialog";
 import { isDocumentRetrievalReady } from "../lib/parse-quality";
 import { useApp } from "../state/AppContext";
@@ -89,8 +88,7 @@ function canRetryDocument(document, status) {
 
 function statusMeta(document) {
   const status = normalizedStatus(document);
-  if (status === "READY" && isDocumentRetrievalReady(document)) return { label: "可检索", modifier: "ready", icon: CheckCircle2 };
-  if (status === "READY") return { label: "不可检索", modifier: "blocked", icon: AlertCircle };
+  if (status === "READY") return { label: "可检索", modifier: "ready", icon: CheckCircle2 };
   if (status === "FAILED") return { label: "失败", modifier: "failed", icon: AlertCircle };
   if (status === "QUEUED" && Number(document?.attempt_count || 0) > 0) return { label: "待重试", modifier: "retry", icon: Clock3 };
   if (status === "QUEUED") return { label: "排队中", modifier: "queued", icon: Clock3 };
@@ -427,7 +425,6 @@ export function DatasetDetailPage() {
                         <div className="document-row__status" role="cell" data-label="状态"><StatusPill document={document} />{Number(document.attempt_count) > 0 ? <small>尝试 {document.attempt_count} 次</small> : null}</div>
                         <div className="document-row__result" role="cell" data-label="解析结果">
                           {status === "FAILED" ? <p className="document-error">{document.error_message || "解析或索引失败"}</p> : <><strong>{document.chunk_count ?? 0} 个分片 · {document.page_count ?? "—"} 页</strong><small>{status === "READY" ? `耗时 ${formatDuration(document.parse_time_ms)}` : status === "QUEUED" ? `可用时间 ${formatTime(document.available_at || document.queued_at)}` : `开始于 ${formatTime(document.processing_started_at)}`}</small></>}
-                          {["READY", "FAILED"].includes(status) ? <ParseQualityInline document={document} /> : null}
                         </div>
                         <time className="document-row__time" role="cell" data-label="更新时间">{formatTime(document.updated_at)}</time>
                         <div className="document-row__actions" role="cell" data-label="操作">
@@ -489,7 +486,7 @@ export function DatasetDetailPage() {
               <label className="form-field"><span>稠密向量模型</span><select required disabled={hasActiveDocuments} value={settingsForm.dense_embedding_config_id} onChange={(event) => setSettingsForm((current) => ({ ...current, dense_embedding_config_id: event.target.value }))}>{denseModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}</select></label>
               <label className="form-field"><span>稀疏向量模型</span><select required disabled={hasActiveDocuments} value={settingsForm.sparse_embedding_config_id} onChange={(event) => setSettingsForm((current) => ({ ...current, sparse_embedding_config_id: event.target.value }))}>{sparseModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}</select></label>
             </div>
-            <label className="form-field"><span>PDF OCR / 视觉模型 <small>可选</small></span><select disabled={hasActiveDocuments} value={settingsForm.vision_config_id} onChange={(event) => setSettingsForm((current) => ({ ...current, vision_config_id: event.target.value }))}><option value="">暂不绑定</option>{visionModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}</select><small>仅在 PDF 页面缺少有效正文、图表需要解释或专项验证需要补全时调用；未绑定时，相应 PDF 会被质量门禁阻断。</small></label>
+            <label className="form-field"><span>PDF OCR / 视觉模型 <small>可选</small></span><select disabled={hasActiveDocuments} value={settingsForm.vision_config_id} onChange={(event) => setSettingsForm((current) => ({ ...current, vision_config_id: event.target.value }))}><option value="">暂不绑定</option>{visionModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}</select><small>仅在 PDF 页面缺少有效正文或图表需要解释时调用；未绑定不会阻止文档完成解析和检索。</small></label>
             {!denseModels.length || !sparseModels.length ? <p className="settings-model-empty"><AlertCircle size={14} />缺少可用的向量模型，请先前往 <Link to="/models">模型配置</Link>。</p> : null}
             <footer className="dataset-settings-form__actions"><span>{settingsDirty ? "有尚未保存的更改" : "当前设置已保存"}</span><button type="submit" className="button button--primary" disabled={savingSettings || !settingsDirty || !denseModels.length || !sparseModels.length}>{savingSettings ? <Loader2 className="spin" size={15} /> : <Settings2 size={15} />}{savingSettings ? "正在保存" : "保存更改"}</button></footer>
           </form>

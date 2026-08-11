@@ -272,15 +272,11 @@ export function isDocumentQualityUsable(document) {
 
 /**
  * The single frontend definition of a document that may participate in recall.
- * New API responses provide the server-derived flag; the fallback keeps demo and
- * older responses safe by requiring READY plus a usable PDF quality state.
+ * 质量诊断不再具备业务阻塞能力；文档完成三路索引并进入 READY 即可参与召回。
  */
 export function isDocumentRetrievalReady(document) {
   const status = String(document?.status || "").trim().toUpperCase();
-  if (status !== "READY" && status !== "SUCCESS") return false;
-  const explicit = document?.retrieval_ready ?? document?.retrievalReady;
-  if (typeof explicit === "boolean") return explicit;
-  return isDocumentQualityUsable(document);
+  return status === "READY" || status === "SUCCESS";
 }
 
 export function formatParseQualityPercent(value) {
