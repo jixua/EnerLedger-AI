@@ -78,6 +78,7 @@ class StructuredSemanticChunker:
         self.validator = validator or CoarseChunkSetValidator()
         self.exporter = exporter or ChunkExporter()
         self.final_validator = final_validator or FinalChunkSetValidator()
+        self.hard_max_tokens = self.final_validator.hard_max_tokens
 
         if candidate_chunker is None and stage_one_router is None:
             raise ValueError("candidate_chunker is required when stage_one_router is omitted.")
@@ -277,6 +278,7 @@ class StructuredSemanticChunker:
                     if position + 1 < len(contextual_indexes)
                     else None
                 ),
+                max_total_tokens=self.hard_max_tokens,
             )
             if previous_tokens > 0:
                 chunk.metadata["context_prev_tokens_applied"] = previous_tokens
@@ -303,7 +305,7 @@ class StructuredSemanticChunker:
         self.final_validator.validate(
             final_set,
             coarse_set,
-            enforce_hard_max=final_set.stage2_strategy != NoopStageTwoAlgorithm.name,
+            enforce_hard_max=True,
         )
         chunks = self.exporter.export(final_set)
         return self._apply_neighbor_context(chunks)

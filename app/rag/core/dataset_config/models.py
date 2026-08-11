@@ -38,7 +38,7 @@ class ChunkingConfig(BaseModel):
     overlap_tokens: int = 64
     max_chunk_tokens: int = 512
     hard_max_tokens: int = 1024
-    stage_two_algorithm: str = "noop"
+    stage_two_algorithm: str = "semantic_depth_window"
     protected_neighbor_overlap: bool = False
 
     @field_validator("overlap_tokens")

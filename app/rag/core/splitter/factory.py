@@ -204,12 +204,8 @@ def _create_structured_chunking_engine(
     )
 
     stage_two_embedder = embedder
-    if stage_two_algorithm == "semantic_depth_window" and stage_two_embedder is None:
-        raise ValueError(
-            "semantic_depth_window requires the dataset dense embedding resolved model"
-        )
-    # Noop 分支不会调用 embedder；仍给语义算法一个明确失败的
-    # 占位客户端，避免任何 env/default 隐式回落。
+    # 没有数据集 embedding 模型时不做隐式 env/default 回落。语义算法
+    # 会捕获该明确失败，改用确定性长度打包；noop 分支不会调用它。
     if stage_two_embedder is None:
         stage_two_embedder = LazyEmbeddingClient(
             lambda: (_ for _ in ()).throw(
@@ -219,7 +215,12 @@ def _create_structured_chunking_engine(
     stage_two_router = StageTwoRouter(
         algorithm_name=stage_two_algorithm,
         algorithms=[
-            NoopStageTwoAlgorithm(),
+            NoopStageTwoAlgorithm(
+                tokenizer=tokenizer,
+                max_chunk_tokens=max_chunk_tokens,
+                hard_max_tokens=hard_max_tokens,
+                min_chunk_tokens=min_candidate_chunk_tokens,
+            ),
             SemanticDepthWindowStageTwo(
                 tokenizer=tokenizer,
                 embedder=stage_two_embedder,

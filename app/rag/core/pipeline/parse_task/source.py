@@ -71,8 +71,6 @@ class ParseSourceIO:
 
     @staticmethod
     def should_skip_source_download(payload: ParseTaskPayload) -> bool:
-        """MinerU 精准解析使用远端 URL 拉取文件，无需先把 PDF 下载到本服务。"""
-        return (
-            payload.file_type.lower() == "pdf"
-            and (payload.pdf_parser_backend or "mineru").lower() == "mineru"
-        )
+        """MinerU 签名上传需要本地源文件，不再跳过对象存储下载。"""
+        _ = payload
+        return False

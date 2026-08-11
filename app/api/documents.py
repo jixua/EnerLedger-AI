@@ -715,6 +715,31 @@ async def upload_and_queue_document(
 upload_and_parse_document = upload_and_queue_document
 
 
+async def _load_ordered_documents(
+    db: AsyncSession,
+    *filters: Any,
+) -> list[Document]:
+    """Sort narrow IDs first so MySQL never filesorts wide JSON document rows."""
+
+    document_ids = list(
+        (
+            await db.scalars(
+                select(Document.id)
+                .where(*filters)
+                .order_by(Document.created_at.desc(), Document.id.desc())
+            )
+        ).all()
+    )
+    if not document_ids:
+        return []
+
+    documents = list(
+        (await db.scalars(select(Document).where(Document.id.in_(document_ids)))).all()
+    )
+    documents_by_id = {int(document.id): document for document in documents}
+    return [documents_by_id[int(document_id)] for document_id in document_ids]
+
+
 @router.get("/datasets/{dataset_id}/documents", response_model=list[DocumentRead])
 async def list_documents(
     dataset_id: int,
@@ -722,13 +747,11 @@ async def list_documents(
     db: AsyncSession = Depends(get_db),
 ) -> list[dict]:
     await _owned_dataset(db, dataset_id, user_id)
-    documents = (
-        await db.scalars(
-            select(Document)
-            .where(Document.dataset_id == dataset_id, Document.user_id == user_id)
-            .order_by(Document.created_at.desc(), Document.id.desc())
-        )
-    ).all()
+    documents = await _load_ordered_documents(
+        db,
+        Document.dataset_id == dataset_id,
+        Document.user_id == user_id,
+    )
     return [_document_payload(document, quality_detail=False) for document in documents]
 
 
@@ -751,14 +774,12 @@ async def list_all_documents(
             },
         )
 
-    statement = select(Document).where(Document.user_id == user_id)
+    filters = [Document.user_id == user_id]
     if dataset_id is not None:
-        statement = statement.where(Document.dataset_id == dataset_id)
+        filters.append(Document.dataset_id == dataset_id)
     if normalized_status is not None:
-        statement = statement.where(Document.status == normalized_status)
-    documents = (
-        await db.scalars(statement.order_by(Document.created_at.desc(), Document.id.desc()))
-    ).all()
+        filters.append(Document.status == normalized_status)
+    documents = await _load_ordered_documents(db, *filters)
     return [_document_payload(document, quality_detail=False) for document in documents]
 
 

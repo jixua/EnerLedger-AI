@@ -53,7 +53,9 @@ class PdfParser(BaseParser):
         self.source_file_url = source_file_url
         self.docling_force_ocr = bool(docling_force_ocr)
         self.mineru_api_url = mineru_api_url or settings.MINERU_API_URL
-        self.mineru_api_key = mineru_api_key or settings.MINERU_API_KEY
+        self.mineru_api_key = (
+            mineru_api_key or settings.MINERU_API_TOKEN or settings.MINERU_API_KEY
+        )
         self.mineru_timeout = mineru_timeout or settings.MINERU_TIMEOUT
         self.mineru_model_version = mineru_model_version or settings.MINERU_MODEL_VERSION
         resolved_table_method = (

@@ -126,6 +126,19 @@ class HeadingTrailTracker:
             self._heading_trail.pop()
         self._heading_trail.append((level, self.heading_text(element)))
 
+    def observe_structural_heading(self, text: str, level: int) -> None:
+        """记录由确定性结构规则识别、但未带 Markdown ``#`` 的标题。
+
+        这类标题只影响分片边界和 heading trail，不改写原始 Markdown，
+        因此不会破坏行号、页码或原文无损还原。
+        """
+        normalized = text.strip()
+        if not normalized or level < 1 or level > self.heading_break_level:
+            return
+        while self._heading_trail and self._heading_trail[-1][0] >= level:
+            self._heading_trail.pop()
+        self._heading_trail.append((level, normalized))
+
     def current_trail(self) -> list[str]:
         """
             返回当前标题路径快照。

@@ -33,7 +33,9 @@ class PdfBackendRegistry:
         default_backend: str | None = None,
         fallbacks: str | None = None,
     ) -> None:
-        self.default_backend = (default_backend or settings.PDF_PARSER_BACKEND or "mineru").lower()
+        self.default_backend = (
+            default_backend or settings.PDF_PARSER_BACKEND or "opendataloader"
+        ).lower()
         self.fallbacks = settings.PDF_PARSER_FALLBACKS if fallbacks is None else fallbacks
         self._factories: dict[str, PdfBackendFactory] = {}
 
@@ -63,8 +65,6 @@ class PdfBackendRegistry:
             return [name for name in self.AUTO_BACKEND_ORDER if name in self._factories]
 
         primary = requested if requested in self._factories else self.default_backend
-        if primary == "mineru":
-            return [primary]
         order = [primary]
         for item in (self.fallbacks or "").split(","):
             fallback = item.strip().lower()
@@ -104,10 +104,23 @@ def _create_mineru_backend(options: PdfParseOptions) -> MinerUBackend | None:
     api_url = getattr(options, "mineru_api_url", None) or ""
     if not api_url:
         return None
+    limits = PdfReliabilityLimits(
+        max_pages=settings.PDF_MAX_PAGES,
+        max_images=settings.PDF_MAX_IMAGES,
+        max_single_image_pixels=settings.PDF_MAX_SINGLE_IMAGE_PIXELS,
+        max_total_image_pixels=settings.PDF_MAX_TOTAL_IMAGE_PIXELS,
+        max_total_decoded_image_bytes=settings.PDF_MAX_TOTAL_DECODED_IMAGE_BYTES,
+        max_single_image_bytes=settings.PDF_MAX_SINGLE_IMAGE_BYTES,
+        max_total_image_bytes=settings.PDF_MAX_TOTAL_IMAGE_BYTES,
+        max_output_files=settings.PDF_MAX_OUTPUT_FILES,
+        max_output_dir_bytes=settings.PDF_MAX_OUTPUT_DIR_BYTES,
+        max_log_bytes=settings.OPENDATALOADER_MAX_LOG_BYTES,
+    )
     return MinerUBackend(
         api_url=api_url,
         api_key=getattr(options, "mineru_api_key", None),
         timeout=getattr(options, "mineru_timeout", 300),
+        limits=limits,
     )
 
 

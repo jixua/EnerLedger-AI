@@ -19,6 +19,8 @@ from app.rag.core.parser.pdf.page_fallback import (
     PageFallbackMethod,
     PageProviderOutput,
     PdfPageFallbackProcessor,
+    QualityGatedOcrPageProvider,
+    RapidOcrPageProviderAdapter,
     RenderedPdfPage,
 )
 from app.rag.core.parser.pdf.quality import PdfQualityAnalyzer, PdfQualityStatus
@@ -641,6 +643,33 @@ async def test_qwen_visual_adapter_requests_non_thinking_json_output() -> None:
 
 
 @pytest.mark.asyncio
+async def test_kimi_visual_adapter_uses_supported_non_thinking_json_parameters() -> None:
+    provider = _StructuredAnalyzeImageProvider()
+    adapter = AnalyzeImagePageProviderAdapter(provider, model_name="kimi-k2.6")
+    image = RenderedPdfPage(1, _png_bytes(), "image/png", 280, 100, 100)
+
+    await adapter.recognize_page(page_number=1, image=image)
+
+    assert provider.calls[0]["temperature"] == 1.0
+    assert provider.calls[0]["thinking"] == {"type": "disabled"}
+    assert provider.calls[0]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
+async def test_kimi_plan_visual_adapter_uses_code_endpoint_temperature() -> None:
+    provider = _StructuredAnalyzeImageProvider()
+    provider.api_base_url = "https://api.kimi.com/coding/v1/chat/completions"
+    adapter = AnalyzeImagePageProviderAdapter(provider, model_name="kimi-k2.6")
+    image = RenderedPdfPage(1, _png_bytes(), "image/png", 280, 100, 100)
+
+    await adapter.recognize_page(page_number=1, image=image)
+
+    assert provider.calls[0]["temperature"] == 0.6
+    assert provider.calls[0]["thinking"] == {"type": "disabled"}
+    assert provider.calls[0]["response_format"] == {"type": "json_object"}
+
+
+@pytest.mark.asyncio
 async def test_explicit_no_visual_assessment_closes_small_unknown_asset_task(
     tmp_path: Path,
 ) -> None:
@@ -881,6 +910,88 @@ def test_render_dpi_must_stay_in_supported_range(dpi: int) -> None:
 def test_provider_output_rejects_invalid_confidence() -> None:
     with pytest.raises(ValueError, match="confidence"):
         PageProviderOutput(text="invalid", confidence=1.1)
+
+
+@pytest.mark.asyncio
+async def test_rapidocr_adapter_normalizes_pp_ocrv6_output() -> None:
+    class _Result:
+        txts = ("能源消耗", "42 tCO2e")
+        scores = (0.98, 0.92)
+
+        @staticmethod
+        def to_markdown() -> str:
+            return "能源消耗  42 tCO2e"
+
+    calls = []
+
+    def engine(image_bytes: bytes):
+        calls.append(image_bytes)
+        return _Result()
+
+    adapter = RapidOcrPageProviderAdapter(engine_factory=lambda: engine)
+    image = RenderedPdfPage(
+        page_number=1,
+        image_bytes=_png_bytes(),
+        media_type="image/png",
+        dpi=280,
+        width=8,
+        height=8,
+    )
+
+    output = await adapter.recognize_page(page_number=1, image=image)
+
+    assert calls == [image.image_bytes]
+    assert output.text == "能源消耗\n42 tCO2e"
+    assert output.markdown == "能源消耗  42 tCO2e"
+    assert output.confidence == pytest.approx(0.95)
+    assert output.warnings == ("OCR_SOURCE:RAPIDOCR_PP_OCRV6",)
+
+
+@pytest.mark.asyncio
+async def test_quality_gated_ocr_keeps_good_local_result() -> None:
+    primary = _FakeOcrProvider()
+    fallback = _FakeOcrProvider()
+    provider = QualityGatedOcrPageProvider(
+        primary,
+        fallback,
+        min_effective_text_chars=10,
+        min_confidence=0.8,
+    )
+    image = RenderedPdfPage(1, _png_bytes(), "image/png", 280, 8, 8)
+
+    output = await provider.recognize_page(page_number=1, image=image)
+
+    assert output.confidence == 0.91
+    assert len(primary.calls) == 1
+    assert fallback.calls == []
+
+
+@pytest.mark.asyncio
+async def test_quality_gated_ocr_falls_back_when_local_confidence_is_low() -> None:
+    class _LowConfidenceProvider(_FakeOcrProvider):
+        async def recognize_page(self, **kwargs) -> PageProviderOutput:
+            self.calls.append((kwargs["page_number"], kwargs["image"]))
+            return PageProviderOutput(
+                text="local text is long enough",
+                confidence=0.3,
+                warnings=("OCR_SOURCE:RAPIDOCR_PP_OCRV6",),
+            )
+
+    primary = _LowConfidenceProvider()
+    fallback = _FakeOcrProvider()
+    provider = QualityGatedOcrPageProvider(
+        primary,
+        fallback,
+        min_effective_text_chars=10,
+        min_confidence=0.8,
+    )
+    image = RenderedPdfPage(1, _png_bytes(), "image/png", 280, 8, 8)
+
+    output = await provider.recognize_page(page_number=1, image=image)
+
+    assert len(fallback.calls) == 1
+    assert "OCR_SOURCE:VISION_FALLBACK" in output.warnings
+    assert any(item.startswith("LOCAL_OCR_REJECTED:CONFIDENCE_LOW") for item in output.warnings)
 
 
 def test_rendered_png_default_stays_below_provider_data_uri_limit() -> None:
