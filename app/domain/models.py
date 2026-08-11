@@ -58,11 +58,10 @@ class Dataset(Base):
 
 
 class Document(Base):
-    """上传文件、解析结果、轻量任务队列和最终状态的单表记录。
+    """上传文件、解析结果与最终状态的单表记录。
 
-    解析队列直接复用 MySQL 8：worker 通过 ``FOR UPDATE SKIP LOCKED`` 抢占
-    ``QUEUED`` 记录，并用 lease token 对终态写入做 fencing。这样无需新增消息中间件
-    或任务表，业务 schema 仍保持四张表。
+    RabbitMQ 负责主动投递只携带 ID 的解析命令；本表仍作为状态、重试次数、
+    lease token 和最终结果的权威真值，防止重复投递覆盖新版本。
     """
 
     __tablename__ = "document"

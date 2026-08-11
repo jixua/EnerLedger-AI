@@ -8,12 +8,25 @@ from fastapi import HTTPException
 from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
+import app.api.datasets as datasets_api
 from app.api.datasets import delete_dataset, update_dataset
 from app.api.llm import delete_config, update_config
 from app.domain.models import Dataset, Document
 from app.domain.schemas import DatasetUpdate, LLMConfigUpdate
 from app.rag.core.llm.encryption import decrypt_api_key, encrypt_api_key
 from app.rag.models.db_models import LLMModelConfigDB
+
+
+@pytest.fixture(autouse=True)
+def _dispatch_stub(monkeypatch):
+    dispatched = []
+
+    class Dispatcher:
+        async def dispatch(self, document):
+            dispatched.append((document.id, document.version))
+
+    monkeypatch.setattr(datasets_api, "DocumentParseDispatcher", Dispatcher)
+    return dispatched
 
 
 class _FakeScalarResult:

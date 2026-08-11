@@ -10,7 +10,7 @@
 - PDF 固定使用源码内的 OpenDataLoader；它在 Python 进程中调用 Java，因此运行镜像仍需 OpenJDK 21。
 - 上传入口支持 PDF、DOC/DOCX、HTML/HTM；旧版二进制 `.doc` 由
   LibreOffice 独立进程限时转换为 DOCX，再进入同一套 Mammoth 结构解析。
-- 文档上传请求只流式保存原文件并写入 MySQL 持久队列，独立 `parse-worker` 异步完成解析、切分和三路索引；不额外引入 RabbitMQ、Redis 或 Kafka。
+- 文档上传后立即向 RabbitMQ 发布只携带文档 ID 的持久消息，独立 `parse-worker` 通过 `basic_consume` 主动接收并完成解析、切分和三路索引；MySQL 仅保存状态、租约与幂等真值。
 - MySQL 只保留 `dataset`、`document`、`document_chunk`、`llm_config` 四张业务表。
 - 不建立解析日志、阶段流水线、会话、消息、用量日志、厂商目录或模型目录表。
 - `document.status` 使用 `QUEUED`、`PROCESSING`、`READY`、`FAILED`。只有 `READY` 文档可以参与检索。
@@ -303,7 +303,7 @@ curl -fsS http://127.0.0.1:6333/readyz
 curl -fsS http://127.0.0.1:9308/
 ```
 
-本地 Docker 整栈、真实 Dense/Sparse/Chat 模型、HTML 解析、MySQL 持久队列、
+本地 Docker 整栈、真实 Dense/Sparse/Chat 模型、HTML 解析、RabbitMQ 主动解析队列、
 MinIO/Qdrant/Manticore 写读、三路召回和 SSE 流式对话已于 2026-08-10 完成联调验证。
 本轮另用真实 4 页正文 PDF 验证 ODL 页序与表格 A/B，并用真实 4 页扫描 PDF 验证全部页面
 进入 280 DPI OCR 门禁。真实 Vision 模型的字符/公式/图表准确率仍必须通过上述人工金标工具

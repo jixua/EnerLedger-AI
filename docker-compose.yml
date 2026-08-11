@@ -96,6 +96,25 @@ services:
       retries: 30
       start_period: 10s
 
+  rabbitmq:
+    image: rabbitmq:4.1.8-management-alpine
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:-energy-carbon}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:-energy-carbon-local-change-me}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:-energy-carbon}
+    ports:
+      - "${RABBITMQ_PORT:-5672}:5672"
+      - "${RABBITMQ_MANAGEMENT_PORT:-15672}:15672"
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
   api:
     build:
       context: .
@@ -125,6 +144,9 @@ services:
       LOG_FILE_ENABLED: "false"
       NLTK_DATA: /app/nltk_data
       RECALL_LTR_MODE: "off"
+      MQ_VENDOR: rabbitmq
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://energy-carbon:energy-carbon-local-change-me@rabbitmq:5672/energy-carbon}
+      RABBITMQ_PREFETCH_COUNT: ${DOCUMENT_QUEUE_WORKER_CONCURRENCY:-1}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -136,8 +158,10 @@ services:
         condition: service_started
       manticore:
         condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
 
-  # 复用 MySQL document 表作为 durable queue；不额外部署 Redis/RabbitMQ/Kafka。
+  # RabbitMQ basic_consume 主动投递；MySQL document 表仅保存状态、租约和幂等真值。
   parse-worker:
     build:
       context: .
@@ -167,10 +191,15 @@ services:
       NLTK_DATA: /app/nltk_data
       RECALL_LTR_MODE: "off"
       DOCUMENT_QUEUE_WORKER_CONCURRENCY: ${DOCUMENT_QUEUE_WORKER_CONCURRENCY:-1}
+      MQ_VENDOR: rabbitmq
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://energy-carbon:energy-carbon-local-change-me@rabbitmq:5672/energy-carbon}
+      RABBITMQ_PREFETCH_COUNT: ${DOCUMENT_QUEUE_WORKER_CONCURRENCY:-1}
     healthcheck:
       disable: true
     depends_on:
       api:
+        condition: service_healthy
+      rabbitmq:
         condition: service_healthy
 
 volumes:
@@ -178,3 +207,4 @@ volumes:
   minio-data:
   qdrant-data:
   manticore-data:
+  rabbitmq-data:

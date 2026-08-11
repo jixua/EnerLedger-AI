@@ -22,6 +22,17 @@ from app.domain.schemas import DocumentUpdate
 from app.services.document_queue import utc_now
 
 
+@pytest.fixture(autouse=True)
+def _active_dispatch_stub(monkeypatch):
+    dispatched = []
+
+    async def dispatch(_db, document):
+        dispatched.append((document.id, document.version))
+
+    monkeypatch.setattr(documents_api, "_dispatch_document", dispatch)
+    return dispatched
+
+
 class _FakeStorage:
     def __init__(self):
         self.uploads = []
@@ -209,7 +220,11 @@ def test_document_list_quality_summary_omits_ocr_text_and_structured_assets() ->
 
 
 @pytest.mark.asyncio
-async def test_upload_streams_to_storage_and_returns_queued_location(monkeypatch, tmp_path) -> None:
+async def test_upload_streams_to_storage_and_returns_queued_location(
+    monkeypatch,
+    tmp_path,
+    _active_dispatch_stub,
+) -> None:
     storage = _FakeStorage()
     monkeypatch.setattr(documents_api.StorageFactory, "get_storage", lambda: storage)
     monkeypatch.setattr(documents_api.settings, "PARSE_TEMP_DIR", str(tmp_path))
@@ -229,10 +244,13 @@ async def test_upload_streams_to_storage_and_returns_queued_location(monkeypatch
     assert response.headers["Location"] == "/api/v1/documents/88"
     assert storage.uploads[0][2] == b"pdf-binary"
     assert db.commits == 1
+    assert _active_dispatch_stub == [(88, 1)]
 
 
 @pytest.mark.asyncio
-async def test_retry_recovers_failed_and_stale_processing_without_new_version() -> None:
+async def test_retry_recovers_failed_and_stale_processing_without_new_version(
+    _active_dispatch_stub,
+) -> None:
     failed = _document(status="FAILED", version=4)
     failed.reparse_requested = True
     failed_db = _FakeSession([failed])
@@ -244,15 +262,17 @@ async def test_retry_recovers_failed_and_stale_processing_without_new_version() 
     assert result["version"] == 4
     assert result["reparse_requested"] is True
     assert result["attempt_count"] == 0
+    assert _active_dispatch_stub == [(7, 4)]
 
     stale = _document(status="PROCESSING", version=1)
     stale.lease_expires_at = utc_now() - timedelta(seconds=1)
     stale_db = _FakeSession([stale])
     assert (await retry_document(7, Response(), 11, stale_db))["status"] == "QUEUED"
+    assert _active_dispatch_stub == [(7, 4), (7, 1)]
 
 
 @pytest.mark.asyncio
-async def test_reparse_increments_version_but_retry_does_not() -> None:
+async def test_reparse_increments_version_but_retry_does_not(_active_dispatch_stub) -> None:
     document = _document(status="READY", version=2)
     db = _FakeSession([document])
 
@@ -261,6 +281,7 @@ async def test_reparse_increments_version_but_retry_does_not() -> None:
     assert result["status"] == "QUEUED"
     assert result["version"] == 3
     assert result["reparse_requested"] is True
+    assert _active_dispatch_stub == [(7, 3)]
 
 
 @pytest.mark.asyncio

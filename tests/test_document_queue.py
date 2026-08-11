@@ -66,7 +66,7 @@ def _document(*, status: str, attempts: int = 0) -> Document:
 
 
 @pytest.mark.asyncio
-async def test_claim_uses_skip_locked_and_recovers_expired_processing() -> None:
+async def test_pushed_claim_recovers_expired_processing_lease() -> None:
     now = utc_now()
     document = _document(status=DOCUMENT_STATUS_PROCESSING, attempts=1)
     document.lease_token = "old-token"
@@ -74,7 +74,12 @@ async def test_claim_uses_skip_locked_and_recovers_expired_processing() -> None:
     db = _FakeSession([document])
     queue = DocumentQueueService(lease_seconds=60, max_attempts=3, retry_delays=(1,))
 
-    claim = await queue.claim_next(db, worker_id="worker-a", now=now)
+    claim = await queue.claim_document(
+        db,
+        document_id=7,
+        worker_id="worker-a",
+        now=now,
+    )
 
     assert claim is not None
     assert claim.recovered_expired_lease is True
@@ -83,20 +88,52 @@ async def test_claim_uses_skip_locked_and_recovers_expired_processing() -> None:
     assert document.lease_token == claim.lease_token != "old-token"
     assert document.lease_owner == "worker-a"
     assert document.lease_expires_at == now + timedelta(seconds=60)
-    assert db.statements[0]._for_update_arg.skip_locked is True
+    assert db.statements[0]._for_update_arg.skip_locked is False
     assert db.commits == 1
 
 
 @pytest.mark.asyncio
-async def test_exhausted_stale_task_is_failed_instead_of_staying_processing() -> None:
+async def test_pushed_claim_targets_only_the_message_document() -> None:
+    now = utc_now()
+    document = _document(status=DOCUMENT_STATUS_QUEUED)
+    db = _FakeSession([document])
+    queue = DocumentQueueService(lease_seconds=60, max_attempts=3, retry_delays=(1,))
+
+    claim = await queue.claim_document(
+        db,
+        document_id=7,
+        worker_id="rabbit-worker",
+        now=now,
+    )
+
+    assert claim is not None
+    assert claim.document_id == 7
+    statement = db.statements[0]
+    assert statement._limit_clause is None
+    assert statement._for_update_arg is not None
+    assert statement._for_update_arg.skip_locked is False
+    assert "document.id" in str(statement.whereclause)
+    assert document.status == DOCUMENT_STATUS_PROCESSING
+
+
+@pytest.mark.asyncio
+async def test_exhausted_pushed_task_is_failed_instead_of_staying_processing() -> None:
     now = utc_now()
     exhausted = _document(status=DOCUMENT_STATUS_PROCESSING, attempts=3)
     exhausted.lease_expires_at = now - timedelta(seconds=1)
     exhausted.lease_token = "expired"
-    db = _FakeSession([exhausted, None])
+    db = _FakeSession([exhausted])
     queue = DocumentQueueService(lease_seconds=60, max_attempts=3, retry_delays=(1,))
 
-    assert await queue.claim_next(db, worker_id="worker-a", now=now) is None
+    assert (
+        await queue.claim_document(
+            db,
+            document_id=7,
+            worker_id="worker-a",
+            now=now,
+        )
+        is None
+    )
     assert exhausted.status == DOCUMENT_STATUS_FAILED
     assert exhausted.error_code == "MAX_ATTEMPTS_EXCEEDED"
     assert exhausted.lease_token is None

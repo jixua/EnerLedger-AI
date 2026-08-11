@@ -10,9 +10,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.domain.auth import get_user_id
 from app.domain.models import Dataset, Document
 from app.domain.schemas import DatasetCreate, DatasetRead, DatasetUpdate
+from app.domain.time import utc_now
 from app.rag.core.storage.manticore_bm25 import ManticoreBm25IndexingPipeline
 from app.rag.database import get_db
 from app.rag.models.db_models import LLMModelConfigDB
+from app.services.document_dispatch import DocumentParseDispatcher
 from app.services.document_queue import (
     DOCUMENT_STATUS_FAILED,
     DOCUMENT_STATUS_READY,
@@ -225,6 +227,7 @@ async def update_dataset(
             "vision_config_id",
         )
     )
+    documents: list[Document] = []
     if parse_binding_changed:
         documents = (
             await db.scalars(
@@ -266,6 +269,29 @@ async def update_dataset(
         raise
 
     await db.refresh(dataset)
+    dispatch_failures: list[int] = []
+    for document in documents:
+        try:
+            await DocumentParseDispatcher().dispatch(document)
+        except Exception as exc:
+            document.status = DOCUMENT_STATUS_FAILED
+            document.available_at = None
+            document.finished_at = utc_now()
+            document.error_code = "DOCUMENT_DISPATCH_FAILED"
+            document.error_message = (
+                f"{type(exc).__name__}: RabbitMQ 解析任务发布失败"
+            )[:1000]
+            dispatch_failures.append(int(document.id))
+    if dispatch_failures:
+        await db.commit()
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "DOCUMENT_DISPATCH_FAILED",
+                "message": "数据集已更新，但部分文档的解析任务发布失败",
+                "document_ids": dispatch_failures,
+            },
+        )
     return _dataset_response(dataset)
 
 

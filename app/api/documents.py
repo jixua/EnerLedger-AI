@@ -32,6 +32,7 @@ from app.rag.database import get_db
 from app.rag.models.chunk_record import ChunkRecordDB
 from app.rag.observability.logging import logger
 from app.rag.services.storage.factory import StorageFactory
+from app.services.document_dispatch import DocumentParseDispatcher
 from app.services.document_ingestion import SimpleDocumentIngestionService
 from app.services.document_queue import (
     DOCUMENT_STATUS_FAILED,
@@ -67,6 +68,33 @@ _PREVIEW_IMAGE_CONTENT_TYPES = {
     ".tiff": "image/tiff",
     ".webp": "image/webp",
 }
+
+
+async def _dispatch_document(db: AsyncSession, document: Document) -> None:
+    """Publish after commit; make a failed publish visible and manually retryable."""
+
+    try:
+        await DocumentParseDispatcher().dispatch(document)
+    except Exception as exc:
+        document.status = DOCUMENT_STATUS_FAILED
+        document.available_at = None
+        document.finished_at = utc_now()
+        document.error_code = "DOCUMENT_DISPATCH_FAILED"
+        document.error_message = f"{type(exc).__name__}: RabbitMQ 解析任务发布失败"[:1000]
+        await db.commit()
+        logger.bind(
+            event="document_dispatch_failed",
+            document_id=document.id,
+            error_type=type(exc).__name__,
+        ).error("文档已保存，但 RabbitMQ 解析任务发布失败")
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "code": "DOCUMENT_DISPATCH_FAILED",
+                "message": "解析队列暂时不可用，文档已保存，可稍后重试",
+                "document_id": int(document.id),
+            },
+        ) from None
 
 
 async def _owned_dataset(
@@ -617,7 +645,7 @@ async def upload_and_queue_document(
     user_id: int = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """流式保存原文件并将解析任务写入 MySQL durable queue。"""
+    """流式保存原文件，提交状态后立即向 RabbitMQ 发布解析任务。"""
 
     await _owned_dataset(db, dataset_id, user_id)
 
@@ -698,6 +726,7 @@ async def upload_and_queue_document(
             ).warning("数据库写入失败后清理原文件对象失败")
         raise
 
+    await _dispatch_document(db, document)
     response.headers["Location"] = f"/api/v1/documents/{document.id}"
     return _document_payload(document)
 
@@ -1090,6 +1119,7 @@ async def retry_document(
     reset_document_for_queue(document, reparse=False)
     await db.commit()
     await db.refresh(document)
+    await _dispatch_document(db, document)
     response.headers["Location"] = f"/api/v1/documents/{document.id}"
     return _document_payload(document)
 
@@ -1119,6 +1149,7 @@ async def reparse_document(
     reset_document_for_queue(document, reparse=True)
     await db.commit()
     await db.refresh(document)
+    await _dispatch_document(db, document)
     response.headers["Location"] = f"/api/v1/documents/{document.id}"
     return _document_payload(document)
 

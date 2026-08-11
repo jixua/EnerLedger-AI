@@ -1,12 +1,16 @@
 """MQ 业务消息导出。"""
 
-from app.rag.core.mq.messages.parse_task import ParseTaskPayload, ParseTaskMessage
-from app.rag.core.mq.messages.token_usage import TokenUsagePayload, TokenUsageMessage
-from app.rag.core.mq.messages.chat_turn import ChatTurnPayload, ChatTurnMessage
+from app.rag.core.mq.messages.chat_turn import ChatTurnMessage, ChatTurnPayload
 from app.rag.core.mq.messages.document_delete import (
-    DocumentDeletePayload,
     DocumentDeleteMessage,
+    DocumentDeletePayload,
 )
+from app.rag.core.mq.messages.document_ingestion import (
+    DocumentIngestionMessage,
+    DocumentIngestionPayload,
+)
+from app.rag.core.mq.messages.parse_task import ParseTaskMessage, ParseTaskPayload
+from app.rag.core.mq.messages.token_usage import TokenUsageMessage, TokenUsagePayload
 
 __all__ = [
     "ParseTaskPayload",
@@ -17,4 +21,6 @@ __all__ = [
     "ChatTurnMessage",
     "DocumentDeletePayload",
     "DocumentDeleteMessage",
+    "DocumentIngestionPayload",
+    "DocumentIngestionMessage",
 ]

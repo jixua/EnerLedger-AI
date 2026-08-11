@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 from datetime import UTC, datetime
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import APIRouter, Depends
@@ -107,10 +108,16 @@ async def get_system_status(
         or 0
     )
 
-    minio, qdrant, manticore, opendataloader = await asyncio.gather(
+    rabbit_url = urlsplit(settings.RABBITMQ_URL)
+    minio, qdrant, manticore, rabbitmq, opendataloader = await asyncio.gather(
         _check_http(_minio_health_url(), label="MinIO"),
         _check_http(_qdrant_health_url(), label="Qdrant"),
         _check_tcp(settings.MANTICORE_HOST, settings.MANTICORE_PORT, label="Manticore"),
+        _check_tcp(
+            rabbit_url.hostname or "127.0.0.1",
+            rabbit_url.port or 5672,
+            label="RabbitMQ",
+        ),
         asyncio.to_thread(
             lambda: OpenDataLoaderHealthChecker(
                 timeout_seconds=settings.OPENDATALOADER_HEALTHCHECK_TIMEOUT_SECONDS
@@ -118,8 +125,8 @@ async def get_system_status(
         ),
     )
     queue = _component(
-        "ready",
-        "MySQL 持久解析队列可查询",
+        rabbitmq["status"],
+        "RabbitMQ 主动投递，MySQL 保存任务状态",
         queued=counts[DOCUMENT_STATUS_QUEUED],
         processing=counts[DOCUMENT_STATUS_PROCESSING],
         ready=counts[DOCUMENT_STATUS_READY],
@@ -135,6 +142,7 @@ async def get_system_status(
         "minio": minio,
         "qdrant": qdrant,
         "manticore": manticore,
+        "rabbitmq": rabbitmq,
         "opendataloader": opendataloader,
         "queue": queue,
         "worker": worker,

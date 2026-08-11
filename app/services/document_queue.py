@@ -1,8 +1,7 @@
-"""基于 MySQL 8 document 表的轻量持久解析队列。
+"""Document parsing state transitions and lease fencing stored in MySQL.
 
-这里刻意不引入 Redis、RabbitMQ 或 Kafka。``SELECT ... FOR UPDATE SKIP LOCKED``
-负责多 worker 竞争，短事务内签发 lease；心跳续租和 token CAS 防止过期 worker 覆盖
-新 worker 的终态。
+RabbitMQ is responsible for active delivery. MySQL remains the authoritative state and
+idempotency boundary; workers claim the specific document ID carried by each message.
 """
 
 from __future__ import annotations
@@ -11,7 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from sqlalchemy import case, func, or_, select, update
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models import Document
@@ -63,8 +62,19 @@ class DocumentClaim:
     reparse_requested: bool
 
 
+@dataclass(frozen=True, slots=True)
+class DocumentQueueSnapshot:
+    document_id: int
+    user_id: int
+    dataset_id: int
+    version: int
+    status: str
+    available_at: datetime | None
+    lease_expires_at: datetime | None
+
+
 class DocumentQueueService:
-    """MySQL durable queue 的原子状态转换。"""
+    """Atomic state transitions used by the RabbitMQ-driven worker."""
 
     def __init__(
         self,
@@ -87,76 +97,97 @@ class DocumentQueueService:
         if not self.retry_delays or any(delay < 0 for delay in self.retry_delays):
             raise ValueError("retry_delays 必须包含非负整数")
 
-    async def claim_next(
+    async def claim_document(
         self,
         db: AsyncSession,
         *,
+        document_id: int,
         worker_id: str,
         now: datetime | None = None,
     ) -> DocumentClaim | None:
-        """抢占一个到期任务；锁只覆盖签发 lease 的短事务。
+        """Claim one explicitly dispatched document; never scan the queue table."""
 
-        ``skip_locked`` 让多个 worker 横向扩展时不会互相等待。超过最大尝试次数的
-        异常记录在同一循环内收敛为 ``FAILED``，不会永久卡在 ``PROCESSING``。
-        """
-
-        while True:
-            claimed_at = now or utc_now()
-            due_queued = (
-                (Document.status == DOCUMENT_STATUS_QUEUED)
-                & or_(Document.available_at.is_(None), Document.available_at <= claimed_at)
+        claimed_at = now or utc_now()
+        document = await db.scalar(
+            select(Document)
+            .where(Document.id == document_id)
+            .with_for_update()
+        )
+        if document is None:
+            return None
+        queued_due = document.status == DOCUMENT_STATUS_QUEUED and (
+            document.available_at is None or document.available_at <= claimed_at
+        )
+        expired_processing = (
+            document.status == DOCUMENT_STATUS_PROCESSING
+            and (
+                document.lease_expires_at is None
+                or document.lease_expires_at <= claimed_at
             )
-            expired_processing = (
-                (Document.status == DOCUMENT_STATUS_PROCESSING)
-                & (Document.lease_expires_at.is_not(None))
-                & (Document.lease_expires_at <= claimed_at)
-            )
-            statement = (
-                select(Document)
-                .where(or_(due_queued, expired_processing))
-                .order_by(
-                    case((Document.status == DOCUMENT_STATUS_PROCESSING, 0), else_=1),
-                    func.coalesce(Document.available_at, Document.created_at),
-                    Document.id,
-                )
-                .limit(1)
-                .with_for_update(skip_locked=True)
-            )
-            document = await db.scalar(statement)
-            if document is None:
-                return None
-
-            if int(document.attempt_count or 0) >= self.max_attempts:
-                document.status = DOCUMENT_STATUS_FAILED
-                document.error_code = "MAX_ATTEMPTS_EXCEEDED"
-                document.error_message = (
-                    document.error_message or "解析任务超过最大尝试次数"
-                )[:1000]
-                document.finished_at = claimed_at
-                self._clear_lease(document)
-                await db.commit()
-                # 使用真实当前时间继续找下一条；测试传入的固定 now 仍保持确定性。
-                continue
-
-            recovered = document.status == DOCUMENT_STATUS_PROCESSING
-            token = uuid4().hex
-            document.status = DOCUMENT_STATUS_PROCESSING
-            document.attempt_count = int(document.attempt_count or 0) + 1
-            document.lease_token = token
-            document.lease_owner = worker_id[:128]
-            document.lease_expires_at = claimed_at + timedelta(seconds=self.lease_seconds)
-            document.processing_started_at = claimed_at
-            document.finished_at = None
-            document.error_code = None
-            document.error_message = None
+        )
+        if not queued_due and not expired_processing:
+            return None
+        if int(document.attempt_count or 0) >= self.max_attempts:
+            document.status = DOCUMENT_STATUS_FAILED
+            document.error_code = "MAX_ATTEMPTS_EXCEEDED"
+            document.error_message = (
+                document.error_message or "解析任务超过最大尝试次数"
+            )[:1000]
+            document.finished_at = claimed_at
+            self._clear_lease(document)
             await db.commit()
-            return DocumentClaim(
-                document_id=int(document.id),
-                lease_token=token,
-                attempt_count=int(document.attempt_count),
-                recovered_expired_lease=recovered,
-                reparse_requested=bool(document.reparse_requested),
+            return None
+
+        recovered = document.status == DOCUMENT_STATUS_PROCESSING
+        token = uuid4().hex
+        document.status = DOCUMENT_STATUS_PROCESSING
+        document.attempt_count = int(document.attempt_count or 0) + 1
+        document.lease_token = token
+        document.lease_owner = worker_id[:128]
+        document.lease_expires_at = claimed_at + timedelta(seconds=self.lease_seconds)
+        document.processing_started_at = claimed_at
+        document.finished_at = None
+        document.error_code = None
+        document.error_message = None
+        await db.commit()
+        return DocumentClaim(
+            document_id=int(document.id),
+            lease_token=token,
+            attempt_count=int(document.attempt_count),
+            recovered_expired_lease=recovered,
+            reparse_requested=bool(document.reparse_requested),
+        )
+
+    async def snapshot(
+        self,
+        db: AsyncSession,
+        *,
+        document_id: int,
+    ) -> DocumentQueueSnapshot | None:
+        row = (
+            await db.execute(
+                select(
+                    Document.id,
+                    Document.user_id,
+                    Document.dataset_id,
+                    Document.version,
+                    Document.status,
+                    Document.available_at,
+                    Document.lease_expires_at,
+                ).where(Document.id == document_id)
             )
+        ).one_or_none()
+        if row is None:
+            return None
+        return DocumentQueueSnapshot(
+            document_id=int(row.id),
+            user_id=int(row.user_id),
+            dataset_id=int(row.dataset_id),
+            version=int(row.version),
+            status=str(row.status),
+            available_at=row.available_at,
+            lease_expires_at=row.lease_expires_at,
+        )
 
     async def renew_lease(
         self,

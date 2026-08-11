@@ -1,4 +1,4 @@
-"""MySQL durable queue 文档解析 worker。"""
+"""RabbitMQ push-driven document parser with MySQL lease fencing."""
 
 from __future__ import annotations
 
@@ -22,6 +22,10 @@ configure_nltk_data_path()
 
 from app.domain.models import Document  # noqa: E402
 from app.rag.config import settings  # noqa: E402
+from app.rag.core.mq.messages import (  # noqa: E402
+    DocumentIngestionMessage,
+    DocumentIngestionPayload,
+)
 from app.rag.core.parser.pdf.reliability import OpenDataLoaderHealthChecker  # noqa: E402
 from app.rag.database import (  # noqa: E402
     close_database,
@@ -29,6 +33,7 @@ from app.rag.database import (  # noqa: E402
     init_database,
 )
 from app.rag.observability.logging import logger, setup_logger  # noqa: E402
+from app.rag.services.mq_service import MQService  # noqa: E402
 from app.rag.services.storage.factory import StorageFactory  # noqa: E402
 from app.services.document_ingestion import (  # noqa: E402
     DocumentIngestionLeaseLost,
@@ -36,12 +41,17 @@ from app.services.document_ingestion import (  # noqa: E402
     close_ingestion_resources,
 )
 from app.services.document_queue import (  # noqa: E402
+    DOCUMENT_STATUS_FAILED,
     DOCUMENT_STATUS_PROCESSING,
+    DOCUMENT_STATUS_QUEUED,
+    DOCUMENT_STATUS_READY,
     DocumentClaim,
     DocumentQueueService,
+    utc_now,
 )
 
 SessionContextFactory = Callable[[], AbstractAsyncContextManager[AsyncSession]]
+DOCUMENT_PARSE_GROUP = "energy-carbon-document-parser"
 
 
 class DocumentParseWorker:
@@ -54,40 +64,28 @@ class DocumentParseWorker:
         ingestion: SimpleDocumentIngestionService | None = None,
         storage: Any | None = None,
         session_context_factory: SessionContextFactory = get_db_context,
+        mq_service: MQService | None = None,
         worker_id: str | None = None,
-        poll_interval: float | None = None,
         heartbeat_interval: float | None = None,
-        concurrency: int | None = None,
     ) -> None:
         self.queue = queue or DocumentQueueService()
         self.storage = storage or StorageFactory.get_storage()
         self.ingestion = ingestion or SimpleDocumentIngestionService(storage=self.storage)
         self.session_context_factory = session_context_factory
+        self.mq_service = mq_service or MQService()
         self.worker_id = worker_id or self._default_worker_id()
-        self.poll_interval = float(
-            settings.DOCUMENT_QUEUE_POLL_INTERVAL_SECONDS
-            if poll_interval is None
-            else poll_interval
-        )
         self.heartbeat_interval = float(
             settings.DOCUMENT_QUEUE_HEARTBEAT_SECONDS
             if heartbeat_interval is None
             else heartbeat_interval
         )
-        self.concurrency = int(
-            settings.DOCUMENT_QUEUE_WORKER_CONCURRENCY if concurrency is None else concurrency
-        )
         lease_seconds = float(
             getattr(self.queue, "lease_seconds", settings.DOCUMENT_QUEUE_LEASE_SECONDS)
         )
-        if self.poll_interval <= 0:
-            raise ValueError("poll_interval 必须大于 0")
         if self.heartbeat_interval <= 0:
             raise ValueError("heartbeat_interval 必须大于 0")
         if self.heartbeat_interval >= lease_seconds:
             raise ValueError("heartbeat_interval 必须小于 lease_seconds")
-        if self.concurrency < 1:
-            raise ValueError("concurrency 必须至少为 1")
         self.stop_event = asyncio.Event()
 
     async def run(self) -> None:
@@ -98,46 +96,71 @@ class DocumentParseWorker:
         )
         health.require_ready()
         Path(settings.PARSE_TEMP_DIR).mkdir(parents=True, exist_ok=True)
-        consumers = [
-            asyncio.create_task(
-                self._consumer_loop(slot),
-                name=f"document-parse-consumer-{slot}",
-            )
-            for slot in range(self.concurrency)
-        ]
+        await self.mq_service.subscribe(
+            DocumentIngestionMessage.MQ_NAME,
+            DOCUMENT_PARSE_GROUP,
+            self._handle_message,
+        )
+        await self.mq_service.start_consuming()
         try:
-            await asyncio.gather(*consumers)
+            await self.stop_event.wait()
         finally:
-            for task in consumers:
-                task.cancel()
-            await asyncio.gather(*consumers, return_exceptions=True)
+            await self.mq_service.stop_consuming()
 
     def stop(self) -> None:
         """停止领取新任务；当前已领取任务会先完成或安全回到队列。"""
 
         self.stop_event.set()
 
-    async def _consumer_loop(self, slot: int) -> None:
-        worker_slot_id = f"{self.worker_id}:{slot}"
-        while not self.stop_event.is_set():
-            try:
-                async with self.session_context_factory() as db:
-                    claim = await self.queue.claim_next(db, worker_id=worker_slot_id)
-                if claim is None:
-                    await self._wait_for_work()
-                    continue
-                await self._process_claim(claim)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                logger.bind(
-                    event="document_worker_loop_failed",
-                    worker_id=worker_slot_id,
-                    error_type=type(exc).__name__,
-                ).exception("文档解析 worker 循环异常")
-                await self._wait_for_work()
+    async def _handle_message(self, body: str, _metadata: dict[str, Any]) -> None:
+        payload = DocumentIngestionMessage.parse_msg(body)
+        await self._process_dispatched_document(payload)
 
-    async def _process_claim(self, claim: DocumentClaim) -> None:
+    async def _process_dispatched_document(
+        self,
+        payload: DocumentIngestionPayload,
+    ) -> None:
+        """Process one pushed message, sleeping only for this message's retry due time."""
+
+        while True:
+            async with self.session_context_factory() as db:
+                snapshot = await self.queue.snapshot(db, document_id=payload.document_id)
+            if snapshot is None:
+                return
+            if (
+                snapshot.user_id != payload.user_id
+                or snapshot.dataset_id != payload.dataset_id
+                or snapshot.version != payload.document_version
+            ):
+                raise ValueError("文档解析消息与当前文档版本不匹配")
+            if snapshot.status in {DOCUMENT_STATUS_READY, DOCUMENT_STATUS_FAILED}:
+                return
+
+            now = utc_now()
+            due_at = (
+                snapshot.available_at
+                if snapshot.status == DOCUMENT_STATUS_QUEUED
+                else snapshot.lease_expires_at
+            )
+            if due_at is not None and due_at > now:
+                await asyncio.sleep((due_at - now).total_seconds())
+
+            async with self.session_context_factory() as db:
+                claim = await self.queue.claim_document(
+                    db,
+                    document_id=payload.document_id,
+                    worker_id=self.worker_id,
+                )
+            if claim is None:
+                # A concurrent delivery may have advanced the same document; re-read that
+                # exact document only. This is not a queue-table polling loop.
+                await asyncio.sleep(0)
+                continue
+            target_status = await self._process_claim(claim)
+            if target_status in {DOCUMENT_STATUS_READY, DOCUMENT_STATUS_FAILED}:
+                return
+
+    async def _process_claim(self, claim: DocumentClaim) -> str | None:
         lease_lost = asyncio.Event()
         heartbeat = asyncio.create_task(
             self._heartbeat(claim, lease_lost),
@@ -180,12 +203,14 @@ class DocumentParseWorker:
                 document_id=claim.document_id,
                 attempt_count=claim.attempt_count,
             ).info("文档解析任务完成")
+            return DOCUMENT_STATUS_READY
         except DocumentIngestionLeaseLost:
             logger.bind(
                 event="document_parse_lease_lost",
                 document_id=claim.document_id,
                 attempt_count=claim.attempt_count,
             ).warning("文档解析任务租约失效，旧 worker 放弃终态写入")
+            return None
         except asyncio.CancelledError:
             # 正常 stop 不会取消正在处理的任务；进程被强制取消时让 lease 自然过期回收。
             raise
@@ -212,6 +237,7 @@ class DocumentParseWorker:
                 target_status=target_status or "LEASE_LOST",
                 error_type=type(exc).__name__,
             ).error("文档解析任务失败")
+            return target_status
         finally:
             heartbeat.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -270,12 +296,6 @@ class DocumentParseWorker:
         if not owned:
             lease_lost.set()
         return owned
-
-    async def _wait_for_work(self) -> None:
-        try:
-            await asyncio.wait_for(self.stop_event.wait(), timeout=self.poll_interval)
-        except TimeoutError:
-            pass
 
     @staticmethod
     def _default_worker_id() -> str:

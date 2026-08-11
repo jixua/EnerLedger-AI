@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from contextlib import asynccontextmanager
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 import app.workers.document_parse_worker as worker_module
 from app.domain.models import Document
+from app.rag.core.mq.messages import DocumentIngestionMessage
 from app.services.document_ingestion import DocumentQualityGateError
 from app.services.document_queue import DocumentClaim, utc_now
 from app.workers.document_parse_worker import DocumentParseWorker
@@ -57,6 +59,27 @@ class _FakeIngestion:
             raise self.error
 
 
+class _PushedQueue(_FakeQueue):
+    def __init__(self):
+        super().__init__()
+        self.claimed_ids = []
+
+    async def snapshot(self, _db, *, document_id):
+        return SimpleNamespace(
+            document_id=document_id,
+            user_id=11,
+            dataset_id=9,
+            version=2,
+            status="QUEUED",
+            available_at=utc_now(),
+            lease_expires_at=None,
+        )
+
+    async def claim_document(self, _db, *, document_id, worker_id):
+        self.claimed_ids.append((document_id, worker_id))
+        return DocumentClaim(document_id, "token", 1, False, False)
+
+
 def _document() -> Document:
     now = utc_now()
     return Document(
@@ -99,7 +122,6 @@ async def test_worker_downloads_source_and_passes_reparse_and_fencing(
         storage=_FakeStorage(),
         session_context_factory=_session_factory(document),
         heartbeat_interval=3600,
-        concurrency=1,
     )
     claim = DocumentClaim(7, "token", 1, False, True)
 
@@ -114,6 +136,34 @@ async def test_worker_downloads_source_and_passes_reparse_and_fencing(
 
 
 @pytest.mark.asyncio
+async def test_pushed_message_claims_exact_document_without_queue_scan(monkeypatch) -> None:
+    queue = _PushedQueue()
+    worker = DocumentParseWorker(
+        queue=queue,
+        ingestion=_FakeIngestion(),
+        storage=_FakeStorage(),
+        session_context_factory=_session_factory(_document()),
+        heartbeat_interval=3600,
+        worker_id="rabbit-worker",
+    )
+
+    async def completed(_claim):
+        return "READY"
+
+    monkeypatch.setattr(worker, "_process_claim", completed)
+    message = DocumentIngestionMessage.build(
+        document_id=7,
+        user_id=11,
+        dataset_id=9,
+        document_version=2,
+    )
+
+    await worker._handle_message(message.serialize(), {})
+
+    assert queue.claimed_ids == [(7, "rabbit-worker")]
+
+
+@pytest.mark.asyncio
 async def test_worker_schedules_backoff_after_ingestion_failure(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(worker_module.settings, "PARSE_TEMP_DIR", str(tmp_path))
     document = _document()
@@ -125,7 +175,6 @@ async def test_worker_schedules_backoff_after_ingestion_failure(monkeypatch, tmp
         storage=_FakeStorage(),
         session_context_factory=_session_factory(document),
         heartbeat_interval=3600,
-        concurrency=1,
     )
     claim = DocumentClaim(7, "token", 1, False, False)
 
@@ -170,7 +219,6 @@ async def test_worker_preserves_quality_failure_inside_cleanup_exception_group(
         storage=_FakeStorage(),
         session_context_factory=_session_factory(document),
         heartbeat_interval=3600,
-        concurrency=1,
     )
 
     await worker._process_claim(DocumentClaim(7, "token", 1, False, False))
@@ -192,10 +240,8 @@ async def test_worker_preserves_quality_failure_inside_cleanup_exception_group(
 @pytest.mark.parametrize(
     "overrides",
     [
-        {"poll_interval": 0},
         {"heartbeat_interval": 0},
         {"heartbeat_interval": 60, "queue": None},
-        {"concurrency": 0},
     ],
 )
 def test_worker_rejects_invalid_runtime_limits(overrides) -> None:
