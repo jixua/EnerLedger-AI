@@ -1,7 +1,6 @@
 import { useMemo, useState } from 'react';
 import { AlertCircle, CheckCircle2, Clock3, FileText, Loader2, RefreshCw, Search, XCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
-import { ParseQualityInline } from '../components/ParseQuality';
 import { isDocumentRetrievalReady } from '../lib/parse-quality';
 import { useApp } from '../state/AppContext';
 
@@ -36,8 +35,7 @@ function canRetryDocument(document) {
 
 function statusMeta(document) {
   const normalized = normalizedStatus(document?.status ?? document);
-  if (normalized === 'READY' && isDocumentRetrievalReady(document)) return { label: '可检索', modifier: 'ready', icon: CheckCircle2 };
-  if (normalized === 'READY') return { label: '不可检索', modifier: 'blocked', icon: AlertCircle };
+  if (normalized === 'READY') return { label: '可检索', modifier: 'ready', icon: CheckCircle2 };
   if (normalized === 'FAILED') return { label: '失败', modifier: 'failed', icon: XCircle };
   if (normalized === 'QUEUED' && Number(document?.attempt_count || 0) > 0) return { label: '待重试', modifier: 'retry', icon: Clock3 };
   if (normalized === 'QUEUED') return { label: '排队中', modifier: 'queued', icon: Clock3 };
@@ -210,7 +208,6 @@ export function TasksPage() {
                           ) : (
                             <span className="muted-copy">{documentStatus === 'QUEUED' ? '等待处理' : `第 ${document.attempt_count || 1} 次尝试`}</span>
                           )}
-                          {['READY', 'FAILED'].includes(documentStatus) ? <ParseQualityInline document={document} /> : null}
                         </div>
                       </td>
                       <td>{formatTime(document.created_at)}</td>

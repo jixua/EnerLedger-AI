@@ -21,7 +21,8 @@ def _resolve_nltk_data_dir() -> Path:
     env_dir = os.environ.get("NLTK_DATA")
     if env_dir:
         return Path(env_dir).expanduser()
-    return Path(__file__).resolve().parent.parent.parent / "nltk_data"
+    # nltk_data.py 位于 <project>/app/rag/bootstrap/ 下，需要回到项目根目录。
+    return Path(__file__).resolve().parent.parent.parent.parent / "nltk_data"
 
 
 def configure_nltk_data_path() -> str:

@@ -64,6 +64,7 @@ from app.rag.core.splitter.factory import (
     create_chunking_engine,
     validate_dense_dimension,
 )
+from app.rag.core.splitter.models import EmbeddedChunk
 from app.rag.core.storage.manticore_bm25 import (
     ManticoreBm25IndexingPipeline,
     close_manticore_bm25_store,
@@ -312,8 +313,28 @@ class SimpleDocumentIngestionService:
             self._require_chunk_indexes(drafts)
             current_chunk_ids = [draft.chunk_id for draft in drafts]
 
+            sparse_service = self._sparse_service_builder(execution_context.sparse_embedding)
             await self._assert_lease(lease_guard)
-            embedded_chunks = await dense_pipeline.aembed_chunks(chunks)
+            if bool(getattr(sparse_service, "supports_hybrid", False)):
+                dense_vectors, sparse_vectors = await sparse_service.vectorize_hybrid_texts(
+                    [draft.content for draft in drafts]
+                )
+                embedded_chunks = [
+                    EmbeddedChunk(
+                        chunk=chunk,
+                        embedding=vector,
+                        embedding_model=sparse_service.model_name,
+                        cached=False,
+                    )
+                    for chunk, vector in zip(chunks, dense_vectors, strict=True)
+                ]
+                dense_model_name = sparse_service.model_name
+            else:
+                embedded_chunks = await dense_pipeline.aembed_chunks(chunks)
+                sparse_vectors = await sparse_service.vectorize_texts(
+                    [draft.content for draft in drafts]
+                )
+                dense_model_name = execution_context.dense_embedding.model_name
             if len(embedded_chunks) != len(drafts):
                 raise DocumentIngestionError(
                     "Dense embedding 输出数量与 chunk 数量不一致: "
@@ -322,13 +343,9 @@ class SimpleDocumentIngestionService:
             validate_dense_dimension(
                 embedded_chunks,
                 user_id=identity.user_id,
-                model_name=execution_context.dense_embedding.model_name,
+                model_name=dense_model_name,
             )
 
-            sparse_service = self._sparse_service_builder(execution_context.sparse_embedding)
-            sparse_vectors = await sparse_service.vectorize_texts(
-                [draft.content for draft in drafts]
-            )
             if len(sparse_vectors) != len(drafts):
                 raise DocumentIngestionError(
                     "Sparse embedding 输出数量与 chunk 数量不一致: "
@@ -928,16 +945,16 @@ class SimpleDocumentIngestionService:
         )
 
         if final_quality.status is not PdfQualityStatus.PASSED:
-            final_status = final_quality.status.value
+            diagnostic_status = final_quality.status.value
         elif vision_incomplete_pages:
-            final_status = "FALLBACK_INCOMPLETE"
+            diagnostic_status = "FALLBACK_INCOMPLETE"
         elif not validation_report.structural_passed:
-            final_status = "CONTENT_VALIDATION_FAILED"
+            diagnostic_status = "CONTENT_VALIDATION_FAILED"
         else:
-            final_status = PdfQualityStatus.PASSED.value
+            diagnostic_status = PdfQualityStatus.PASSED.value
 
         report = self._compose_pdf_quality_report(
-            status=final_status,
+            status=PdfQualityStatus.PASSED.value,
             initial_quality=initial_quality,
             final_quality=final_quality,
             fallback_report=fallback_report,
@@ -949,11 +966,16 @@ class SimpleDocumentIngestionService:
             table_structure_report=table_structure_report,
             image_policy_report=image_policy_report,
         )
-        if final_status != PdfQualityStatus.PASSED.value:
-            self._raise_pdf_quality_gate(
-                final_status,
-                report,
-                retryable=bool(getattr(fallback_report, "has_retryable_failure", False)),
+        report["diagnostic_status"] = diagnostic_status
+        report["business_blocking"] = False
+        if diagnostic_status != PdfQualityStatus.PASSED.value:
+            report["warnings"] = list(
+                dict.fromkeys(
+                    [
+                        *report.get("warnings", []),
+                        f"NON_BLOCKING_QUALITY_DIAGNOSTIC:{diagnostic_status}",
+                    ]
+                )
             )
 
         cleaned_markdown, visible_page_number_report = self._remove_pdf_visible_page_numbers(
@@ -1007,9 +1029,10 @@ class SimpleDocumentIngestionService:
         metadata = parse_output.setdefault("metadata", {})
         metadata["pages_or_length"] = final_quality.pdf_page_count
         metadata["pdf_page_markers"] = marker_count
-        metadata["pdf_quality_status"] = final_status
+        metadata["pdf_quality_status"] = PdfQualityStatus.PASSED.value
+        metadata["pdf_quality_diagnostic_status"] = diagnostic_status
         metadata["pdf_ocr_page_count"] = final_quality.ocr_page_count
-        return final_status, report
+        return PdfQualityStatus.PASSED.value, report
 
     @staticmethod
     def _visual_assessment_state(payload: Mapping[str, object]) -> bool | None:

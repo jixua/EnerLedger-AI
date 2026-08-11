@@ -157,6 +157,8 @@ def test_document_list_quality_summary_omits_ocr_text_and_structured_assets() ->
     full_report = {
         "schema_version": 2,
         "status": "PASSED",
+        "diagnostic_status": "CONTENT_VALIDATION_FAILED",
+        "business_blocking": False,
         "pdf_page_count": 4,
         "text_coverage_ratio": 1.0,
         "warnings": ["warning-1"],
@@ -193,6 +195,8 @@ def test_document_list_quality_summary_omits_ocr_text_and_structured_assets() ->
     assert summary == {
         "schema_version": 2,
         "status": "PASSED",
+        "diagnostic_status": "CONTENT_VALIDATION_FAILED",
+        "business_blocking": False,
         "pdf_page_count": 4,
         "text_coverage_ratio": 1.0,
         "warning_count": 1,

@@ -32,6 +32,29 @@ class SparseVectorService:
 
         return self._encoder.model_name
 
+    @property
+    def supports_hybrid(self) -> bool:
+        return bool(getattr(self._encoder, "supports_hybrid", False))
+
+    async def vectorize_hybrid_texts(
+        self, texts: list[str]
+    ) -> tuple[list[list[float]], list[SparseVector]]:
+        """一次远程调用生成同序的 dense 与 sparse 向量。"""
+
+        if not texts:
+            return [], []
+        encoder = getattr(self._encoder, "aencode_hybrid", None)
+        if not callable(encoder):
+            raise ValueError("Configured sparse encoder does not support hybrid embedding.")
+        dense, sparse = await encoder(texts)
+        self.last_usage = getattr(self._encoder, "last_usage", None)
+        if len(dense) != len(texts) or len(sparse) != len(texts):
+            raise ValueError(
+                f"Expected {len(texts)} hybrid vectors, got dense={len(dense)}, "
+                f"sparse={len(sparse)}."
+            )
+        return dense, sparse
+
     async def vectorize_chunk(self, request: SparseChunkVectorizationRequest) -> SparseVector:
         """对单个 Chunk 原文执行稀疏向量化，并校验返回数量。
 

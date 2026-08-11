@@ -20,12 +20,10 @@ import { Link, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
 import { DocumentHtmlTable, remarkDocumentHtmlTables } from "../components/DocumentHtmlTable";
 import { DocumentPreviewImage } from "../components/DocumentPreviewImage";
-import { ParseQualityBadge, ParseQualitySummary } from "../components/ParseQuality";
 import {
   createDocumentBoundaryPlugin,
   normalizeDocumentBoundaries,
 } from "../lib/document-reader";
-import { isDocumentRetrievalReady, normalizeParseQuality } from "../lib/parse-quality";
 import { useApp } from "../state/AppContext";
 
 const CHUNK_TYPE_LABELS = {
@@ -56,8 +54,7 @@ function normalizedStatus(document) {
 
 function statusMeta(document) {
   const status = normalizedStatus(document);
-  if (status === "READY" && isDocumentRetrievalReady(document)) return { label: "可检索", modifier: "ready", icon: CheckCircle2 };
-  if (status === "READY") return { label: "不可检索", modifier: "blocked", icon: AlertCircle };
+  if (status === "READY") return { label: "可检索", modifier: "ready", icon: CheckCircle2 };
   if (status === "FAILED") return { label: "失败", modifier: "failed", icon: AlertCircle };
   if (status === "QUEUED" && Number(document?.attempt_count || 0) > 0) return { label: "待重试", modifier: "retry", icon: Clock3 };
   if (status === "QUEUED") return { label: "排队中", modifier: "queued", icon: Clock3 };
@@ -178,7 +175,6 @@ export function DocumentDetailPage() {
   const [copiedValue, setCopiedValue] = useState("");
 
   const status = normalizedStatus(document);
-  const parseQuality = useMemo(() => normalizeParseQuality(document), [document]);
   const documentVersion = Number(document?.version ?? 0);
   const routeIsValid = Number.isFinite(datasetId) && datasetId > 0 && Number.isFinite(targetDocumentId) && targetDocumentId > 0;
   const routeMatchesDocument = !document || Number(document.dataset_id ?? document.datasetId) === datasetId;
@@ -333,7 +329,7 @@ export function DocumentDetailPage() {
           <span className="document-detail-file-icon" aria-hidden="true"><FileText size={22} /></span>
           <div className="document-detail-header__identity">
             <p className="eyebrow">文档详情 · {dataset?.name || `数据集 #${datasetId}`}</p>
-            <div className="document-detail-title-line"><h1>{document.filename || `文档 #${targetDocumentId}`}</h1><StatusPill document={document} />{["READY", "FAILED"].includes(status) ? <ParseQualityBadge document={document} /> : null}</div>
+            <div className="document-detail-title-line"><h1>{document.filename || `文档 #${targetDocumentId}`}</h1><StatusPill document={document} /></div>
             <p>{String(document.file_type || "").toUpperCase()} · {formatBytes(document.file_size)} · {document.parser_backend || "—"} · 更新于 {formatTime(document.updated_at)}</p>
           </div>
         </div>
@@ -353,8 +349,6 @@ export function DocumentDetailPage() {
       </section>
 
       {documentError ? <div className="notice notice--error" role="alert"><AlertCircle size={16} /><p>{documentError}</p><button type="button" onClick={() => setDocumentError("")} aria-label="关闭错误">×</button></div> : null}
-
-      {["READY", "FAILED"].includes(status) ? <ParseQualitySummary document={document} /> : null}
 
       {status !== "READY" ? (
         <section className={`panel document-processing-state document-processing-state--${status.toLowerCase()}`}>
@@ -388,8 +382,6 @@ export function DocumentDetailPage() {
           </header>
 
           {previewError ? <div className="notice notice--error document-reader__notice" role="alert"><AlertCircle size={16} /><p>{previewError}</p><button type="button" className="button button--tiny" onClick={() => setPreviewRefreshKey((current) => current + 1)}>重试加载</button>{preview ? <button type="button" onClick={() => setPreviewError("")} aria-label="关闭加载错误">×</button> : null}</div> : null}
-
-          {parseQuality.isBlocking ? <div className="notice notice--error document-reader__notice document-reader__notice--compact" role="alert"><AlertCircle size={15} /><div><strong>仅供排查：</strong><span>当前正文未通过质量门禁，不应作为可靠的检索或对话依据。</span></div></div> : null}
 
           {preview?.reparse_required ? <div className="notice notice--warning document-reader__notice document-reader__notice--compact"><AlertCircle size={15} /><div><strong>历史版本边界：</strong><span>原文可正常阅读，分片线按现有行号恢复；重新解析后可获得精确边界。</span></div></div> : null}
           {preview?.boundary_precision === "approximate_line" ? <div className="notice notice--warning document-reader__notice document-reader__notice--compact"><AlertCircle size={15} /><div><strong>近似位置：</strong><span>语义切分可能位于段落内部，分片线显示在最近的安全文档结构边缘；同一位置会完整保留多个边界。</span></div></div> : null}

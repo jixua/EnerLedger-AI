@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, Sequence
+from collections.abc import Sequence
+from typing import TYPE_CHECKING
 
 from .encoder import normalize_lexical_weights
 from .exceptions import SparseVectorEncodingError
@@ -28,7 +29,7 @@ class AdapterSparseVectorEncoder:
 
     def __init__(
         self,
-        provider: "BaseProvider",
+        provider: BaseProvider,
         *,
         model_name: str | None = None,
         top_k: int = 256,
@@ -59,6 +60,54 @@ class AdapterSparseVectorEncoder:
 
         return self._model_name
 
+    @property
+    def supports_hybrid(self) -> bool:
+        """当前 provider 是否能用一次请求同时返回 dense 与 sparse。"""
+
+        return callable(getattr(self._provider, "embed_hybrid", None))
+
+    def _normalize_embeddings(self, embeddings: Sequence[object]) -> list[SparseVector]:
+        vectors: list[SparseVector] = []
+        for position, item in enumerate(embeddings):
+            indices = list(getattr(item, "indices", []))
+            values = list(getattr(item, "values", []))
+            if len(indices) != len(values):
+                raise SparseVectorEncodingError(
+                    "Sparse adapter embedding indices/values length mismatch at "
+                    f"position {position}: {len(indices)} != {len(values)}."
+                )
+            vectors.append(
+                normalize_lexical_weights(
+                    dict(zip(indices, values, strict=True)),
+                    top_k=self._top_k,
+                    min_weight=self._min_weight,
+                )
+            )
+        return vectors
+
+    async def aencode_hybrid(
+        self, texts: Sequence[str]
+    ) -> tuple[list[list[float]], list[SparseVector]]:
+        """联合编码并把稀疏部分按全局规则清洗。"""
+
+        if not texts:
+            return [], []
+        if not self.supports_hybrid:
+            raise SparseVectorEncodingError("Sparse adapter does not support hybrid embedding.")
+        ordered = list(texts)
+        result = await self._provider.embed_hybrid(ordered, model=self._model_name)
+        self.last_usage = getattr(result, "usage", None)
+        dense = list(getattr(result, "dense_embeddings", []) or [])
+        sparse = list(getattr(result, "sparse_embeddings", []) or [])
+        if len(dense) != len(ordered) or len(sparse) != len(ordered):
+            raise SparseVectorEncodingError(
+                "Hybrid adapter returned mismatched embedding count: "
+                f"expected {len(ordered)}, got dense={len(dense)}, sparse={len(sparse)}."
+            )
+        return [[float(value) for value in vector] for vector in dense], self._normalize_embeddings(
+            sparse
+        )
+
     async def aencode(self, texts: Sequence[str]) -> list[SparseVector]:
         """调 adapter 完成一批文本的稀疏编码，并转成等长同序的 SparseVector。
 
@@ -88,20 +137,4 @@ class AdapterSparseVectorEncoder:
                 f"expected {len(ordered)}, got {got}."
             )
 
-        vectors: list[SparseVector] = []
-        for position, item in enumerate(embeddings):
-            indices = list(getattr(item, "indices", []))
-            values = list(getattr(item, "values", []))
-            if len(indices) != len(values):
-                raise SparseVectorEncodingError(
-                    "Sparse adapter embedding indices/values length mismatch at "
-                    f"position {position}: {len(indices)} != {len(values)}."
-                )
-            vectors.append(
-                normalize_lexical_weights(
-                    dict(zip(indices, values)),
-                    top_k=self._top_k,
-                    min_weight=self._min_weight,
-                )
-            )
-        return vectors
+        return self._normalize_embeddings(embeddings)

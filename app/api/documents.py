@@ -137,6 +137,8 @@ async def _save_upload_to_path(file: UploadFile, destination: Path) -> int:
 _QUALITY_SUMMARY_FIELDS = (
     "schema_version",
     "status",
+    "diagnostic_status",
+    "business_blocking",
     "parser_backend",
     "page_count",
     "pdf_page_count",

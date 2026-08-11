@@ -1,8 +1,7 @@
-"""火山方舟 doubao-embedding-vision 稀疏向量 adapter（protocol = "doubao_vision"）。
+"""火山方舟 doubao-embedding-vision 联合向量 adapter（protocol = "doubao_vision"）。
 
-对接火山引擎 Ark 多模态 embedding 端点 ``/api/v3/embeddings/multimodal``，仅承载
-SPARSE_EMBEDDING——把响应中 ``sparse_embedding`` 数组转成框架中性的
-:class:`~app.rag.core.llm.response.SparseEmbeddingResult`。
+对接火山引擎 Ark 多模态 embedding 端点 ``/api/v3/embeddings/multimodal``，保留同一次
+响应中的 ``embedding`` 与 ``sparse_embedding``；兼容接口也可分别返回 dense 或 sparse。
 
 服务契约（已对真实接口实测确认）::
 
@@ -31,7 +30,9 @@ provider 召回侧表现一致），不触碰 Qdrant。
 from __future__ import annotations
 
 import asyncio
-from typing import Any, AsyncIterator, List, Optional, Union
+import math
+from collections.abc import AsyncIterator
+from typing import Any
 
 import httpx
 from loguru import logger
@@ -41,6 +42,8 @@ from app.rag.core.llm.base_provider import BaseProvider
 from app.rag.core.llm.exceptions import InvalidResponseError, ProviderConnectionError
 from app.rag.core.llm.interfaces import CapabilityType
 from app.rag.core.llm.response import (
+    EmbeddingResult,
+    HybridEmbeddingResult,
     SparseEmbedding,
     SparseEmbeddingResult,
     StreamChunk,
@@ -49,7 +52,7 @@ from app.rag.core.llm.response import (
 
 
 class DoubaoVisionProvider(BaseProvider):
-    """火山方舟 doubao-embedding-vision 协议 adapter：仅稀疏向量化（文本）。"""
+    """火山方舟多模态 embedding adapter：一次生成稠密与稀疏向量。"""
 
     DEFAULT_MODEL = "doubao-embedding-vision-251215"
 
@@ -58,12 +61,12 @@ class DoubaoVisionProvider(BaseProvider):
         provider_type: str = "doubao_vision",
         provider_name: str = "doubao_vision",
         api_key: str = "",
-        api_base_url: Optional[str] = None,
-        model_name: Optional[str] = None,
+        api_base_url: str | None = None,
+        model_name: str | None = None,
         timeout_ms: int = 60000,
         max_retries: int = 3,
         http_client: httpx.AsyncClient | None = None,
-        max_concurrency: Optional[int] = None,
+        max_concurrency: int | None = None,
         **kwargs,
     ):
         super().__init__(
@@ -76,10 +79,14 @@ class DoubaoVisionProvider(BaseProvider):
             **kwargs,
         )
         self.model_name = model_name or self.DEFAULT_MODEL
-        self._capabilities = {CapabilityType.SPARSE_EMBEDDING}
+        self._capabilities = {
+            CapabilityType.EMBEDDING,
+            CapabilityType.SPARSE_EMBEDDING,
+        }
         # 允许测试注入 httpx 客户端；生产按需懒建。
         self._http_client = http_client
-        # 逐条请求的并发上限：缺省读全局 SPARSE_VECTOR_DOUBAO_CONCURRENCY，可由构造参数覆盖（测试）。
+        # 逐条请求的并发上限：缺省读全局 SPARSE_VECTOR_DOUBAO_CONCURRENCY，
+        # 可由构造参数覆盖（测试）。
         self._max_concurrency = self._normalize_concurrency(
             max_concurrency
             if max_concurrency is not None
@@ -87,7 +94,7 @@ class DoubaoVisionProvider(BaseProvider):
         )
 
     async def embed_sparse(
-        self, texts: Union[str, List[str]], model: Optional[str] = None, **kwargs
+        self, texts: str | list[str], model: str | None = None, **kwargs
     ) -> SparseEmbeddingResult:
         """把一批文本经 Ark 多模态端点编码为框架中性的稀疏结果（逐条请求）。
 
@@ -96,19 +103,49 @@ class DoubaoVisionProvider(BaseProvider):
             model: 透传/记录的模型名；缺省用 provider 的 ``model_name``。
 
         Returns:
-            SparseEmbeddingResult：每条文本一组整数 token index 与权重（未做 top_k/min_weight 清洗）。
+            SparseEmbeddingResult：每条文本一组整数 token index 与权重
+            （未做 top_k/min_weight 清洗）。
 
         Raises:
             ProviderConnectionError: 未配置 api_key、连接/超时/5xx 重试耗尽。
             InvalidResponseError: 响应缺少 ``data`` / ``sparse_embedding`` 或权重非法。
         """
 
+        result = await self.embed_hybrid(texts, model=model, **kwargs)
+        return SparseEmbeddingResult(
+            model=result.model,
+            embeddings=result.sparse_embeddings,
+            usage=result.usage,
+        )
+
+    async def embed(
+        self, texts: str | list[str], model: str | None = None, **kwargs
+    ) -> EmbeddingResult:
+        """返回 Ark 联合响应中的稠密部分，供查询侧使用同一模型空间。"""
+
+        result = await self.embed_hybrid(texts, model=model, **kwargs)
+        return EmbeddingResult(
+            model=result.model,
+            embeddings=result.dense_embeddings,
+            usage=result.usage,
+        )
+
+    async def embed_hybrid(
+        self, texts: str | list[str], model: str | None = None, **kwargs
+    ) -> HybridEmbeddingResult:
+        """每条文本只请求一次 Ark，同时保留 dense 与 sparse 两部分。"""
+
         if isinstance(texts, str):
             texts = [texts]
         ordered = list(texts)
         resolved_model = model or self.model_name
         if not ordered:
-            return SparseEmbeddingResult(model=resolved_model, embeddings=[], usage=UsageInfo())
+            return HybridEmbeddingResult(
+                model=resolved_model,
+                dense_embeddings=[],
+                sparse_embeddings=[],
+                usage=UsageInfo(),
+            )
         if not (self.api_key or "").strip():
             raise ProviderConnectionError(
                 message="Ark api_key is not configured.",
@@ -122,12 +159,37 @@ class DoubaoVisionProvider(BaseProvider):
         data_objs = await asyncio.gather(
             *[self._encode_one_guarded(resolved_model, t, semaphore) for t in ordered]
         )
-        embeddings = [self._to_sparse_embedding(obj) for obj in data_objs]
-        return SparseEmbeddingResult(
+        dense_embeddings = [self._to_dense_embedding(obj) for obj in data_objs]
+        sparse_embeddings = [self._to_sparse_embedding(obj) for obj in data_objs]
+        return HybridEmbeddingResult(
             model=resolved_model,
-            embeddings=embeddings,
+            dense_embeddings=dense_embeddings,
+            sparse_embeddings=sparse_embeddings,
             usage=UsageInfo(),
         )
+
+    def _to_dense_embedding(self, data_obj: Any) -> list[float]:
+        """校验并提取单条响应的 dense embedding。"""
+
+        raw = data_obj.get("embedding")
+        if not isinstance(raw, list) or not raw:
+            raise InvalidResponseError(
+                message="Ark response missing non-empty 'embedding' list.",
+                provider_type=self.provider_type,
+            )
+        try:
+            vector = [float(value) for value in raw]
+        except (TypeError, ValueError) as exc:
+            raise InvalidResponseError(
+                message="Ark dense embedding contains invalid values.",
+                provider_type=self.provider_type,
+            ) from exc
+        if any(not math.isfinite(value) for value in vector):
+            raise InvalidResponseError(
+                message="Ark dense embedding contains non-finite values.",
+                provider_type=self.provider_type,
+            )
+        return vector
 
     async def _encode_one_guarded(
         self, model: str, text: str, semaphore: asyncio.Semaphore

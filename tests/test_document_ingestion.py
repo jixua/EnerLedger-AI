@@ -198,6 +198,29 @@ class _FakeSparseService:
         return [SparseVector(indices=[index + 1], values=[0.5]) for index, _ in enumerate(contents)]
 
 
+class _FakeHybridService:
+    vector_name = "sparse"
+    model_name = "doubao-embedding-vision-251215"
+    supports_hybrid = True
+
+    def __init__(self):
+        self.contents = []
+        self.calls = 0
+
+    async def vectorize_hybrid_texts(self, contents):
+        self.calls += 1
+        self.contents = list(contents)
+        dense = [
+            [float(index)] * settings.DENSE_VECTOR_DIMENSION
+            for index, _ in enumerate(contents)
+        ]
+        sparse = [
+            SparseVector(indices=[index + 1], values=[0.5])
+            for index, _ in enumerate(contents)
+        ]
+        return dense, sparse
+
+
 class _FakeQdrantStore:
     def __init__(self):
         self.vector_size = None
@@ -401,6 +424,52 @@ async def test_ingest_uses_one_chunk_set_for_db_and_all_three_indexes(tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_ingest_uses_one_hybrid_call_and_skips_qwen_final_embedding(tmp_path):
+    source_path = tmp_path / "report.pdf"
+    _write_pdf(source_path)
+    chunks = [
+        Chunk(
+            content="first",
+            start_line=1,
+            end_line=2,
+            metadata={"element_types": ["paragraph"], "chunk_index": 0},
+        ),
+        Chunk(
+            content="second",
+            start_line=3,
+            end_line=4,
+            metadata={"element_types": ["paragraph"], "chunk_index": 1},
+        ),
+    ]
+    dense_pipeline = _FakeDensePipeline()
+    hybrid_service = _FakeHybridService()
+    qdrant = _FakeQdrantStore()
+    db = _FakeSession()
+    service = SimpleDocumentIngestionService(
+        storage=_FakeStorage(),
+        qdrant_store=qdrant,
+        bm25_pipeline=_FakeBm25Pipeline(),
+        execution_context_loader_factory=lambda db: _FakeContextLoader(_context()),
+        parse_service=_FakeParseService,
+        dense_pipeline_builder=lambda resolved: dense_pipeline,
+        chunking_engine_factory=lambda **kwargs: _FakeChunkingEngine(chunks),
+        sparse_service_builder=lambda resolved: hybrid_service,
+        tokenizer_factory=_FakeTokenizer,
+    )
+
+    await service.ingest(_document(), source_path, db)
+
+    assert dense_pipeline.calls == 0
+    assert hybrid_service.calls == 1
+    assert hybrid_service.contents == ["first", "second"]
+    assert qdrant.vector_size == 2048
+    assert len(qdrant.dense_points) == len(qdrant.sparse_points) == 2
+    assert db.flushes == 1
+    assert db.commits == 1
+    assert db.rollbacks == 0
+
+
+@pytest.mark.asyncio
 async def test_ingest_marks_document_failed_and_reraises_original_error(tmp_path):
     source_path = tmp_path / "report.pdf"
     _write_pdf(source_path)
@@ -463,32 +532,54 @@ async def test_page_marker_mismatch_fails_before_upload_or_index(tmp_path) -> No
 
 
 @pytest.mark.asyncio
-async def test_image_only_pdf_without_ocr_provider_cannot_become_ready(tmp_path) -> None:
+async def test_ocr_quality_diagnostic_does_not_block_ready(tmp_path) -> None:
     source_path = tmp_path / "scan.pdf"
     _write_image_only_pdf(source_path)
     storage = _FakeStorage()
+    qdrant = _FakeQdrantStore()
+    bm25 = _FakeBm25Pipeline()
     db = _FakeSession()
     document = _document()
+    chunks = [
+        Chunk(
+            content="扫描页的可用诊断文本",
+            start_line=1,
+            end_line=2,
+            metadata={"element_types": ["paragraph"], "chunk_index": 0},
+        )
+    ]
     service = SimpleDocumentIngestionService(
         storage=storage,
-        qdrant_store=_FakeQdrantStore(),
-        bm25_pipeline=_FakeBm25Pipeline(),
+        qdrant_store=qdrant,
+        bm25_pipeline=bm25,
         execution_context_loader_factory=lambda db: _FakeContextLoader(_context()),
         parse_service=_ImageOnlyParseService,
         pdf_fallback_processor_factory=lambda resolved: PdfPageFallbackProcessor(),
+        dense_pipeline_builder=lambda resolved: _FakeDensePipeline(),
+        chunking_engine_factory=lambda **kwargs: _FakeChunkingEngine(chunks),
+        sparse_service_builder=lambda resolved: _FakeSparseService(),
+        tokenizer_factory=_FakeTokenizer,
     )
 
-    with pytest.raises(DocumentQualityGateError) as caught:
-        await service.ingest(document, source_path, db)
+    result = await service.ingest(document, source_path, db)
 
-    assert getattr(caught.value, "error_code", None) == "PDF_OCR_REQUIRED"
-    assert document.status == "FAILED"
-    assert document.parse_quality_status == "OCR_REQUIRED"
+    assert result.chunk_count == 1
+    assert document.status == "READY"
+    assert document.parse_quality_status == "PASSED"
+    assert document.parse_quality["status"] == "PASSED"
+    assert document.parse_quality["diagnostic_status"] == "OCR_REQUIRED"
+    assert document.parse_quality["business_blocking"] is False
     assert document.parse_quality["ocr_required_pages"] == [1]
     fallback_result = document.parse_quality["fallback"]["results"][0]
     assert fallback_result["method"] == "ocr"
     assert "OCR_PROVIDER_MISSING" in fallback_result["warnings"]
-    assert storage.uploads == []
+    assert "NON_BLOCKING_QUALITY_DIAGNOSTIC:OCR_REQUIRED" in document.parse_quality[
+        "warnings"
+    ]
+    assert len(storage.uploads) == 1
+    assert len(qdrant.dense_points) == 1
+    assert len(qdrant.sparse_points) == 1
+    assert bm25.plan is not None
 
 
 @pytest.mark.asyncio

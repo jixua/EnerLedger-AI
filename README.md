@@ -180,7 +180,7 @@ Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。
 `EMBEDDING` 和 `SPARSE_EMBEDDING` 配置；使用 SSE 对话还需要 `CHAT` 配置。包含扫描页、
 图表或流程图的 PDF 应在数据集绑定可选 `VISION` 配置，供页级 OCR/视觉兜底使用。
 
-- `EMBEDDING` 输出维度必须等于 `DENSE_VECTOR_DIMENSION`，默认 1024。
+- 最终 `EMBEDDING` 输出维度必须等于 `DENSE_VECTOR_DIMENSION`，默认 2048；语义切片模型不受该维度约束。
 - `SPARSE_EMBEDDING` 可使用 `bge_m3` 或 `doubao_vision` 等已迁入协议。
 - API Key 经 AES-256-GCM 加密后写入 `llm_config`，接口只返回掩码。
 - `provider_type`、`protocol` 和端点直接保存在 `llm_config`；当前没有 Provider catalog API 或相关表。
