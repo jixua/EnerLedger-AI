@@ -45,7 +45,10 @@ from app.rag.core.parser.pdf.image_asset_policy import (
 )
 from app.rag.core.parser.pdf.page_fallback import (
     AnalyzeImagePageProviderAdapter,
+    PageFallbackMethod,
     PdfPageFallbackProcessor,
+    QualityGatedOcrPageProvider,
+    RapidOcrPageProviderAdapter,
 )
 from app.rag.core.parser.pdf.quality import (
     PdfQualityAnalyzer,
@@ -184,6 +187,7 @@ class SimpleDocumentIngestionService:
             min_ocr_confidence=settings.PDF_QUALITY_MIN_OCR_CONFIDENCE,
             min_text_retention_ratio=settings.PDF_QUALITY_MIN_TEXT_RETENTION_RATIO,
         )
+        self._rapidocr_provider = RapidOcrPageProviderAdapter()
         self._pdf_fallback_processor_factory = (
             pdf_fallback_processor_factory or self._build_pdf_fallback_processor
         )
@@ -620,17 +624,25 @@ class SimpleDocumentIngestionService:
             result = await result
         return bool(result)
 
-    @staticmethod
-    def _build_pdf_fallback_processor(resolved_vision: Any | None) -> PdfPageFallbackProcessor:
-        provider_adapter = None
+    def _build_pdf_fallback_processor(
+        self,
+        resolved_vision: Any | None,
+    ) -> PdfPageFallbackProcessor:
+        vision_provider = None
         if resolved_vision is not None:
-            provider_adapter = AnalyzeImagePageProviderAdapter(
+            vision_provider = AnalyzeImagePageProviderAdapter(
                 resolved_vision.provider,
                 model_name=resolved_vision.model_name,
             )
+        ocr_provider = QualityGatedOcrPageProvider(
+            self._rapidocr_provider,
+            vision_provider,
+            min_effective_text_chars=settings.PDF_QUALITY_MIN_EFFECTIVE_TEXT_CHARS,
+            min_confidence=settings.PDF_QUALITY_MIN_OCR_CONFIDENCE,
+        )
         return PdfPageFallbackProcessor(
-            ocr_provider=provider_adapter,
-            vision_provider=provider_adapter,
+            ocr_provider=ocr_provider,
+            vision_provider=vision_provider,
             dpi=settings.PDF_FALLBACK_RENDER_DPI,
             min_chart_image_coverage_ratio=(
                 settings.PDF_FALLBACK_MIN_CHART_IMAGE_COVERAGE_RATIO
@@ -944,13 +956,17 @@ class SimpleDocumentIngestionService:
                 retryable=bool(getattr(fallback_report, "has_retryable_failure", False)),
             )
 
+        cleaned_markdown, visible_page_number_report = self._remove_pdf_visible_page_numbers(
+            merged_markdown
+        )
+        report["visible_page_numbers"] = visible_page_number_report
         rebuilt_parse_result = MarkdownParser().parse(
-            self._pdf_markdown_for_indexing(merged_markdown),
+            self._pdf_markdown_for_indexing(cleaned_markdown),
             source_file=identity.filename,
         )
         marker_count = self._apply_pdf_page_numbers_from_markdown(
             rebuilt_parse_result,
-            merged_markdown,
+            cleaned_markdown,
         )
         self._apply_pdf_page_visual_descriptions(
             rebuilt_parse_result,
@@ -986,7 +1002,7 @@ class SimpleDocumentIngestionService:
             )
             self._raise_pdf_quality_gate(PdfQualityStatus.PAGE_COUNT_MISMATCH.value, report)
 
-        parse_output["markdown"] = merged_markdown
+        parse_output["markdown"] = cleaned_markdown
         parse_output["parse_result"] = rebuilt_parse_result
         metadata = parse_output.setdefault("metadata", {})
         metadata["pages_or_length"] = final_quality.pdf_page_count
@@ -1034,11 +1050,17 @@ class SimpleDocumentIngestionService:
             {
                 result.page_number
                 for result in fallback_report.results
-                # OCR and VISION prompts must both explicitly state whether the
-                # rendered source page contains a chart/flow/boundary asset.  This
-                # prevents a scanned chart from passing merely because its text OCR
-                # succeeded while the visual structure fields were omitted.
-                if result.page_number not in completed_pages
+                # A local OCR result completes the text task but never claims that a
+                # visual task is complete. Explicit visual assets are checked below.
+                # Vision calls and model-backed OCR fallback still require a
+                # consistent page-level visual assessment.
+                if (
+                    result.page_number not in completed_pages
+                    and (
+                        result.method is PageFallbackMethod.VISION
+                        or "OCR_SOURCE:VISION_FALLBACK" in result.warnings
+                    )
+                )
             }
             | {
                 decision.page_number
@@ -1378,6 +1400,115 @@ class SimpleDocumentIngestionService:
         return marker.sub("", markdown or "")
 
     @staticmethod
+    def _remove_pdf_visible_page_numbers(markdown: str) -> tuple[str, dict[str, Any]]:
+        """从 PDF Markdown 页边缘移除可见页码，保留 ODL 页标记和行号。
+
+        显式格式（如「第 8 页 共 30 页」）在页首/页尾直接移除。纯数字或
+        「- 12 -」只在等于 PDF 页号，或多页同一侧出现稳定编号偏移时移除。
+        被移除行替换为空行，不改变后续元素与 ODL_PAGE 的行号对齐。
+        """
+
+        source = markdown or ""
+        lines = source.splitlines(keepends=True)
+        marker = re.compile(r"^\s*<!--\s*ODL_PAGE:(\d+)\s*-->\s*$")
+        explicit = re.compile(
+            r"^(?:第\s*(?P<zh>\d{1,4})\s*页(?:\s*共\s*\d{1,4}\s*页)?|"
+            r"(?:page\s*)?(?P<en>\d{1,4})\s*(?:/|of)\s*\d{1,4})$",
+            flags=re.IGNORECASE,
+        )
+        bare = re.compile(r"^(?:[-—–]\s*)?(?P<number>\d{1,4})(?:\s*[-—–])?$")
+        page_markers = [
+            (index, int(match.group(1)))
+            for index, line in enumerate(lines)
+            if (match := marker.fullmatch(line.strip())) is not None
+        ]
+
+        candidates: list[dict[str, Any]] = []
+        for marker_position, (marker_index, page_number) in enumerate(page_markers):
+            page_end = (
+                page_markers[marker_position + 1][0]
+                if marker_position + 1 < len(page_markers)
+                else len(lines)
+            )
+            content_indexes: list[int] = []
+            fenced = False
+            for line_index in range(marker_index + 1, page_end):
+                stripped = lines[line_index].strip()
+                if stripped.startswith("```") or stripped.startswith("~~~"):
+                    fenced = not fenced
+                    continue
+                if stripped and not fenced:
+                    content_indexes.append(line_index)
+            head = set(content_indexes[:2])
+            tail = set(content_indexes[-2:])
+            for line_index in head | tail:
+                text = lines[line_index].strip()
+                explicit_match = explicit.fullmatch(text)
+                bare_match = bare.fullmatch(text)
+                if explicit_match is None and bare_match is None:
+                    continue
+                number_text = (
+                    explicit_match.group("zh") or explicit_match.group("en")
+                    if explicit_match is not None
+                    else bare_match.group("number")
+                )
+                edge = "tail" if line_index in tail else "head"
+                candidates.append(
+                    {
+                        "line_index": line_index,
+                        "page_number": page_number,
+                        "printed_number": int(number_text),
+                        "edge": edge,
+                        "explicit": explicit_match is not None,
+                    }
+                )
+
+        offset_pages: dict[tuple[str, int], set[int]] = {}
+        for candidate in candidates:
+            if candidate["explicit"]:
+                continue
+            key = (
+                str(candidate["edge"]),
+                int(candidate["printed_number"]) - int(candidate["page_number"]),
+            )
+            offset_pages.setdefault(key, set()).add(int(candidate["page_number"]))
+
+        removed: list[dict[str, Any]] = []
+        for candidate in candidates:
+            offset_key = (
+                str(candidate["edge"]),
+                int(candidate["printed_number"]) - int(candidate["page_number"]),
+            )
+            should_remove = bool(candidate["explicit"]) or (
+                int(candidate["printed_number"]) == int(candidate["page_number"])
+                or len(offset_pages.get(offset_key, set())) >= 2
+            )
+            if not should_remove:
+                continue
+            line_index = int(candidate["line_index"])
+            original = lines[line_index]
+            if original.endswith("\r\n"):
+                newline = "\r\n"
+            elif original.endswith("\n"):
+                newline = "\n"
+            else:
+                newline = ""
+            lines[line_index] = newline
+            removed.append(
+                {
+                    "page_number": int(candidate["page_number"]),
+                    "line_number": line_index,
+                    "text": original.strip(),
+                }
+            )
+
+        return "".join(lines), {
+            "schema_version": 1,
+            "removed_count": len(removed),
+            "removed_lines": removed,
+        }
+
+    @staticmethod
     def _apply_pdf_page_numbers_from_markdown(parse_result: Any, markdown: str) -> int:
         """用真实 ODL 页标记行给元素赋页码，绝不从图片文件名推断。"""
 
@@ -1641,7 +1772,7 @@ class SimpleDocumentIngestionService:
         parser_kwargs: dict[str, Any] = {}
         if identity.file_type == "pdf":
             parser_kwargs = {
-                "backend": "opendataloader",
+                "backend": settings.PDF_PARSER_BACKEND,
                 "storage": self._storage,
                 "image_bucket": parsed_bucket,
                 "image_prefix": image_prefix,
@@ -1666,8 +1797,11 @@ class SimpleDocumentIngestionService:
             **parser_kwargs,
         )
         metadata = output.get("metadata") or {}
-        if identity.file_type == "pdf" and metadata.get("pdf_parser_backend") != "opendataloader":
-            raise DocumentIngestionError("PDF 未由 OpenDataLoader 完成解析")
+        if identity.file_type == "pdf" and metadata.get("pdf_parser_backend") not in {
+            "mineru",
+            "opendataloader",
+        }:
+            raise DocumentIngestionError("PDF 未由 MinerU 或 OpenDataLoader 完成解析")
         return output
 
     async def _upload_markdown(self, bucket: str, object_key: str, markdown: str) -> None:

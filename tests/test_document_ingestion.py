@@ -17,7 +17,10 @@ from app.rag.core.parser.pdf.image_asset_policy import (
     StructuredVisualDescription,
     VisualRelationship,
 )
-from app.rag.core.parser.pdf.page_fallback import PageFallbackMethod
+from app.rag.core.parser.pdf.page_fallback import (
+    PageFallbackMethod,
+    PdfPageFallbackProcessor,
+)
 from app.rag.core.parser.pdf.table_structure import PdfTableStructureExtractor
 from app.rag.core.preprocessor.ragflow_tokenizer import TokenizedText
 from app.rag.core.splitter.models import Chunk, EmbeddedChunk
@@ -472,6 +475,7 @@ async def test_image_only_pdf_without_ocr_provider_cannot_become_ready(tmp_path)
         bm25_pipeline=_FakeBm25Pipeline(),
         execution_context_loader_factory=lambda db: _FakeContextLoader(_context()),
         parse_service=_ImageOnlyParseService,
+        pdf_fallback_processor_factory=lambda resolved: PdfPageFallbackProcessor(),
     )
 
     with pytest.raises(DocumentQualityGateError) as caught:
@@ -884,8 +888,21 @@ def test_page_range_only_uses_explicit_chunk_metadata(metadata, expected) -> Non
 def test_visual_fallback_requires_structured_result_and_no_pending_asset_task() -> None:
     fallback = SimpleNamespace(
         results=[
-            SimpleNamespace(page_number=2, method=PageFallbackMethod.VISION),
-            SimpleNamespace(page_number=4, method=PageFallbackMethod.OCR),
+            SimpleNamespace(
+                page_number=2,
+                method=PageFallbackMethod.VISION,
+                warnings=(),
+            ),
+            SimpleNamespace(
+                page_number=4,
+                method=PageFallbackMethod.OCR,
+                warnings=("OCR_SOURCE:RAPIDOCR_PP_OCRV6",),
+            ),
+            SimpleNamespace(
+                page_number=5,
+                method=PageFallbackMethod.OCR,
+                warnings=("OCR_SOURCE:VISION_FALLBACK",),
+            ),
         ]
     )
     image_report = SimpleNamespace(
@@ -899,17 +916,17 @@ def test_visual_fallback_requires_structured_result_and_no_pending_asset_task() 
         fallback,
         structured_by_page={},
         image_policy_report=image_report,
-    ) == [2, 3, 4]
+    ) == [2, 3, 5]
     assert SimpleDocumentIngestionService._pdf_vision_incomplete_pages(
         fallback,
         structured_by_page={2: object()},
-        visually_assessed_pages=(4,),
+        visually_assessed_pages=(5,),
         image_policy_report=image_report,
     ) == [3]
     assert SimpleDocumentIngestionService._pdf_vision_incomplete_pages(
         fallback,
         structured_by_page={},
-        visually_assessed_pages=(2, 3, 4),
+        visually_assessed_pages=(2, 3, 5),
         image_policy_report=image_report,
     ) == []
 
@@ -1308,3 +1325,65 @@ def test_repeated_page_headers_and_explicit_footer_noise_are_not_retrieved() -> 
     assert any("碳核算正文" in item for item in retained)
     assert any("排放因子正文" in item for item in retained)
     assert all("ODL_PAGE" not in element.content for element in parse_result.elements)
+
+
+def test_visible_page_numbers_are_removed_from_persisted_pdf_markdown() -> None:
+    markdown = """<!-- ODL_PAGE:1 -->
+1
+
+# 第一章
+
+2024
+
+正文中的年份应保留。
+
+第 1 页 共 3 页
+<!-- ODL_PAGE:2 -->
+# 第二章
+
+正文内容。
+
+- 2 -
+<!-- ODL_PAGE:3 -->
+# 第三章
+
+| 项目 | 数值 |
+| --- | --- |
+| 页数 | 3 |
+
+Page 3 of 3
+"""
+
+    cleaned, report = SimpleDocumentIngestionService._remove_pdf_visible_page_numbers(markdown)
+
+    assert report["removed_count"] == 4
+    assert "\n1\n" not in cleaned
+    assert "第 1 页 共 3 页" not in cleaned
+    assert "- 2 -" not in cleaned
+    assert "Page 3 of 3" not in cleaned
+    assert "2024" in cleaned
+    assert "| 页数 | 3 |" in cleaned
+    assert cleaned.count("<!-- ODL_PAGE:") == 3
+    assert len(cleaned.splitlines()) == len(markdown.splitlines())
+
+
+def test_offset_printed_page_number_sequence_is_removed_only_at_page_edge() -> None:
+    markdown = """<!-- ODL_PAGE:1 -->
+第一页正文。
+10
+<!-- ODL_PAGE:2 -->
+第二页正文。
+11
+<!-- ODL_PAGE:3 -->
+正文中间的独立数字不应删除。
+99
+继续正文。
+页尾文本。
+"""
+
+    cleaned, report = SimpleDocumentIngestionService._remove_pdf_visible_page_numbers(markdown)
+
+    assert report["removed_count"] == 2
+    assert "\n10\n" not in cleaned
+    assert "\n11\n" not in cleaned
+    assert "\n99\n" in cleaned

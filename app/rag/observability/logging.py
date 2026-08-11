@@ -5,8 +5,8 @@ import shutil
 import socket
 import sys
 import traceback
-from hashlib import sha256
 from datetime import datetime, timedelta
+from hashlib import sha256
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
@@ -40,7 +40,8 @@ _BEARER_RE = re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=-]+", re.IGNORECASE)
 _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"""(?ix)
     (?P<key>
-        api[_-]?key|password|passwd|secret|access[_-]?token|refresh[_-]?token|
+        api[_-]?key|access[_-]?key(?:id)?|password|passwd|secret|
+        access[_-]?token|refresh[_-]?token|
         authorization|credential|signature
     )
     (?P<separator>\s*["']?\s*[:=]\s*["']?\s*)
@@ -138,7 +139,8 @@ class InterceptHandler(logging.Handler):
             depth += 1
 
         logger.bind(logger_name=record.name).opt(depth=depth, exception=record.exc_info).log(
-            level, record.getMessage()
+            level,
+            truncate_log_value(record.getMessage()),
         )
 
 

@@ -3,12 +3,20 @@
 
 from __future__ import annotations
 
-from .stage_models import CoarseChunk, CoarseChunkSet, FinalChunk, FinalChunkSet, StageIdFactory
+from app.rag.core.llm.tokenizer import Tokenizer
+
+from .stage_models import CoarseChunkSet, FinalChunkSet
+from .stage_two_semantic_depth import SemanticDepthWindowStageTwo
+
+
+class _UnusedEmbedder:
+    async def embed(self, **_kwargs):
+        raise RuntimeError("noop deterministic fallback must not call embedding")
 
 
 class NoopStageTwoAlgorithm:
     """
-    不做实际细分的第二阶段算法。
+    小分片原样透传，超长分片按段落/行/句子/token 执行确定性兜底。
 
     Args:
         None.
@@ -18,6 +26,24 @@ class NoopStageTwoAlgorithm:
     """
 
     name = "noop"
+
+    def __init__(
+        self,
+        tokenizer: Tokenizer | None = None,
+        max_chunk_tokens: int = 512,
+        hard_max_tokens: int = 1024,
+        min_chunk_tokens: int = 128,
+    ) -> None:
+        """保留小分片透传语义，但对超长分片执行确定性长度兜底。"""
+        self._length_fallback = SemanticDepthWindowStageTwo(
+            tokenizer=tokenizer or Tokenizer(),
+            embedder=_UnusedEmbedder(),
+            max_chunk_tokens=max_chunk_tokens,
+            hard_max_tokens=hard_max_tokens,
+            min_chunk_tokens=min_chunk_tokens,
+            semantic_scoring=False,
+            strategy_name=self.name,
+        )
 
     async def run(self, coarse_set: CoarseChunkSet) -> FinalChunkSet:
         """
@@ -29,50 +55,4 @@ class NoopStageTwoAlgorithm:
         Returns:
             FinalChunkSet: 可导出的最终内部分片集合。
         """
-        id_factory = StageIdFactory("final")
-        return FinalChunkSet(
-            chunks=[
-                self._to_final_chunk(chunk=chunk, id_factory=id_factory, coarse_set=coarse_set)
-                for chunk in coarse_set.chunks
-            ],
-            source_file=coarse_set.source_file,
-            stage1_strategy=coarse_set.strategy,
-            stage2_strategy=self.name,
-            metadata=dict(coarse_set.metadata),
-        )
-
-    def _to_final_chunk(
-        self,
-        *,
-        chunk: CoarseChunk,
-        id_factory: StageIdFactory,
-        coarse_set: CoarseChunkSet,
-    ) -> FinalChunk:
-        """
-        将单个粗分片转换为最终内部分片。
-
-        Args:
-            chunk: 第一阶段粗分片。
-            id_factory: final ID 生成器。
-            coarse_set: 第一阶段输出集合。
-
-        Returns:
-            FinalChunk: 转换后的最终内部分片。
-        """
-        source_coarse_chunk_id = (
-            chunk.source_coarse_chunk_id if chunk.role == "derived_element" else chunk.id
-        )
-        return FinalChunk(
-            id=id_factory.next(),
-            content=chunk.content,
-            start_line=chunk.start_line,
-            end_line=chunk.end_line,
-            element_types=list(chunk.element_types),
-            heading_trail=list(chunk.heading_trail),
-            heading_trails=[list(trail) for trail in chunk.heading_trails],
-            role=chunk.role,
-            stage1_strategy=chunk.strategy or coarse_set.strategy,
-            stage2_strategy=self.name,
-            source_coarse_chunk_id=source_coarse_chunk_id,
-            metadata=dict(chunk.metadata),
-        )
+        return await self._length_fallback.run(coarse_set)

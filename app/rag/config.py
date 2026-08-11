@@ -278,7 +278,7 @@ class Settings(BaseSettings):
     MARKDOWN_PARSER_HEADING_LLM_CONTEXT_TOKEN_BUDGET: int = 65536
     MARKDOWN_PARSER_HEADING_LLM_MAX_OUTPUT_TOKENS: int = 4096
     CHUNKING_STAGE_ONE_ALGORITHM: str = "candidate_boundary"
-    CHUNKING_STAGE_TWO_ALGORITHM: str = "noop"
+    CHUNKING_STAGE_TWO_ALGORITHM: str = "semantic_depth_window"
     CHUNKING_HEADING_BREAK_LEVEL: int = 5
     CHUNKING_MIN_CANDIDATE_CHUNK_TOKENS: int = 128
     CHUNKING_OVERLAP_TOKENS: int = 64
@@ -635,9 +635,9 @@ class Settings(BaseSettings):
     # for cloud parsers and browser-facing resources. S3 SDK traffic still uses
     # MINIO_ENDPOINT.
     MINIO_PUBLIC_ENDPOINT: Optional[str] = None
-    PDF_PARSER_BACKEND: str = "opendataloader"  # 本项目固定使用 OpenDataLoader
-    PDF_PARSER_FALLBACKS: str = ""
-    # OpenDataLoader 仍是主解析器；以下配置只用于页级质量门禁和不足页面补齐。
+    PDF_PARSER_BACKEND: str = "opendataloader"
+    PDF_PARSER_FALLBACKS: str = "mineru"
+    # OpenDataLoader 作为默认本地解析器，MinerU 作为解析失败时的远程兜底。
     PDF_QUALITY_MIN_EFFECTIVE_TEXT_CHARS: int = Field(default=20, ge=1, le=1000)
     PDF_QUALITY_IMAGE_ONLY_MAX_TEXT_CHARS: int = Field(default=8, ge=0, le=200)
     PDF_QUALITY_IMAGE_ONLY_MIN_COVERAGE_RATIO: float = Field(default=0.6, ge=0, le=1)
@@ -690,8 +690,10 @@ class Settings(BaseSettings):
     WORD_MAX_TOTAL_IMAGE_BYTES: int = Field(default=200 * 1024 * 1024, ge=1)
     WORD_LEGACY_CONVERTER_BINARY: str = "soffice"
     WORD_LEGACY_CONVERTER_TIMEOUT_SECONDS: float = Field(default=120, gt=0)
-    MINERU_API_URL: str = ""  # MinerU 官方云端 V4 API 地址
-    MINERU_API_KEY: Optional[str] = None  # MinerU 云服务专属 Token
+    MINERU_API_URL: str = "https://mineru.net/api/v4/extract/task"
+    # 精准解析 V4 官方鉴权是 Bearer Token，不是 Access/Secret 签名。
+    MINERU_API_TOKEN: str | None = None
+    MINERU_API_KEY: str | None = None  # 兼容旧部署变量，新部署使用 TOKEN
     MINERU_TIMEOUT: int = 300  # MinerU API 请求超时（秒）
     MINERU_MODEL_VERSION: str = "vlm"  # pipeline / vlm / MinerU-HTML
 

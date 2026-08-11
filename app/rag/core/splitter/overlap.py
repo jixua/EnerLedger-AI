@@ -188,6 +188,7 @@ class ChunkOverlapper:
         previous_content: str | None,
         current_content: str,
         next_content: str | None,
+        max_total_tokens: int | None = None,
     ) -> tuple[str, int, int]:
         """
             为最终 chunk 构造相邻上下文，并返回实际追加的前后 token 数。
@@ -196,6 +197,7 @@ class ChunkOverlapper:
             previous_content: 当前 chunk 的前一个 chunk 内容。
             current_content: 当前 chunk 原始内容。
             next_content: 当前 chunk 的后一个 chunk 内容。
+            max_total_tokens: 可选最终 token 硬上限；上下文不得挤占本体。
 
         Returns:
             tuple[str, int, int]: 带上下文的内容、前置 token 数、后置 token 数。
@@ -204,22 +206,54 @@ class ChunkOverlapper:
         if overlap_budget <= 0:
             return current_content, 0, 0
 
-        contextual_parts: list[str] = []
-        previous_tokens = 0
-        next_tokens = 0
+        current_tokens = self.count_tokens(current_content)
+        if max_total_tokens is not None and current_tokens >= max_total_tokens:
+            return current_content, 0, 0
 
-        if previous_content:
-            previous_context = self.take_last_tokens(previous_content, overlap_budget)
-            if previous_context:
-                previous_tokens = self.count_tokens(previous_context)
-                contextual_parts.append(previous_context)
+        previous_budget = overlap_budget if previous_content else 0
+        next_budget = overlap_budget if next_content else 0
+        if max_total_tokens is not None:
+            available = max(0, max_total_tokens - current_tokens)
+            side_count = int(bool(previous_content)) + int(bool(next_content))
+            if side_count == 2:
+                previous_budget = min(previous_budget, available // 2)
+                next_budget = min(next_budget, available - previous_budget)
+            elif previous_content:
+                previous_budget = min(previous_budget, available)
+            elif next_content:
+                next_budget = min(next_budget, available)
 
-        contextual_parts.append(current_content)
+        def build(previous_limit: int, next_limit: int) -> tuple[str, int, int]:
+            contextual_parts: list[str] = []
+            previous_tokens = 0
+            next_tokens = 0
 
-        if next_content:
-            next_context = self.take_first_tokens(next_content, overlap_budget)
-            if next_context:
-                next_tokens = self.count_tokens(next_context)
-                contextual_parts.append(next_context)
+            if previous_content and previous_limit > 0:
+                previous_context = self.take_last_tokens(previous_content, previous_limit)
+                if previous_context:
+                    previous_tokens = self.count_tokens(previous_context)
+                    contextual_parts.append(previous_context)
 
-        return "\n\n".join(contextual_parts).strip(), previous_tokens, next_tokens
+            contextual_parts.append(current_content)
+
+            if next_content and next_limit > 0:
+                next_context = self.take_first_tokens(next_content, next_limit)
+                if next_context:
+                    next_tokens = self.count_tokens(next_context)
+                    contextual_parts.append(next_context)
+
+            return "\n\n".join(contextual_parts).strip(), previous_tokens, next_tokens
+
+        result = build(previous_budget, next_budget)
+        # 分隔符也可能占 token；逐步缩减上下文，绝不截断当前分片本体。
+        while (
+            max_total_tokens is not None
+            and self.count_tokens(result[0]) > max_total_tokens
+            and (previous_budget > 0 or next_budget > 0)
+        ):
+            if next_budget >= previous_budget and next_budget > 0:
+                next_budget -= 1
+            elif previous_budget > 0:
+                previous_budget -= 1
+            result = build(previous_budget, next_budget)
+        return result

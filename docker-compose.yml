@@ -137,9 +137,15 @@ services:
       QDRANT_GRPC_PORT: 6334
       MANTICORE_HOST: manticore
       MANTICORE_PORT: 9306
-      PDF_PARSER_BACKEND: opendataloader
-      PDF_PARSER_FALLBACKS: ""
+      CHUNKING_STAGE_TWO_ALGORITHM: ${CHUNKING_STAGE_TWO_ALGORITHM:-semantic_depth_window}
+      PDF_PARSER_BACKEND: ${PDF_PARSER_BACKEND:-opendataloader}
+      PDF_PARSER_FALLBACKS: ${PDF_PARSER_FALLBACKS:-mineru}
       PDF_IMAGE_UPLOAD_ASYNC: "false"
+      MINERU_API_URL: ${MINERU_API_URL:-https://mineru.net/api/v4/extract/task}
+      MINERU_API_TOKEN: ${MINERU_API_TOKEN:-}
+      MINERU_API_KEY: ${MINERU_API_KEY:-}
+      MINERU_TIMEOUT: ${MINERU_TIMEOUT:-900}
+      MINERU_MODEL_VERSION: ${MINERU_MODEL_VERSION:-vlm}
       PARSE_TEMP_DIR: /tmp/energy-carbon-rag
       LOG_FILE_ENABLED: "false"
       NLTK_DATA: /app/nltk_data
@@ -183,9 +189,15 @@ services:
       QDRANT_GRPC_PORT: 6334
       MANTICORE_HOST: manticore
       MANTICORE_PORT: 9306
-      PDF_PARSER_BACKEND: opendataloader
-      PDF_PARSER_FALLBACKS: ""
+      CHUNKING_STAGE_TWO_ALGORITHM: ${CHUNKING_STAGE_TWO_ALGORITHM:-semantic_depth_window}
+      PDF_PARSER_BACKEND: ${PDF_PARSER_BACKEND:-opendataloader}
+      PDF_PARSER_FALLBACKS: ${PDF_PARSER_FALLBACKS:-mineru}
       PDF_IMAGE_UPLOAD_ASYNC: "false"
+      MINERU_API_URL: ${MINERU_API_URL:-https://mineru.net/api/v4/extract/task}
+      MINERU_API_TOKEN: ${MINERU_API_TOKEN:-}
+      MINERU_API_KEY: ${MINERU_API_KEY:-}
+      MINERU_TIMEOUT: ${MINERU_TIMEOUT:-900}
+      MINERU_MODEL_VERSION: ${MINERU_MODEL_VERSION:-vlm}
       PARSE_TEMP_DIR: /tmp/energy-carbon-rag
       LOG_FILE_ENABLED: "false"
       NLTK_DATA: /app/nltk_data

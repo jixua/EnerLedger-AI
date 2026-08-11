@@ -22,6 +22,11 @@ from .stage_models import (
     SplitInput,
     StageIdFactory,
 )
+from .structural_boundaries import (
+    BoundaryStrength,
+    StructuralBoundary,
+    StructuralBoundaryDetector,
+)
 
 if TYPE_CHECKING:
     from app.rag.core.llm.tokenizer import Tokenizer
@@ -291,6 +296,7 @@ class CandidateBoundaryChunker:
         buffer_elements: list[MarkdownElement],
         buffer_token_count: int,
         deepest_heading_level: int | None,
+        structural_boundary: StructuralBoundary | None = None,
     ) -> bool:
         """
         判断当前元素之前是否应输出 buffer。
@@ -304,14 +310,30 @@ class CandidateBoundaryChunker:
         Returns:
             bool: 达到软下限或触发动态标题层级保护时返回 True。
         """
-        if not buffer_elements or element.type != ElementType.HEADING:
+        if not buffer_elements:
+            return False
+
+        is_markdown_heading = element.type == ElementType.HEADING
+        if not is_markdown_heading and structural_boundary is None:
             return False
 
         if self._is_heading_only(buffer_elements):
             return False
 
+        # 「第…章」是明确的上位结构，即使前一章很短也不与下一章混合。
+        if (
+            structural_boundary is not None
+            and structural_boundary.strength is BoundaryStrength.HARD
+        ):
+            return True
+
         if buffer_token_count >= self.min_candidate_chunk_tokens:
             return True
+
+
+        # 「第…条」只是候选边界：未达软下限时继续聚合相邻条款。
+        if structural_boundary is not None:
+            return False
 
         return self._is_dynamic_heading_boundary(
             next_heading=element,
@@ -626,6 +648,7 @@ class CandidateBoundaryChunker:
             and element.metadata.get("suppress_retrieval") is not True
         ]
         visible_elements = [element for _, element in visible_entries]
+        structural_boundaries = StructuralBoundaryDetector.detect(split_input.elements)
         deepest_heading_level = self._deepest_heading_level(visible_elements)
         for source_element_index, element in visible_entries:
             if self._is_isolated_source_element(element):
@@ -646,10 +669,18 @@ class CandidateBoundaryChunker:
                 buffer_elements,
                 buffer_token_count,
                 deepest_heading_level,
+                structural_boundaries.get(source_element_index),
             ):
                 flush_buffer()
 
-            heading_tracker.observe(element)
+            structural_boundary = structural_boundaries.get(source_element_index)
+            if structural_boundary is not None and structural_boundary.kind != "legal_article":
+                heading_tracker.observe_structural_heading(
+                    structural_boundary.text,
+                    level=structural_boundary.level,
+                )
+            else:
+                heading_tracker.observe(element)
 
             buffer_elements.append(element)
             buffer_source_element_indexes.append(source_element_index)

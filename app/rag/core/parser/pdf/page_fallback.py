@@ -5,11 +5,11 @@ import base64
 import json
 import math
 import re
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, replace
 from enum import StrEnum
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 try:  # PyMuPDF 1.24+ canonical import name.
     import pymupdf
@@ -110,6 +110,196 @@ class AsyncVisionPageProvider(Protocol):
         image: RenderedPdfPage,
         odl_markdown: str,
     ) -> PageProviderOutput: ...
+
+
+class RapidOcrPageProviderAdapter:
+    """Run PP-OCRv6 locally through RapidOCR's bundled ONNX models.
+
+    Model loading is lazy so born-digital PDFs do not pay the OCR startup cost.
+    One engine instance is serialized because ONNX inference and RapidOCR's mutable
+    call parameters are not guaranteed to be safe under concurrent calls.
+    """
+
+    _DET_MODEL = "PP-OCRv6_det_small.onnx"
+    _REC_MODEL = "PP-OCRv6_rec_small.onnx"
+    _CLS_MODEL = "ch_ppocr_mobile_v2.0_cls_mobile.onnx"
+
+    def __init__(
+        self,
+        *,
+        engine_factory: Callable[[], Any] | None = None,
+        intra_op_num_threads: int = 3,
+        inter_op_num_threads: int = 1,
+    ) -> None:
+        if intra_op_num_threads < 1 or inter_op_num_threads < 1:
+            raise ValueError("RapidOCR thread counts must be greater than zero")
+        self._engine_factory = engine_factory
+        self._intra_op_num_threads = intra_op_num_threads
+        self._inter_op_num_threads = inter_op_num_threads
+        self._engine: Any | None = None
+        self._lock = asyncio.Lock()
+
+    async def recognize_page(
+        self,
+        *,
+        page_number: int,
+        image: RenderedPdfPage,
+    ) -> PageProviderOutput:
+        del page_number
+        async with self._lock:
+            return await asyncio.to_thread(self._recognize_sync, image.image_bytes)
+
+    def _recognize_sync(self, image_bytes: bytes) -> PageProviderOutput:
+        result = self._get_engine()(image_bytes)
+        if result is None:
+            return PageProviderOutput(
+                text="",
+                markdown="",
+                confidence=None,
+                warnings=("OCR_SOURCE:RAPIDOCR_PP_OCRV6",),
+            )
+
+        texts = list(getattr(result, "txts", None) or ())
+        scores = [float(score) for score in (getattr(result, "scores", None) or ())]
+        if not texts and isinstance(result, tuple):
+            raw_rows = result[0] or ()
+            texts = [str(row[1]) for row in raw_rows]
+            scores = [float(row[2]) for row in raw_rows]
+
+        text = "\n".join(str(item).strip() for item in texts if str(item).strip())
+        to_markdown = getattr(result, "to_markdown", None)
+        markdown = str(to_markdown() if callable(to_markdown) else text).strip()
+        confidence = sum(scores) / len(scores) if scores else None
+        return PageProviderOutput(
+            text=text,
+            markdown=markdown or text,
+            confidence=confidence,
+            warnings=("OCR_SOURCE:RAPIDOCR_PP_OCRV6",),
+        )
+
+    def _get_engine(self) -> Any:
+        if self._engine is not None:
+            return self._engine
+        if self._engine_factory is not None:
+            self._engine = self._engine_factory()
+            return self._engine
+
+        import rapidocr
+        from rapidocr import RapidOCR
+
+        model_dir = Path(rapidocr.__file__).resolve().parent / "models"
+        model_paths = {
+            "Det.model_path": model_dir / self._DET_MODEL,
+            "Rec.model_path": model_dir / self._REC_MODEL,
+            "Cls.model_path": model_dir / self._CLS_MODEL,
+        }
+        missing = [path.name for path in model_paths.values() if not path.is_file()]
+        if missing:
+            raise RuntimeError(f"RapidOCR bundled models missing: {','.join(missing)}")
+        params = {
+            key: str(path)
+            for key, path in model_paths.items()
+        }
+        params.update(
+            {
+                "EngineConfig.onnxruntime.intra_op_num_threads": (
+                    self._intra_op_num_threads
+                ),
+                "EngineConfig.onnxruntime.inter_op_num_threads": (
+                    self._inter_op_num_threads
+                ),
+            }
+        )
+        self._engine = RapidOCR(params=params)
+        return self._engine
+
+
+class QualityGatedOcrPageProvider:
+    """Prefer local OCR and call the vision model only for rejected OCR output."""
+
+    def __init__(
+        self,
+        primary: AsyncOcrPageProvider,
+        fallback: AsyncOcrPageProvider | None,
+        *,
+        min_effective_text_chars: int,
+        min_confidence: float,
+    ) -> None:
+        if min_effective_text_chars < 1:
+            raise ValueError("min_effective_text_chars must be greater than zero")
+        if not 0 <= min_confidence <= 1:
+            raise ValueError("min_confidence must be between zero and one")
+        self._primary = primary
+        self._fallback = fallback
+        self._min_effective_text_chars = min_effective_text_chars
+        self._min_confidence = min_confidence
+
+    async def recognize_page(
+        self,
+        *,
+        page_number: int,
+        image: RenderedPdfPage,
+    ) -> PageProviderOutput:
+        rejection: str | None = None
+        try:
+            primary_output = await self._primary.recognize_page(
+                page_number=page_number,
+                image=image,
+            )
+            rejection = self._rejection_reason(primary_output)
+            if rejection is None:
+                return primary_output
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            primary_output = None
+            rejection = f"ERROR_{type(exc).__name__}"
+
+        if self._fallback is None:
+            if primary_output is not None:
+                return replace(
+                    primary_output,
+                    warnings=tuple(
+                        dict.fromkeys(
+                            [*primary_output.warnings, f"LOCAL_OCR_REJECTED:{rejection}"]
+                        )
+                    ),
+                )
+            raise RuntimeError(f"local OCR failed and no fallback is configured: {rejection}")
+
+        fallback_output = await self._fallback.recognize_page(
+            page_number=page_number,
+            image=image,
+        )
+        return replace(
+            fallback_output,
+            warnings=tuple(
+                dict.fromkeys(
+                    [
+                        *(primary_output.warnings if primary_output is not None else ()),
+                        f"LOCAL_OCR_REJECTED:{rejection}",
+                        *fallback_output.warnings,
+                        "OCR_SOURCE:VISION_FALLBACK",
+                    ]
+                )
+            ),
+        )
+
+    def _rejection_reason(self, output: PageProviderOutput) -> str | None:
+        effective_chars = len(re.sub(r"\s+", "", output.text or output.markdown or ""))
+        if effective_chars < self._min_effective_text_chars:
+            return (
+                "TEXT_TOO_SHORT:"
+                f"actual={effective_chars},limit={self._min_effective_text_chars}"
+            )
+        if output.confidence is None:
+            return "CONFIDENCE_MISSING"
+        if output.confidence < self._min_confidence:
+            return (
+                "CONFIDENCE_LOW:"
+                f"actual={output.confidence:.4f},limit={self._min_confidence:.4f}"
+            )
+        return None
 
 
 class AnalyzeImagePageProviderAdapter:
@@ -213,12 +403,25 @@ class AnalyzeImagePageProviderAdapter:
         }
         if self._model_name:
             kwargs["model"] = self._model_name
-            if self._model_name.strip().casefold().startswith("qwen"):
+            normalized_model = self._model_name.strip().casefold()
+            if normalized_model.startswith("qwen"):
                 # DashScope's raw OpenAI-compatible endpoint expects these as
                 # top-level request fields (the official SDK's ``extra_body`` helper
                 # merely flattens them).  Disabling thinking keeps the response a
                 # single JSON object that can be validated deterministically.
                 kwargs["enable_thinking"] = False
+                kwargs["response_format"] = {"type": "json_object"}
+            elif normalized_model.startswith("kimi-"):
+                # Kimi Open Platform accepts 1.0, while subscription/Plan keys use
+                # the Kimi Code compatibility endpoint whose K2.6 route only accepts
+                # 0.6. OCR fallback still needs non-thinking JSON output on both.
+                api_base_url = str(
+                    getattr(self._provider, "api_base_url", "") or ""
+                ).casefold()
+                kwargs["temperature"] = (
+                    0.6 if "api.kimi.com/coding/" in api_base_url else 1.0
+                )
+                kwargs["thinking"] = {"type": "disabled"}
                 kwargs["response_format"] = {"type": "json_object"}
         response = await self._provider.analyze_image(**kwargs)
         if isinstance(response, Mapping):

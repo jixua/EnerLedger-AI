@@ -8,7 +8,7 @@
 
 接口契约：
 - 只支持 MinerU 官方 V4 云端 API。
-- 本后端提交公网可访问文件 URL，轮询 task_id 结果并下载结果 ZIP。
+- 有本地源文件时通过官方签名 URL 上传，无本地文件时兼容公网 URL 旁路。
 
 时间复杂度 O(n)，n 为 PDF 页数，受限于远端服务处理速度。
 """
@@ -16,8 +16,10 @@
 from __future__ import annotations
 
 import io
+import json
 import re
 import time
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -26,6 +28,7 @@ from loguru import logger
 
 from app.rag.core.parser.pdf.base import BasePdfBackend
 from app.rag.core.parser.pdf.models import PdfBinaryAsset
+from app.rag.core.parser.pdf.reliability import PdfReliabilityLimits
 from app.rag.observability.logging import (
     safe_exception_stack,
     sanitize_url_for_log,
@@ -47,16 +50,15 @@ class MinerUBackend(BasePdfBackend):
         api_url: str | None = None,
         api_key: str | None = None,
         timeout: int = _DEFAULT_TIMEOUT_SECONDS,
+        limits: PdfReliabilityLimits | None = None,
     ) -> None:
         super().__init__()
         self._api_url = (api_url or "").rstrip("/")
         self._api_key = api_key
         self._timeout = timeout
+        self._limits = limits or PdfReliabilityLimits()
 
     def parse(self, source: Path | None, options: Any = None) -> tuple[str, list[PdfBinaryAsset]]:
-        # MinerU 云端 API 仅依赖 options.source_file_url，不读取本地 source；保留入参对齐
-        # 协议签名即可。
-        _ = source
         if not self._api_url:
             self.metadata["mineru_backend_error"] = "MINERU_API_URL 未配置"
             logger.warning("[MinerU Cloud] API URL 未配置，跳过此后端")
@@ -69,16 +71,19 @@ class MinerUBackend(BasePdfBackend):
             return "", []
 
         source_file_url = getattr(options, "source_file_url", None)
-        if not source_file_url:
+        if source is None and not source_file_url:
             self.metadata["mineru_backend_error"] = (
-                "MinerU 精准解析 API 需要 source_file_url，且该 URL 必须能被 MinerU 云端访问"
+                "MinerU 精准解析 API 需要本地源文件或可公网访问的 source_file_url"
             )
-            logger.warning("[MinerU Cloud] source_file_url 未配置，无法调用精准解析 API")
+            logger.warning("[MinerU Cloud] 未提供可上传或可拉取的源文件")
             return "", []
 
         model_version = getattr(options, "mineru_model_version", "vlm") or "vlm"
 
         try:
+            if source is not None:
+                markdown, assets = self._call_cloud_upload_api(source, model_version)
+                return markdown, assets
             markdown, assets = self._call_cloud_api(source_file_url, model_version)
             return markdown, assets
         except httpx.TimeoutException as exc:
@@ -121,6 +126,102 @@ class MinerUBackend(BasePdfBackend):
             ).error("MinerU 云端解析异常")
             return "", []
 
+    def _call_cloud_upload_api(
+        self,
+        source: Path,
+        model_version: str,
+    ) -> tuple[str, list[PdfBinaryAsset]]:
+        """通过 MinerU V4 签名上传接口解析本地 PDF。
+
+        流程：申请单文件批次上传 URL -> 流式 PUT 源文件 -> 轮询批次结果。
+        这条路径不要求对公网暴露本地 MinIO。
+        """
+        headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
+        api_base = self._build_api_base()
+        upload_request_url = f"{api_base}/api/v4/file-urls/batch"
+
+        with httpx.Client(timeout=self._timeout) as client:
+            create_resp = client.post(
+                upload_request_url,
+                headers=headers,
+                json={
+                    "files": [{"name": source.name, "data_id": uuid.uuid4().hex}],
+                    "model_version": model_version,
+                    "enable_table": True,
+                    "enable_formula": True,
+                },
+            )
+            create_resp.raise_for_status()
+            create_res = create_resp.json()
+            if create_res.get("code") != 0:
+                raise Exception(f"申请 MinerU 上传链接失败: {create_res.get('msg')}")
+
+            data = create_res.get("data") or {}
+            batch_id = data.get("batch_id")
+            file_urls = data.get("file_urls") or []
+            if not batch_id or not file_urls:
+                raise Exception("MinerU 上传接口未返回 batch_id 或 file_urls")
+
+            upload_url = file_urls[0]
+            with source.open("rb") as source_stream:
+                upload_resp = client.put(
+                    upload_url,
+                    content=source_stream,
+                    headers={"Content-Length": str(source.stat().st_size)},
+                )
+            upload_resp.raise_for_status()
+
+            self.metadata["mineru_batch_id"] = batch_id
+            self.metadata["mineru_submission_mode"] = "signed_upload"
+            poll_url = f"{api_base}/api/v4/extract-results/batch/{batch_id}"
+            task_state = self._poll_batch_result(client, poll_url, headers)
+            full_zip_url, markdown_url = self._extract_result_urls(task_state)
+            return self._download_result(
+                client,
+                full_zip_url=full_zip_url,
+                markdown_url=markdown_url,
+                task_id=batch_id,
+                model_version=model_version,
+            )
+
+    def _poll_batch_result(
+        self,
+        client: httpx.Client,
+        poll_url: str,
+        headers: dict[str, str],
+    ) -> dict[str, Any]:
+        start_time = time.time()
+        poll_interval = 1.0
+        consecutive_errors = 0
+
+        while time.time() - start_time < self._timeout:
+            poll_resp = client.get(
+                poll_url,
+                headers={"Authorization": headers["Authorization"]},
+            )
+            poll_resp.raise_for_status()
+            poll_res = poll_resp.json()
+            if poll_res.get("code") != 0:
+                consecutive_errors += 1
+                if consecutive_errors >= _MAX_CONSECUTIVE_POLL_ERRORS:
+                    raise Exception(f"MinerU 批次轮询失败: {poll_res.get('msg')}")
+                self._backoff(poll_interval, start_time)
+                poll_interval = min(poll_interval * 1.5, 5.0)
+                continue
+
+            consecutive_errors = 0
+            results = (poll_res.get("data") or {}).get("extract_result") or []
+            task_state = results[0] if results else {}
+            state = task_state.get("state")
+            if state == "done":
+                return task_state
+            if state == "failed":
+                raise Exception(f"MinerU 云端解析失败: {task_state.get('err_msg')}")
+            self._backoff(poll_interval, start_time)
+            poll_interval = min(poll_interval * 1.5, 5.0)
+
+        raise Exception(f"MinerU 云端解析超时 ({self._timeout}s)")
+
     def _call_cloud_api(
         self,
         source_file_url: str,
@@ -133,8 +234,6 @@ class MinerUBackend(BasePdfBackend):
         2. 轮询 GET /api/v4/extract/task/{task_id} 直到 state == done
         3. 下载 full_zip_url 并解压提取 Markdown
         """
-        import zipfile
-
         headers = {"Authorization": f"Bearer {self._api_key}", "Content-Type": "application/json"}
 
         task_url = self._build_task_url()
@@ -143,6 +242,9 @@ class MinerUBackend(BasePdfBackend):
             create_data = {
                 "url": source_file_url,
                 "model_version": model_version,
+                "enable_table": True,
+                "enable_formula": True,
+                "language": "ch",
             }
             logger.bind(
                 event="mineru_task_create",
@@ -229,55 +331,13 @@ class MinerUBackend(BasePdfBackend):
             if not full_zip_url and not markdown_url:
                 raise Exception(f"云端解析超时 ({self._timeout}s)")
 
-            if markdown_url:
-                markdown = self._download_markdown(client, markdown_url)
-                self.metadata["mineru_api_status"] = 200
-                self.metadata["mineru_task_id"] = task_id
-                self.metadata["mineru_model_version"] = model_version
-                self.metadata["mineru_download_mode"] = "markdown_url"
-                return markdown, []
-
-            # 4. 流式下载并解压 ZIP
-            zip_bytes = self._download_zip(client, full_zip_url)
-
-            markdown = ""
-            assets = []
-
-            with zipfile.ZipFile(io.BytesIO(zip_bytes)) as z:
-                # 寻找 markdown 文件
-                md_files = [f for f in z.namelist() if f.endswith(".md")]
-                if md_files:
-                    markdown = z.read(md_files[0]).decode("utf-8")
-
-                # MinerU 云端 API 目前把图片放在 images 目录下
-                # 因为用户配置了 image_bucket 流程，所以我们把图片作为 PdfBinaryAsset 传出去
-                img_files = [
-                    f for f in z.namelist() if f.startswith("images/") and not f.endswith("/")
-                ]
-                logger.info(
-                    "[MinerU Cloud] ZIP 解压结果: md_files={}, image_files={}",
-                    len(md_files),
-                    len(img_files),
-                )
-                for idx, img_path in enumerate(img_files, start=1):
-                    img_bytes = z.read(img_path)
-                    ext = img_path.split(".")[-1] if "." in img_path else "png"
-                    assets.append(
-                        PdfBinaryAsset(
-                            kind="picture",
-                            page_number=idx,  # 云端没有页码，暂用 idx
-                            index=idx,
-                            ext=ext,
-                            content=img_bytes,
-                            source_path=img_path,
-                        )
-                    )
-
-            self.metadata["mineru_api_status"] = 200
-            self.metadata["mineru_task_id"] = task_id
-            self.metadata["mineru_model_version"] = model_version
-            self.metadata["mineru_download_mode"] = "zip_stream"
-            return markdown, assets
+            return self._download_result(
+                client,
+                full_zip_url=full_zip_url,
+                markdown_url=markdown_url,
+                task_id=task_id,
+                model_version=model_version,
+            )
 
     def _backoff(self, poll_interval: float, start_time: float) -> None:
         """统一的轮询退避：按剩余时间裁剪 sleep，确保任何分支都不会全速空转。"""
@@ -292,6 +352,181 @@ class MinerUBackend(BasePdfBackend):
         if "/api/v4" in self._api_url:
             return self._api_url.split("/api/v4")[0] + "/api/v4/extract/task"
         return f"{self._api_url.rstrip('/')}/api/v4/extract/task"
+
+    def _build_api_base(self) -> str:
+        """从域名、/api/v4 或完整 task URL 提取 MinerU API 基地址。"""
+        if "/api/v4" in self._api_url:
+            return self._api_url.split("/api/v4", 1)[0]
+        return self._api_url.rstrip("/")
+
+    def _download_result(
+        self,
+        client: httpx.Client,
+        *,
+        full_zip_url: str | None,
+        markdown_url: str | None,
+        task_id: str,
+        model_version: str,
+    ) -> tuple[str, list[PdfBinaryAsset]]:
+        """下载单任务或批次任务的 Markdown/ZIP 结果。"""
+        if not full_zip_url and markdown_url:
+            # 直接 Markdown 不包含项目质量门禁要求的原 PDF 页级来源。若把它当作
+            # 成功结果，PdfParserService 会停止后端回退，随后 ingestion 又会因
+            # PAGE_PROVENANCE_INVALID 终止，最终让整个业务任务无法完成。
+            raise ValueError("MinerU 仅返回无页级来源的 Markdown，继续尝试后端回退")
+        if not full_zip_url:
+            raise Exception("MinerU 任务完成但未返回可下载结果")
+
+        zip_bytes = self._download_zip(client, full_zip_url)
+        markdown, assets = self._extract_zip_result(zip_bytes)
+
+        self.metadata["mineru_api_status"] = 200
+        self.metadata["mineru_task_id"] = task_id
+        self.metadata["mineru_model_version"] = model_version
+        self.metadata["mineru_download_mode"] = "zip_stream"
+        return markdown, assets
+
+    def _extract_zip_result(
+        self,
+        zip_bytes: bytes,
+    ) -> tuple[str, list[PdfBinaryAsset]]:
+        """Extract page-aware Markdown and image provenance from an official result ZIP."""
+        import zipfile
+
+        with zipfile.ZipFile(io.BytesIO(zip_bytes)) as archive:
+            members = archive.infolist()
+            self._validate_zip_members(members)
+            names = [member.filename for member in members]
+            content_list_names = [
+                name
+                for name in names
+                if name.endswith("_content_list.json") or name == "content_list.json"
+            ]
+            content_list: list[dict[str, Any]] = []
+            if content_list_names:
+                payload = json.loads(archive.read(content_list_names[0]).decode("utf-8"))
+                if isinstance(payload, list):
+                    content_list = [item for item in payload if isinstance(item, dict)]
+
+            page_count = self._content_list_page_count(content_list)
+            middle_names = [name for name in names if name.endswith("_middle.json")]
+            if middle_names:
+                middle = json.loads(archive.read(middle_names[0]).decode("utf-8"))
+                if isinstance(middle, dict) and isinstance(middle.get("pdf_info"), list):
+                    page_count = max(page_count, len(middle["pdf_info"]))
+
+            image_pages = self._image_pages(content_list)
+            if content_list and page_count:
+                markdown = self._content_list_to_page_markdown(content_list, page_count)
+                self.metadata["mineru_markdown_source"] = "content_list"
+            else:
+                self.metadata["mineru_markdown_source"] = "full_md_without_page_provenance"
+                raise ValueError("MinerU 结果缺少可验证的页级来源，继续尝试后端回退")
+
+            image_files = [
+                name for name in names if name.startswith("images/") and not name.endswith("/")
+            ]
+            assets = [
+                PdfBinaryAsset(
+                    kind="picture",
+                    page_number=image_pages.get(image_path),
+                    index=index,
+                    ext=image_path.rsplit(".", 1)[-1] if "." in image_path else "png",
+                    content=archive.read(image_path),
+                    source_path=image_path,
+                )
+                for index, image_path in enumerate(image_files, start=1)
+            ]
+            return markdown, assets
+
+    def _validate_zip_members(self, members: list[Any]) -> None:
+        """在读取任何 ZIP 条目前执行数量和展开大小上限检查。"""
+
+        files = [member for member in members if not member.is_dir()]
+        if len(files) > self._limits.max_output_files:
+            raise ValueError(
+                "MinerU 结果文件数超过限制: "
+                f"{len(files)} > {self._limits.max_output_files}"
+            )
+
+        expanded_bytes = sum(max(int(member.file_size), 0) for member in files)
+        if expanded_bytes > self._limits.max_output_dir_bytes:
+            raise ValueError(
+                "MinerU 结果展开大小超过限制: "
+                f"{expanded_bytes} > {self._limits.max_output_dir_bytes}"
+            )
+
+        image_members = [
+            member
+            for member in files
+            if member.filename.startswith("images/")
+        ]
+        if len(image_members) > self._limits.max_images:
+            raise ValueError(
+                "MinerU 图片数量超过限制: "
+                f"{len(image_members)} > {self._limits.max_images}"
+            )
+        oversized_image = next(
+            (
+                member
+                for member in image_members
+                if member.file_size > self._limits.max_single_image_bytes
+            ),
+            None,
+        )
+        if oversized_image is not None:
+            raise ValueError(
+                "MinerU 单张图片超过限制: "
+                f"{oversized_image.filename} ({oversized_image.file_size} bytes)"
+            )
+        total_image_bytes = sum(member.file_size for member in image_members)
+        if total_image_bytes > self._limits.max_total_image_bytes:
+            raise ValueError(
+                "MinerU 图片总大小超过限制: "
+                f"{total_image_bytes} > {self._limits.max_total_image_bytes}"
+            )
+
+    @staticmethod
+    def _content_list_page_count(content_list: list[dict[str, Any]]) -> int:
+        page_indices = [
+            item.get("page_idx")
+            for item in content_list
+            if isinstance(item.get("page_idx"), int) and item["page_idx"] >= 0
+        ]
+        return max(page_indices, default=-1) + 1
+
+    @staticmethod
+    def _image_pages(content_list: list[dict[str, Any]]) -> dict[str, int]:
+        return {
+            str(item["img_path"]): int(item["page_idx"]) + 1
+            for item in content_list
+            if (
+                item.get("type") in {"image", "chart", "table"}
+                and item.get("img_path")
+                and isinstance(item.get("page_idx"), int)
+                and item["page_idx"] >= 0
+            )
+        }
+
+    def _content_list_to_page_markdown(
+        self,
+        content_list: list[dict[str, Any]],
+        page_count: int,
+    ) -> str:
+        pages: dict[int, list[dict[str, Any]]] = {
+            page_number: [] for page_number in range(1, page_count + 1)
+        }
+        for item in content_list:
+            page_idx = item.get("page_idx")
+            if isinstance(page_idx, int) and 0 <= page_idx < page_count:
+                pages[page_idx + 1].append(item)
+
+        sections: list[str] = []
+        for page_number, items in pages.items():
+            body = self._content_list_to_markdown(items).strip()
+            marker = f"<!-- ODL_PAGE:{page_number} -->"
+            sections.append(f"{marker}\n\n{body}" if body else marker)
+        return "\n\n".join(sections)
 
     def _extract_result_urls(self, task_state: dict[str, Any]) -> tuple[str | None, str | None]:
         """兼容 MinerU 结果 URL 可能位于 data 或 extract_result 下的返回结构。"""
@@ -310,21 +545,8 @@ class MinerUBackend(BasePdfBackend):
         )
         return full_zip_url, markdown_url
 
-    def _download_markdown(self, client: httpx.Client, markdown_url: str) -> str:
-        """下载 MinerU 直接返回的 Markdown 链接，避免不必要的 ZIP 传输。"""
-        logger.info("[MinerU Cloud] 正在下载 Markdown 结果...")
-        started_at = time.monotonic()
-        markdown_bytes = self._stream_download_bytes(client, markdown_url)
-        elapsed = time.monotonic() - started_at
-        self.metadata["mineru_markdown_download_bytes"] = len(markdown_bytes)
-        self.metadata["mineru_markdown_download_seconds"] = round(elapsed, 3)
-        logger.info(
-            f"[MinerU Cloud] Markdown 下载完成: bytes={len(markdown_bytes)}, elapsed={elapsed:.2f}s"
-        )
-        return markdown_bytes.decode("utf-8")
-
     def _download_zip(self, client: httpx.Client, full_zip_url: str) -> bytes:
-        """分块流式下载 ZIP，避免 httpx 一次性缓存整个响应后才进入解压阶段。"""
+        """分块下载 ZIP，并在累计内存前执行大小上限。"""
         logger.info("[MinerU Cloud] 正在流式下载结果 ZIP...")
         started_at = time.monotonic()
         zip_bytes = self._stream_download_bytes(client, full_zip_url)
@@ -334,13 +556,19 @@ class MinerUBackend(BasePdfBackend):
         logger.info(f"[MinerU Cloud] ZIP 下载完成: bytes={len(zip_bytes)}, elapsed={elapsed:.2f}s")
         return zip_bytes
 
-    @staticmethod
-    def _stream_download_bytes(client: httpx.Client, url: str) -> bytes:
+    def _stream_download_bytes(self, client: httpx.Client, url: str) -> bytes:
         chunks: list[bytes] = []
+        downloaded_bytes = 0
         with client.stream("GET", url) as response:
             response.raise_for_status()
             for chunk in response.iter_bytes():
                 if chunk:
+                    downloaded_bytes += len(chunk)
+                    if downloaded_bytes > self._limits.max_output_dir_bytes:
+                        raise ValueError(
+                            "MinerU 结果包超过下载限制: "
+                            f"{downloaded_bytes} > {self._limits.max_output_dir_bytes}"
+                        )
                     chunks.append(chunk)
         return b"".join(chunks)
 
@@ -380,24 +608,59 @@ class MinerUBackend(BasePdfBackend):
             content = item.get("content", "") or item.get("text", "")
 
             if item_type == "text":
-                parts.append(content)
+                level = item.get("text_level")
+                if isinstance(level, int) and level > 0:
+                    parts.append(f"{'#' * min(level, 6)} {content}")
+                else:
+                    parts.append(content)
             elif item_type == "table":
-                # MinerU 表格以 HTML 输出，直接嵌入 Markdown
-                parts.append(content)
-            elif item_type == "image":
+                caption = " ".join(item.get("table_caption") or ())
+                table_body = item.get("table_body") or content
+                footnote = " ".join(item.get("table_footnote") or ())
+                parts.append(
+                    "\n\n".join(part for part in (caption, table_body, footnote) if part)
+                )
+            elif item_type in {"image", "chart"}:
                 img_path = item.get("img_path", "")
-                img_caption = item.get("img_caption", "图片")
+                captions = item.get("image_caption") or item.get("chart_caption") or ()
+                footnotes = item.get("image_footnote") or item.get("chart_footnote") or ()
+                img_caption = " ".join(captions) if captions else "图片"
                 if img_path:
                     parts.append(f"![{img_caption}]({img_path})")
                 else:
                     parts.append(f"> [图片] {img_caption}")
+                if item_type == "chart" and content:
+                    parts.append(str(content))
+                if footnotes:
+                    parts.append(" ".join(str(footnote) for footnote in footnotes))
             elif item_type in ("equation", "formula"):
                 # 行内或独立公式
                 if "\n" in content or len(content) > 80:
                     parts.append(f"$$\n{content}\n$$")
                 else:
                     parts.append(f"${content}$")
-            else:
+            elif item_type == "code":
+                code_body = str(item.get("code_body") or content)
+                caption = " ".join(item.get("code_caption") or ())
+                footnote = " ".join(item.get("code_footnote") or ())
+                parts.append(
+                    "\n\n".join(
+                        part for part in (caption, f"```\n{code_body}\n```", footnote) if part
+                    )
+                )
+            elif item_type == "list":
+                parts.append(
+                    "\n".join(
+                        f"- {list_item}" for list_item in (item.get("list_items") or ())
+                    )
+                )
+            elif item_type not in {
+                "header",
+                "footer",
+                "page_number",
+                "aside_text",
+                "page_footnote",
+            }:
                 parts.append(content)
 
         return "\n\n".join(parts)

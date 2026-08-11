@@ -4,7 +4,6 @@
 from __future__ import annotations
 
 import json
-import re
 from dataclasses import dataclass, replace
 from enum import Enum
 from typing import TYPE_CHECKING, Any, Protocol
@@ -13,6 +12,7 @@ from app.rag.core.llm.tokenizer import Tokenizer
 
 from .models import ElementType, MarkdownElement, ParseResult
 from .parser import MarkdownParser
+from .structural_classifier import StructuralTextClassifier
 
 if TYPE_CHECKING:
     from app.rag.core.dataset_config import EnhancementConfig
@@ -38,11 +38,6 @@ COMMON_SECTION_TITLES = {
     "参数说明",
 }
 
-_NUMBERED_HEADING_RE = re.compile(r"^\d+(?:\.\d+){1,4}\s+\S+")
-_CHAPTER_RE = re.compile(r"^第[一二三四五六七八九十百千万\d]+[章节篇]\s*\S*")
-_CHINESE_LIST_RE = re.compile(r"^[一二三四五六七八九十]+、\s*\S+")
-_PAREN_LIST_RE = re.compile(r"^（[一二三四五六七八九十\d]+）\s*\S+")
-_DIGIT_PAREN_RE = re.compile(r"^\d+[）)]\s*\S+")
 HEADING_PLAN_SYSTEM_PROMPT = """你是面向 RAG 文档解析的 Markdown 标题规划助手。
 
 你的任务是阅读 Markdown 结构上下文，只判断哪里需要插入新的标题。你必须遵守：
@@ -490,16 +485,7 @@ class HeadingHierarchyGate:
         normalized = text.strip()
         if normalized in COMMON_SECTION_TITLES:
             return True
-        return any(
-            pattern.match(normalized)
-            for pattern in (
-                _NUMBERED_HEADING_RE,
-                _CHAPTER_RE,
-                _CHINESE_LIST_RE,
-                _PAREN_LIST_RE,
-                _DIGIT_PAREN_RE,
-            )
-        )
+        return StructuralTextClassifier.is_hierarchy_clue(normalized)
 
 
 class HeadingHierarchyProcessor:

@@ -6,13 +6,14 @@
 临时对象，不进入入库 schema、不进 FinalChunk 契约。
 
 实现包括：element_views -> atom timeline、cohesion/depth 评分、token 窗口打包、
-protected/oversized/truncated 处理、FinalChunk 组装与完整 run 编排。embedding 错误不在
-算法内静默降级：瞬时错误按 batch 重试，用尽后抛 RetriableError；永久错误直接上抛。
+protected/oversized/truncated 处理、FinalChunk 组装与完整 run 编排。embedding 会先在
+batch 级重试瞬时错误；仍失败时放弃语义评分，使用确定性边界打包，不影响硬上限。
 """
 
 from __future__ import annotations
 
 import asyncio
+import logging
 import math
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -31,6 +32,8 @@ from .stage_models import (
     FinalChunkSet,
     StageIdFactory,
 )
+
+logger = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
     from app.rag.core.llm.interfaces import IEmbedder
@@ -51,6 +54,8 @@ MD_TRUNCATED = "truncated"
 MD_TRUNCATED_REASON = "truncated_reason"
 MD_ORIGINAL_TOKEN_COUNT = "original_token_count"
 MD_LINE_SPAN_APPROX = "line_span_approx"
+MD_SEMANTIC_FALLBACK = "semantic_fallback"
+MD_SEMANTIC_FALLBACK_REASON = "semantic_fallback_reason"
 
 # oversized / truncated 原因枚举值
 OVERSIZED_SINGLE_PROTECTED = "single_protected_entity"
@@ -702,10 +707,17 @@ class _SegmentPacker:
 class _FinalChunkAssembler:
     """组装 FinalChunk，保留切片、行号、锚点和超限诊断。"""
 
-    def __init__(self, tokenizer: Tokenizer, max_chunk_tokens: int, hard_max_tokens: int) -> None:
+    def __init__(
+        self,
+        tokenizer: Tokenizer,
+        max_chunk_tokens: int,
+        hard_max_tokens: int,
+        strategy_name: str = ALGORITHM_NAME,
+    ) -> None:
         self.tokenizer = tokenizer
         self.max_chunk_tokens = max_chunk_tokens
         self.hard_max_tokens = hard_max_tokens
+        self.strategy_name = strategy_name
 
     def _count(self, text: str) -> int:
         return self.tokenizer.count_tokens(text.strip()) if text else 0
@@ -763,7 +775,7 @@ class _FinalChunkAssembler:
             heading_trails=trails,
             role="mixed",
             stage1_strategy=coarse.strategy or coarse_set.strategy,
-            stage2_strategy=ALGORITHM_NAME,
+            stage2_strategy=self.strategy_name,
             source_coarse_chunk_id=coarse.id,
             metadata=metadata,
         )
@@ -828,17 +840,32 @@ class SemanticDepthWindowStageTwo:
         max_chunk_tokens: int,
         hard_max_tokens: int,
         min_chunk_tokens: int,
+        *,
+        semantic_scoring: bool = True,
+        strategy_name: str = ALGORITHM_NAME,
     ) -> None:
         self._builder = _AtomBuilder(tokenizer, max_chunk_tokens)
-        self._scorer = _CohesionScorer(embedder)
+        self._scorer = _CohesionScorer(embedder) if semantic_scoring else None
         self._packer = _SegmentPacker(max_chunk_tokens, hard_max_tokens, min_chunk_tokens)
-        self._assembler = _FinalChunkAssembler(tokenizer, max_chunk_tokens, hard_max_tokens)
+        self._assembler = _FinalChunkAssembler(
+            tokenizer,
+            max_chunk_tokens,
+            hard_max_tokens,
+            strategy_name=strategy_name,
+        )
         self.max_chunk_tokens = max_chunk_tokens
+        self.name = strategy_name
 
     async def run(self, coarse_set: CoarseChunkSet) -> FinalChunkSet:
-        """门控 + 编排：derived/≤max 透传；>max 走完整算法。embedding 异常不吞，上抛。"""
+        """门控 + 编排：derived/≤max 透传；>max 走完整算法。
+
+        embedding 仅用于选择更好的切点。语义评分失败时记录诊断元数据，
+        并在当前及后续粗分片上使用确定性打包，确保长度兜底始终可执行。
+        """
         id_factory = StageIdFactory("final")
         finals: list[FinalChunk] = []
+        semantic_scoring_available = self._scorer is not None
+        semantic_fallback_reason: str | None = None
         for coarse in coarse_set.chunks:
             if (
                 coarse.role == "derived_element"
@@ -851,7 +878,17 @@ class SemanticDepthWindowStageTwo:
             if not atoms:
                 finals.append(self._passthrough(coarse, id_factory, coarse_set))
                 continue
-            scores = await self._scorer.score(atoms)
+            scores = _GapScores(cohesion={}, depth={})
+            if semantic_scoring_available and self._scorer is not None:
+                try:
+                    scores = await self._scorer.score(atoms)
+                except Exception as exc:  # noqa: BLE001 - 语义评分是可降级增强项
+                    semantic_scoring_available = False
+                    semantic_fallback_reason = type(exc).__name__
+                    logger.warning(
+                        "Stage 2 semantic scoring failed; using deterministic packing",
+                        exc_info=True,
+                    )
             segments = self._packer.pack(atoms, scores)
             content_len = len(coarse.content)
             for index, segment in enumerate(segments):
@@ -868,12 +905,16 @@ class SemanticDepthWindowStageTwo:
                         coarse, segment, seg_start, seg_end, id_factory, coarse_set
                     )
                 )
+        metadata = dict(coarse_set.metadata)
+        if semantic_fallback_reason is not None:
+            metadata[MD_SEMANTIC_FALLBACK] = True
+            metadata[MD_SEMANTIC_FALLBACK_REASON] = semantic_fallback_reason
         return FinalChunkSet(
             chunks=finals,
             source_file=coarse_set.source_file,
             stage1_strategy=coarse_set.strategy,
             stage2_strategy=self.name,
-            metadata=dict(coarse_set.metadata),
+            metadata=metadata,
         )
 
     def _passthrough(
