@@ -377,14 +377,21 @@ class WordParser(BaseParser):
             return root.xpath(expression, namespaces=_OOXML_NAMESPACES)
 
         source_text = "".join(str(text) for text in xpath(".//w:t/text()"))
+        drawing_image_references = len(xpath(".//a:blip[@r:embed or @r:link]"))
+        legacy_vml_image_references = len(xpath(".//v:imagedata[@r:id]"))
         return {
             "source_table_count": len(xpath(".//w:tbl")),
             "source_top_level_table_count": len(xpath(".//w:tbl[not(ancestor::w:tbl)]")),
             "source_nested_table_count": len(xpath(".//w:tbl[ancestor::w:tbl]")),
             "source_merged_cell_count": len(xpath(".//w:gridSpan | .//w:vMerge")),
-            "source_image_reference_count": len(
-                xpath(".//a:blip[@r:embed or @r:link] | .//v:imagedata[@r:id]")
+            # Mammoth 的 image handler 只回调 DrawingML 图片。VML imagedata
+            # 常见于旧版 Word 的箭头、流程图组件及 OLE 预览，不能拿总数与
+            # handler 产物做强一致性比较，否则会把正文完整的文档误判失败。
+            "source_image_reference_count": (
+                drawing_image_references + legacy_vml_image_references
             ),
+            "source_supported_image_reference_count": drawing_image_references,
+            "source_legacy_vml_image_reference_count": legacy_vml_image_references,
             "source_media_count": len(media),
             # 与 Mammoth 输出使用同一统计口径：排除排版空白。
             "source_text_chars": len("".join(source_text.split())),

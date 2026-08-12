@@ -84,8 +84,10 @@ class PdfReliabilityLimits:
     max_pages: int = 1000
     max_images: int = 2000
     max_single_image_pixels: int = 50_000_000
-    max_total_image_pixels: int = 500_000_000
-    max_total_decoded_image_bytes: int = 1024 * 1024 * 1024
+    # 总量是逐页解码工作量，不是同时驻留内存；允许约 75 张 10MP 扫描页，
+    # 同时继续由单图像素、压缩流和隔离进程超时限制解压炸弹。
+    max_total_image_pixels: int = 750_000_000
+    max_total_decoded_image_bytes: int = 3 * 1024 * 1024 * 1024
     max_single_image_bytes: int = 20 * 1024 * 1024
     max_total_image_bytes: int = 200 * 1024 * 1024
     max_output_files: int = 10_000
@@ -312,7 +314,7 @@ class PdfReliabilityGuard:
                     # ``get_image_info`` sees both regular XObject images and inline
                     # image operators. ``get_images`` alone can omit or underdescribe the
                     # latter, allowing xref=0 content to bypass pre-decode ceilings.
-                    images = page.get_image_info(xrefs=True)
+                    raw_images = page.get_image_info(xrefs=True)
                 except Exception as exc:
                     raise PdfPreflightError(
                         f"PDF 第 {page_index + 1} 页结构无法读取",
@@ -323,6 +325,19 @@ class PdfReliabilityGuard:
                             "error_type": type(exc).__name__,
                         },
                     ) from exc
+
+                images: list[dict[str, object]] = []
+                ignored_empty_images = 0
+                for image in raw_images:
+                    if self._is_empty_inline_image_placeholder(image):
+                        ignored_empty_images += 1
+                    else:
+                        images.append(image)
+                if ignored_empty_images:
+                    warnings.append(
+                        "PDF_EMPTY_INLINE_IMAGE_PLACEHOLDER_IGNORED:"
+                        f"page={page_index + 1},count={ignored_empty_images}"
+                    )
 
                 image_count += len(images)
                 if image_count > self.limits.max_images:
@@ -472,6 +487,32 @@ class PdfReliabilityGuard:
             encrypted=False,
             repaired=repaired,
             warnings=tuple(warnings),
+        )
+
+    @staticmethod
+    def _is_empty_inline_image_placeholder(image: object) -> bool:
+        """识别排版软件遗留的不可见 0x0 inline image 占位符。"""
+
+        if not isinstance(image, dict):
+            return False
+        try:
+            xref = int(image.get("xref") or 0)
+            width = int(image["width"])
+            height = int(image["height"])
+            size = int(image["size"])
+            bbox = tuple(float(value) for value in image["bbox"])
+            transform = tuple(float(value) for value in image["transform"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        return (
+            xref == 0
+            and width == 0
+            and height == 0
+            and size == 0
+            and len(bbox) == 4
+            and not any(bbox)
+            and len(transform) == 6
+            and not any(transform)
         )
 
     @staticmethod

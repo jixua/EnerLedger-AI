@@ -112,6 +112,34 @@ def _image_info(*, width: int, height: int, xref: int = 0) -> dict[str, object]:
     }
 
 
+def test_preflight_ignores_only_invisible_empty_inline_placeholders(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = tmp_path / "empty-placeholder.pdf"
+    source.write_bytes(b"%PDF-1.7\n")
+    empty_placeholder = {
+        **_image_info(width=0, height=0),
+        "size": 0,
+        "bbox": (0.0, 0.0, 0.0, 0.0),
+        "transform": (0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    }
+    document = _FakeInlineImageDocument(
+        [empty_placeholder, _image_info(width=20, height=10)]
+    )
+    monkeypatch.setattr(reliability_module.pymupdf, "open", lambda **_kwargs: document)
+
+    report = PdfReliabilityGuard().inspect(source)
+
+    assert report.image_count == 1
+    assert report.inline_image_count == 1
+    assert report.total_image_pixels == 200
+    assert report.warnings == (
+        "PDF_EMPTY_INLINE_IMAGE_PLACEHOLDER_IGNORED:page=1,count=1",
+    )
+    assert document.closed is True
+
+
 def test_preflight_counts_and_bounds_xref_zero_inline_images_before_decode(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

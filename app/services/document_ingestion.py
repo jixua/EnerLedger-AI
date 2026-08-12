@@ -718,6 +718,15 @@ class SimpleDocumentIngestionService:
         )
         parsed_nested_table_count = len(parsed_tables) - parsed_top_level_table_count
         source_image_references = integer("source_image_reference_count")
+        supported_image_references = integer(
+            "source_supported_image_reference_count"
+        )
+        # 兼容尚未提供细分统计的旧解析结果。
+        if "source_supported_image_reference_count" not in metadata:
+            supported_image_references = source_image_references
+        legacy_vml_image_references = integer(
+            "source_legacy_vml_image_reference_count"
+        )
         image_occurrences = integer("image_occurrence_count")
         rendered_images = integer("image_count")
 
@@ -773,13 +782,23 @@ class SimpleDocumentIngestionService:
                 "WORD_NESTED_TABLE_COUNT_MISMATCH:"
                 f"source={source_nested_tables},parsed={parsed_nested_table_count}"
             )
-        if source_image_references != image_occurrences or image_occurrences != rendered_images:
+        if (
+            supported_image_references != image_occurrences
+            or image_occurrences != rendered_images
+        ):
             blocking.append(
                 "WORD_IMAGE_COUNT_MISMATCH:"
-                f"source={source_image_references},hook={image_occurrences},rendered={rendered_images}"
+                f"source={supported_image_references},hook={image_occurrences},rendered={rendered_images}"
             )
-        if source_image_references and not bool(metadata.get("image_assets_persisted")):
+        if supported_image_references and not bool(
+            metadata.get("image_assets_persisted")
+        ):
             blocking.append("WORD_IMAGE_ASSETS_NOT_PERSISTED")
+        if legacy_vml_image_references:
+            warnings.append(
+                "WORD_LEGACY_VML_IMAGES_NOT_RENDERED:"
+                f"count={legacy_vml_image_references}"
+            )
         critical_warnings = [
             str(item)
             for item in metadata.get("critical_warnings", [])
@@ -832,6 +851,8 @@ class SimpleDocumentIngestionService:
             "structured_nested_table_count": parsed_nested_table_count,
             "structured_total_table_count": len(table_structures),
             "source_image_reference_count": source_image_references,
+            "source_supported_image_reference_count": supported_image_references,
+            "source_legacy_vml_image_reference_count": legacy_vml_image_references,
             "image_occurrence_count": image_occurrences,
             "image_asset_count": integer("image_asset_count"),
             "image_upload_count": integer("image_upload_count"),

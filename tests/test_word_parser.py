@@ -196,6 +196,42 @@ def test_word_quality_warns_but_does_not_block_unsupported_special_objects(
     )
 
 
+def test_word_quality_warns_but_does_not_block_legacy_vml_images(tmp_path) -> None:
+    source = _complex_docx(tmp_path)
+    parser = WordParser(
+        storage=_Storage(),
+        image_bucket="parsed",
+        image_prefix="documents/1/images",
+    )
+    markdown = parser.parse(source)
+    metadata = parser.extract_metadata()
+    metadata.update(
+        {
+            "source_image_reference_count": 4,
+            "source_supported_image_reference_count": 1,
+            "source_legacy_vml_image_reference_count": 3,
+        }
+    )
+    parse_output = {
+        "markdown": markdown,
+        "parse_result": MarkdownParser().parse(markdown, source_file=source.name),
+        "metadata": metadata,
+    }
+
+    status, report = _quality_service()._process_word_quality(
+        identity=SimpleNamespace(filename=source.name),
+        parse_output=parse_output,
+        markdown=markdown,
+    )
+
+    assert status == "PASSED"
+    assert report["blocking_issues"] == []
+    assert report["source_image_reference_count"] == 4
+    assert report["source_supported_image_reference_count"] == 1
+    assert report["source_legacy_vml_image_reference_count"] == 3
+    assert "WORD_LEGACY_VML_IMAGES_NOT_RENDERED:count=3" in report["warnings"]
+
+
 def test_word_chart_cache_is_converted_to_retrieval_markdown() -> None:
     chart_xml = """<?xml version="1.0" encoding="UTF-8"?>
 <c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"

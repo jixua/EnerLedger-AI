@@ -667,8 +667,11 @@ class Settings(BaseSettings):
     PDF_MAX_PAGES: int = Field(default=1000, ge=1)
     PDF_MAX_IMAGES: int = Field(default=2000, ge=1)
     PDF_MAX_SINGLE_IMAGE_PIXELS: int = Field(default=50_000_000, ge=1)
-    PDF_MAX_TOTAL_IMAGE_PIXELS: int = Field(default=500_000_000, ge=1)
-    PDF_MAX_TOTAL_DECODED_IMAGE_BYTES: int = Field(default=1024 * 1024 * 1024, ge=1)
+    PDF_MAX_TOTAL_IMAGE_PIXELS: int = Field(default=750_000_000, ge=1)
+    PDF_MAX_TOTAL_DECODED_IMAGE_BYTES: int = Field(
+        default=3 * 1024 * 1024 * 1024,
+        ge=1,
+    )
     PDF_MAX_SINGLE_IMAGE_BYTES: int = Field(default=20 * 1024 * 1024, ge=1)
     PDF_MAX_TOTAL_IMAGE_BYTES: int = Field(default=200 * 1024 * 1024, ge=1)
     PDF_MAX_OUTPUT_FILES: int = Field(default=10_000, ge=1)

@@ -173,6 +173,8 @@ _QUALITY_SUMMARY_FIELDS = (
     "source_table_count",
     "structured_table_count",
     "source_image_reference_count",
+    "source_supported_image_reference_count",
+    "source_legacy_vml_image_reference_count",
     "image_asset_count",
     "image_upload_count",
     "suppressed_unexplained_image_count",
