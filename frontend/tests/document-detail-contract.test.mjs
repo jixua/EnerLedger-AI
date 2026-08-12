@@ -38,7 +38,9 @@ test("document reader renders one continuous markdown flow with explicit chunk s
   assert.match(pageSource, /normalizeDocumentBoundaries\(preview\?\.boundaries \|\| \[\]\)/);
   assert.match(pageSource, /createDocumentBoundaryPlugin\(readerBoundaries, preview\?\.boundary_precision\)/);
   assert.equal(pageSource.match(/<ReactMarkdown/g)?.length, 1);
-  assert.match(pageSource, /<ReactMarkdown remarkPlugins=\{\[remarkGfm, boundaryPlugin, remarkDocumentHtmlTables\]\}[\s\S]*\{preview\.content\}<\/ReactMarkdown>/);
+  assert.match(pageSource, /remarkPlugins=\{\[remarkGfm, remarkMath, structuredTablePlugin, boundaryPlugin, remarkDocumentHtmlTables\]\}/);
+  assert.match(pageSource, /rehypePlugins=\{\[rehypeKatex\]\}/);
+  assert.match(pageSource, /\{renderedPreviewContent\}/);
   assert.match(pageSource, /"document-chunk-boundary"/);
   assert.match(pageSource, /<BoundaryGroup entries=\{entries\} approximate=\{approximate\}/);
   assert.match(pageSource, /role="separator"/);
@@ -57,6 +59,22 @@ test("document reader preserves merged Word tables through a restricted renderer
   assert.match(htmlTableSource, /new Set\(\[/);
   assert.doesNotMatch(htmlTableSource, /dangerouslySetInnerHTML/);
   assert.match(htmlTableSource, /<DocumentPreviewImage/);
+  assert.match(pageSource, /createDocumentStructuredTablesPlugin\(tableStructures\)/);
+  assert.match(pageSource, /"document-structured-table"/);
+  assert.match(pageSource, /<DocumentStructuredTable structure=\{tableStructureMap\.get\(tableId\)\}/);
+  assert.match(htmlTableSource, /LINKPARSE_TABLE_START/);
+  assert.match(htmlTableSource, /\["rag_text", "html_fallback"\]/);
+  assert.match(htmlTableSource, /rowSpan=\{safeSpan\(cell\?\.row_span\)\}/);
+  assert.match(htmlTableSource, /colSpan=\{safeSpan\(cell\?\.column_span\)\}/);
+});
+
+test("document reader renders inline and block LaTeX with KaTeX", () => {
+  assert.match(pageSource, /import remarkMath from "remark-math"/);
+  assert.match(pageSource, /import rehypeKatex from "rehype-katex"/);
+  assert.match(pageStyles, /\.document-reader-markdown \.katex-display/);
+  assert.match(pageStyles, /overflow-x: auto/);
+  assert.match(htmlTableSource, /remarkPlugins=\{\[remarkGfm, remarkMath\]\}/);
+  assert.match(htmlTableSource, /rehypePlugins=\{\[rehypeKatex\]\}/);
 });
 
 test("document reader keeps first-load failures actionable and honors reduced motion", () => {

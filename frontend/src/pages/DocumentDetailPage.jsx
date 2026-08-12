@@ -16,14 +16,22 @@ import {
   Workflow,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import { Link, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
-import { DocumentHtmlTable, remarkDocumentHtmlTables } from "../components/DocumentHtmlTable";
+import remarkMath from "remark-math";
+import {
+  createDocumentStructuredTablesPlugin,
+  DocumentHtmlTable,
+  DocumentStructuredTable,
+  remarkDocumentHtmlTables,
+} from "../components/DocumentHtmlTable";
 import { DocumentPreviewImage } from "../components/DocumentPreviewImage";
 import {
   createDocumentBoundaryPlugin,
   normalizeDocumentBoundaries,
 } from "../lib/document-reader";
+import { normalizeDocumentMath } from "../lib/document-math";
 import { formatParseQualityWarning, normalizeParseQuality } from "../lib/parse-quality";
 import { useApp } from "../state/AppContext";
 
@@ -234,12 +242,31 @@ export function DocumentDetailPage() {
     () => createDocumentBoundaryPlugin(readerBoundaries, preview?.boundary_precision),
     [preview?.boundary_precision, readerBoundaries],
   );
+  const tableStructures = useMemo(
+    () => document?.parse_quality?.table_structure?.tables || [],
+    [document?.parse_quality?.table_structure?.tables],
+  );
+  const tableStructureMap = useMemo(
+    () => new Map(tableStructures.map((structure) => [
+      String(structure?.table_id || structure?.preview?.id || ""),
+      structure,
+    ])),
+    [tableStructures],
+  );
+  const structuredTablePlugin = useMemo(
+    () => createDocumentStructuredTablesPlugin(tableStructures),
+    [tableStructures],
+  );
   const markdownComponents = useMemo(
     () => ({
       a: ({ children, node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
       img: (props) => <DocumentPreviewImage {...props} />,
       table: ({ children, node: _node, ...props }) => <div className="document-reader-table"><table {...props}>{children}</table></div>,
       "document-html-table": (props) => <DocumentHtmlTable {...props} />,
+      "document-structured-table": ({ node }) => {
+        const tableId = String(node?.properties?.tableId ?? node?.properties?.tableid ?? "");
+        return <DocumentStructuredTable structure={tableStructureMap.get(tableId)} />;
+      },
       "document-chunk-boundary": ({ node }) => {
         const rawIndexes = node?.properties?.boundaryIndexes ?? node?.properties?.boundaryindexes ?? "";
         const entries = String(rawIndexes)
@@ -250,7 +277,7 @@ export function DocumentDetailPage() {
         return showBoundaries ? <BoundaryGroup entries={entries} approximate={approximate} /> : null;
       },
     }),
-    [readerBoundaries, showBoundaries],
+    [readerBoundaries, showBoundaries, tableStructureMap],
   );
 
   useEffect(() => {
@@ -368,6 +395,10 @@ export function DocumentDetailPage() {
   const sourceChunkCount = preview
     ? Math.max(Number.isFinite(rawSourceChunkCount) ? rawSourceChunkCount : 0, readerBoundaries.length)
     : null;
+  const renderedPreviewContent = useMemo(
+    () => normalizeDocumentMath(preview?.content || ""),
+    [preview?.content],
+  );
   const parseQuality = normalizeParseQuality(document);
 
   return (
@@ -457,7 +488,13 @@ export function DocumentDetailPage() {
             <div className="document-reader__canvas">
               <article className="document-reader__paper" aria-label={`${document.filename} 的解析后正文`}>
                 <div className="document-reader-markdown">
-                  <ReactMarkdown remarkPlugins={[remarkGfm, boundaryPlugin, remarkDocumentHtmlTables]} components={markdownComponents}>{preview.content}</ReactMarkdown>
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm, remarkMath, structuredTablePlugin, boundaryPlugin, remarkDocumentHtmlTables]}
+                    rehypePlugins={[rehypeKatex]}
+                    components={markdownComponents}
+                  >
+                    {renderedPreviewContent}
+                  </ReactMarkdown>
                 </div>
               </article>
             </div>

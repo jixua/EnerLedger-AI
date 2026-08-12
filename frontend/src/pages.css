@@ -1072,6 +1072,11 @@
 .document-reader-table th,
 .document-reader-table td { min-width: 90px; padding: 9px 11px; border: 1px solid var(--hairline); text-align: left; vertical-align: top; }
 .document-reader-table th { background: var(--surface-soft); color: var(--ink); font-weight: 650; }
+.document-structured-table caption { padding: 0 0 9px; color: var(--ink); font-weight: 650; text-align: left; }
+.document-structured-table__cell-line { display: block; margin: 0; }
+.document-structured-table__cell-line + .document-structured-table__cell-line { margin-top: 6px; }
+.document-reader-markdown .katex-display { max-width: 100%; margin: 1.25em 0; padding: 10px 0; overflow-x: auto; overflow-y: hidden; }
+.document-reader-markdown .katex { overflow-wrap: normal; font-size: 1.05em; }
 
 .document-chunk-boundary { width: 100%; display: grid; grid-template-columns: minmax(28px, 1fr) minmax(0, auto) minmax(28px, 1fr); align-items: center; gap: 10px; margin: 34px 0 30px; scroll-margin-top: 18px; }
 .document-chunk-boundary--start { margin: 0 0 28px; }
