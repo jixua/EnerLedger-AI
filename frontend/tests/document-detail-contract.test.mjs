@@ -88,7 +88,11 @@ test("document reader preserves merged Word tables through a restricted renderer
   assert.match(pageSource, /"document-structured-table"/);
   assert.match(pageSource, /<DocumentStructuredTable structure=\{tableStructureMap\.get\(tableId\)\}/);
   assert.match(htmlTableSource, /LINKPARSE_TABLE_START/);
-  assert.match(htmlTableSource, /\["rag_text", "html_fallback"\]/);
+  assert.match(
+    htmlTableSource,
+    /new Set\(\["markdown", "rag_text", "html_fallback"\]\)/,
+    "simple and complex Word tables must both discard LinkParse rendering labels",
+  );
   assert.match(htmlTableSource, /rowSpan=\{safeSpan\(cell\?\.row_span\)\}/);
   assert.match(htmlTableSource, /colSpan=\{safeSpan\(cell\?\.column_span\)\}/);
 });
