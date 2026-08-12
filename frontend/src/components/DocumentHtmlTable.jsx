@@ -4,6 +4,7 @@ import rehypeKatex from "rehype-katex";
 import remarkGfm from "remark-gfm";
 import remarkMath from "remark-math";
 import { normalizeDocumentMath } from "../lib/document-math";
+import { remarkDocumentBreakTags } from "../lib/document-reader";
 import { DocumentPreviewImage } from "./DocumentPreviewImage";
 
 const LINKPARSE_TABLE_START = /^\s*<!--\s*LINKPARSE_TABLE_START\s+([^]*?)\s*-->\s*$/i;
@@ -160,7 +161,7 @@ export function createDocumentStructuredTablesPlugin(structures = []) {
 function StructuredCellContent({ markdown }) {
   return (
     <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkMath]}
+      remarkPlugins={[remarkGfm, remarkMath, remarkDocumentBreakTags]}
       rehypePlugins={[rehypeKatex]}
       components={{
         p: ({ children }) => <span className="document-structured-table__cell-line">{children}</span>,

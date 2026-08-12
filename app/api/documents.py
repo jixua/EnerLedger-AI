@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
 from app.domain.models import Dataset, Document
+from app.domain.text import repair_legacy_mojibake
 from app.domain.schemas import (
     DocumentChunkPage,
     DocumentPreviewMap,
@@ -301,7 +302,7 @@ def _document_payload(document: Document, *, quality_detail: bool = True) -> dic
         "lease_expires_at": document.lease_expires_at,
         "finished_at": document.finished_at,
         "error_code": document.error_code,
-        "error_message": document.error_message,
+        "error_message": repair_legacy_mojibake(document.error_message),
         "reparse_requested": document.reparse_requested,
         "page_count": document.page_count,
         "chunk_count": document.chunk_count,

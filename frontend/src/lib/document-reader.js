@@ -139,6 +139,27 @@ function isParserPageMarker(node) {
 }
 
 const DOCUMENT_PAGE_MARKER = /^\s*<!--\s*(ODL_PAGE|WORD_PAGE)\s*:\s*(\d+)\s*-->\s*$/i;
+const DOCUMENT_BREAK_TAG = /^\s*<br\s*\/?>\s*$/i;
+
+/** Convert parser-emitted HTML break tags without enabling arbitrary raw HTML. */
+export function replaceDocumentBreakTags(tree) {
+  const visit = (node) => {
+    if (!node || typeof node !== "object" || !Array.isArray(node.children)) return;
+    node.children = node.children.map((child) => {
+      if (child?.type === "html" && DOCUMENT_BREAK_TAG.test(String(child.value || ""))) {
+        return { type: "break", position: child.position };
+      }
+      visit(child);
+      return child;
+    });
+  };
+  visit(tree);
+  return tree;
+}
+
+export function remarkDocumentBreakTags() {
+  return (tree) => replaceDocumentBreakTags(tree);
+}
 
 /** Convert parser page comments into explicit reader page-divider nodes. */
 export function replaceDocumentPageMarkers(tree) {

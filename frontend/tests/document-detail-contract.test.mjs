@@ -38,9 +38,10 @@ test("document reader renders one continuous markdown flow with explicit chunk s
   assert.match(pageSource, /normalizeDocumentBoundaries\(preview\?\.boundaries \|\| \[\]\)/);
   assert.match(pageSource, /createDocumentBoundaryPlugin\(readerBoundaries, preview\?\.boundary_precision\)/);
   assert.equal(pageSource.match(/<ReactMarkdown/g)?.length, 1);
-  assert.match(pageSource, /remarkPlugins=\{\[remarkGfm, remarkMath, remarkDocumentPageMarkers, structuredTablePlugin, boundaryPlugin, remarkDocumentHtmlTables\]\}/);
-  assert.match(pageSource, /rehypePlugins=\{\[rehypeKatex\]\}/);
-  assert.match(pageSource, /\{renderedPreviewContent\}/);
+  assert.match(pageSource, /remarkPlugins=\{remarkPlugins\}/);
+  assert.match(pageSource, /remarkDocumentBreakTags/);
+  assert.match(pageSource, /rehypePlugins=\{DOCUMENT_REHYPE_PLUGINS\}/);
+  assert.match(pageSource, /content=\{renderedPreviewContent\}/);
   assert.match(pageSource, /"document-chunk-boundary"/);
   assert.match(pageSource, /<BoundaryGroup entries=\{entries\} approximate=\{approximate\}/);
   assert.match(pageSource, /role="separator"/);
@@ -59,6 +60,19 @@ test("document reader renders one continuous markdown flow with explicit chunk s
     "all hooks must run before the first conditional return",
   );
   assert.match(pageSource, /mergeDocumentDetailSnapshot\(current, contextDocument\)/);
+});
+
+test("large document reader avoids repeated parsing and eagerly loading every image", () => {
+  assert.match(pageSource, /const DocumentMarkdown = memo\(function DocumentMarkdown/);
+  assert.match(pageSource, /const remarkPlugins = useMemo/);
+  assert.match(pageSource, /document-reader__paper--boundaries-hidden/);
+  assert.doesNotMatch(pageSource, /showBoundaries \? <BoundaryGroup/);
+  assert.match(pageStyles, /content-visibility: auto/);
+  assert.match(pageStyles, /contain-intrinsic-block-size: auto 160px/);
+  assert.match(previewImageSource, /new IntersectionObserver/);
+  assert.match(previewImageSource, /rootMargin: "1200px 0px"/);
+  assert.match(previewImageSource, /if \(!nearViewport\)/);
+  assert.match(previewImageSource, /decoding="async"/);
 });
 
 test("document reader preserves merged Word tables through a restricted renderer", () => {
@@ -84,7 +98,7 @@ test("document reader renders inline and block LaTeX with KaTeX", () => {
   assert.match(pageSource, /import rehypeKatex from "rehype-katex"/);
   assert.match(pageStyles, /\.document-reader-markdown \.katex-display/);
   assert.match(pageStyles, /overflow-x: auto/);
-  assert.match(htmlTableSource, /remarkPlugins=\{\[remarkGfm, remarkMath\]\}/);
+  assert.match(htmlTableSource, /remarkPlugins=\{\[remarkGfm, remarkMath, remarkDocumentBreakTags\]\}/);
   assert.match(htmlTableSource, /rehypePlugins=\{\[rehypeKatex\]\}/);
 });
 

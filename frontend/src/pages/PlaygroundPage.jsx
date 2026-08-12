@@ -28,6 +28,7 @@ import { useApp } from "../state/AppContext";
 const SUGGESTED_QUESTIONS = [
   "企业天然气燃烧排放如何核算？",
   "请概括文档中的碳排放数据质量要求。",
+  "产品碳足迹边界应如何确定？",
 ];
 
 const STATUS_COPY = {
@@ -513,8 +514,8 @@ export function PlaygroundPage() {
       {!messages.length ? (
         <main className="conversation-empty">
           <div className="conversation-empty__intro">
-            <h1>有什么可以帮你？</h1>
-            <p>基于已接入的能碳资料开展对话，并为回答标注可追溯来源。</p>
+            <h1>把碳知识库<br />变成会回答问题的专家</h1>
+            <p>AI 检索政策、标准与核算资料，生成有依据的答案，并回溯原文片段和页码。</p>
           </div>
           <div className="conversation-empty__composer">{composer}</div>
           <div className="chat-suggestions" aria-label="建议问题">

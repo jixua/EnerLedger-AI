@@ -126,6 +126,14 @@ def test_document_payload_exposes_parse_quality_without_internal_storage_fields(
     assert "parsed_object_key" not in payload
 
 
+def test_document_payload_repairs_legacy_mojibake_error_message() -> None:
+    document = _document(status="FAILED")
+    original = "PdfPreflightError: PDF 第 1 页图片尺寸或位深无效"
+    document.error_message = original.encode("utf-8").decode("latin1")
+
+    assert _document_payload(document)["error_message"] == original
+
+
 def test_document_retrieval_ready_matches_pdf_quality_gate() -> None:
     legacy_pdf = _document(status="READY")
     assert _document_payload(legacy_pdf)["retrieval_ready"] is False

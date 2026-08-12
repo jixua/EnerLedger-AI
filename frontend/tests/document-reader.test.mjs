@@ -3,12 +3,15 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import {
   createDocumentBoundaryPlugin,
   insertDocumentBoundaryNodes,
   mergeDocumentDetailSnapshot,
   normalizeDocumentBoundaries,
+  remarkDocumentBreakTags,
+  replaceDocumentBreakTags,
   replaceDocumentPageMarkers,
 } from "../src/lib/document-reader.js";
 
@@ -169,6 +172,42 @@ test("Word and PDF page comments become visible reader page markers", () => {
   assert.equal(tree.children[0].data.hProperties.markerType, "WORD_PAGE");
   assert.equal(tree.children[2].data.hProperties.pageNumber, "4");
   assert.equal(tree.children[2].data.hProperties.markerType, "ODL_PAGE");
+});
+
+test("parser br tags become safe line breaks while unrelated HTML stays escaped", () => {
+  const tree = {
+    type: "root",
+    children: [{
+      type: "table",
+      children: [{
+        type: "tableRow",
+        children: [{
+          type: "tableCell",
+          children: [
+            { type: "text", value: "甲" },
+            { type: "html", value: "<br>" },
+            { type: "html", value: "<br />" },
+            { type: "html", value: "<script>alert(1)</script>" },
+          ],
+        }],
+      }],
+    }],
+  };
+
+  replaceDocumentBreakTags(tree);
+  assert.deepEqual(
+    tree.children[0].children[0].children[0].children.map((node) => node.type),
+    ["text", "break", "break", "html"],
+  );
+
+  const html = renderToStaticMarkup(createElement(
+    ReactMarkdown,
+    { remarkPlugins: [remarkGfm, remarkDocumentBreakTags] },
+    "| |\n|---|\n|甲<br><br>乙<script>alert(1)</script>|",
+  ));
+  assert.equal(html.match(/<br\/>/g)?.length, 2);
+  assert.doesNotMatch(html, /&lt;br/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
 });
 
 test("ReactMarkdown renders the custom top-level boundary node in a single parse", () => {

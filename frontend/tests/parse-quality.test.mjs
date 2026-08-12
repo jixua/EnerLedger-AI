@@ -190,10 +190,10 @@ test("dataset create and settings send the optional VISION binding with reparse 
   assert.match(datasetDetailSource, /现有文档将生成新版本、重新解析并重建检索索引/);
 });
 
-test("quality diagnostics never block READY documents but Word degradation stays visible", () => {
+test("quality diagnostics never block READY documents or add a detail-page banner", () => {
   assert.doesNotMatch(datasetDetailSource, /ParseQualityInline/);
-  assert.match(documentDetailSource, /文档已入库，但有.*项解析提醒/);
-  assert.match(documentDetailSource, /formatParseQualityWarning/);
+  assert.doesNotMatch(documentDetailSource, /文档已入库，但有.*项解析提醒/);
+  assert.doesNotMatch(documentDetailSource, /formatParseQualityWarning/);
   assert.doesNotMatch(documentDetailSource, /当前正文未通过质量门禁/);
   assert.doesNotMatch(tasksSource, /ParseQualityInline/);
   assert.match(datasetListSource, /items\.filter\(isDocumentRetrievalReady\)/);

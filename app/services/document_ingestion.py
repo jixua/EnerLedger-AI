@@ -20,6 +20,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models import Document
+from app.domain.text import repair_legacy_mojibake
 from app.rag.config import settings
 from app.rag.core.dataset_config.execution_context import (
     DatasetExecutionContextLoader,
@@ -562,7 +563,8 @@ class SimpleDocumentIngestionService:
     ) -> None:
         """记录简化文档终态；调用方仍会收到原异常。"""
 
-        message = f"{type(error).__name__}: {error}"[:1000]
+        raw_message = f"{type(error).__name__}: {error}"
+        message = (repair_legacy_mojibake(raw_message) or raw_message)[:1000]
         document.status = "FAILED"
         document.error_code = str(
             getattr(error, "error_code", type(error).__name__)

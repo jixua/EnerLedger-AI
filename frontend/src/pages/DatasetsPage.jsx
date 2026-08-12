@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react';
-import { ArrowRight, Database, FileText, Loader2, Pencil, Plus, Search, Trash2, X } from 'lucide-react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useEffect, useMemo, useState } from 'react';
+import { ArrowRight, Database, FileText, Loader2, Pencil, Plus, Search, ShieldCheck, Trash2, X } from 'lucide-react';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { isDocumentRetrievalReady } from '../lib/parse-quality';
 import { useApp } from '../state/AppContext';
 
@@ -33,13 +33,14 @@ function LoadingCard() {
   return (
     <div className="empty-state empty-state--loading">
       <Loader2 className="spin" size={22} />
-      <p>正在读取数据集...</p>
+      <p>正在读取知识库...</p>
     </div>
   );
 }
 
 export function DatasetsPage() {
   const navigate = useNavigate();
+  const location = useLocation();
   const { datasets = [], models = [], documents = {}, loading = {}, actions = {} } = useApp();
   const [keyword, setKeyword] = useState('');
   const [createOpen, setCreateOpen] = useState(false);
@@ -73,6 +74,13 @@ export function DatasetsPage() {
     }),
     [datasets, normalizedKeyword],
   );
+  const libraryStats = useMemo(() => {
+    const allDocuments = datasets.flatMap((dataset) => datasetDocuments(documents, dataset.id));
+    return {
+      documents: allDocuments.length,
+      searchable: allDocuments.filter(isDocumentRetrievalReady).length,
+    };
+  }, [datasets, documents]);
 
   function updateForm(field, value) {
     setForm((current) => ({ ...current, [field]: value }));
@@ -91,16 +99,22 @@ export function DatasetsPage() {
     setCreateOpen(true);
   }
 
+  useEffect(() => {
+    if (!new URLSearchParams(location.search).has('create')) return;
+    openCreate();
+    navigate('/datasets', { replace: true });
+  }, [location.search]);
+
   async function handleCreate(event) {
     event.preventDefault();
     if (submitting || !actions.createDataset) return;
     const name = form.name.trim();
     if (!name) {
-      setFormError('请输入数据集名称');
+      setFormError('请输入知识库名称');
       return;
     }
     if (!form.dense_embedding_config_id || !form.sparse_embedding_config_id) {
-      setFormError('创建数据集前必须绑定稠密与稀疏向量模型');
+      setFormError('创建知识库前必须绑定稠密与稀疏向量模型');
       return;
     }
 
@@ -118,7 +132,7 @@ export function DatasetsPage() {
       setCreateOpen(false);
       if (created?.id) navigate(`/datasets/${created.id}`);
     } catch (error) {
-      setFormError(error instanceof Error ? error.message : '数据集创建失败，请稍后重试');
+      setFormError(error instanceof Error ? error.message : '知识库创建失败，请稍后重试');
     } finally {
       setSubmitting(false);
     }
@@ -127,13 +141,13 @@ export function DatasetsPage() {
   async function handleDelete(dataset) {
     const items = datasetDocuments(documents, dataset.id);
     if (items.length || !actions.deleteDataset) return;
-    if (!window.confirm(`确认删除数据集“${dataset.name}”吗？`)) return;
+    if (!window.confirm(`确认删除知识库“${dataset.name}”吗？`)) return;
     setDeletingId(dataset.id);
     setPageError('');
     try {
       await actions.deleteDataset(dataset.id);
     } catch (error) {
-      setPageError(error instanceof Error ? error.message : '数据集删除失败');
+      setPageError(error instanceof Error ? error.message : '知识库删除失败');
     } finally {
       setDeletingId(null);
     }
@@ -143,24 +157,24 @@ export function DatasetsPage() {
 
   return (
     <div className="page page--datasets">
-      <header className="page-header">
-        <div>
-          <h1>数据集</h1>
-          <p className="page-header__description">沉淀能耗、碳排放、核算方法与政策标准资料，作为检索与对话基础。</p>
+      <header className="knowledge-hero">
+        <div className="knowledge-hero__copy">
+          <p className="eyebrow">Carbon knowledge infrastructure</p>
+          <h1>碳知识库</h1>
+          <p className="knowledge-hero__subtitle">标准与核算资料</p>
+          <p className="page-header__description">沉淀碳核算方法、政策标准与权威资料，支撑有出处的检索、问答与分析。</p>
         </div>
-        <button type="button" className="button button--primary" onClick={openCreate}>
-          <Plus size={16} /> 新建数据集
-        </button>
       </header>
 
-      <section className="toolbar" aria-label="数据集筛选">
+      <section className="knowledge-toolbar" aria-label="知识库筛选">
         <label className="search-field">
           <Search size={16} aria-hidden="true" />
-          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索数据集名称或描述" />
+          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索标准、方法、来源或描述" />
         </label>
-        <div className="toolbar__summary">
-          <span className="count-badge">{filteredDatasets.length}</span>
-          <span>个数据集</span>
+        <div className="knowledge-toolbar__stats" aria-label="知识库统计">
+          <span><Database size={14} />{filteredDatasets.length} 个知识库</span>
+          <span><FileText size={14} />{libraryStats.documents} 份文档</span>
+          <span><Search size={14} />{libraryStats.searchable} 份可检索</span>
         </div>
       </section>
 
@@ -170,7 +184,7 @@ export function DatasetsPage() {
         <div className="notice notice--warning">
           <Database size={17} aria-hidden="true" />
           <div>
-            <strong>创建数据集前需要模型配置</strong>
+            <strong>创建知识库前需要模型配置</strong>
             <p>至少准备一个启用的稠密向量模型和一个稀疏向量模型。</p>
           </div>
           <Link className="text-link" to="/models">前往模型配置</Link>
@@ -182,39 +196,38 @@ export function DatasetsPage() {
       ) : filteredDatasets.length === 0 ? (
         <div className="empty-state">
           <span className="empty-state__icon"><Database size={26} /></span>
-          <h2>{normalizedKeyword ? '没有匹配的数据集' : '暂无数据集'}</h2>
-          <p>{normalizedKeyword ? '换一个关键词继续搜索。' : '创建数据集后即可上传文档并用于对话。'}</p>
+          <h2>{normalizedKeyword ? '没有匹配的知识库' : '暂无知识库'}</h2>
+          <p>{normalizedKeyword ? '换一个关键词继续搜索。' : '创建知识库后即可上传标准、方法学和核算资料。'}</p>
           {!normalizedKeyword ? (
-            <button type="button" className="button button--primary" onClick={openCreate}><Plus size={16} /> 新建数据集</button>
+            <button type="button" className="button button--primary" onClick={openCreate}><Plus size={16} /> 新建知识库</button>
           ) : null}
         </div>
       ) : (
-        <section className="dataset-grid" aria-label="数据集列表">
+        <section className="knowledge-list" aria-label="知识库列表">
+          <header className="knowledge-list__header" aria-hidden="true">
+            <span>名称</span><span>状态</span><span>文档数</span><span>可检索</span><span>更新时间</span><span>操作</span>
+          </header>
           {filteredDatasets.map((dataset) => {
             const items = datasetDocuments(documents, dataset.id);
             const readyCount = items.filter(isDocumentRetrievalReady).length;
             return (
-              <article className="dataset-card" key={dataset.id}>
-                <button type="button" className="dataset-card__main" onClick={() => navigate(`/datasets/${dataset.id}`)}>
-                  <span className="dataset-card__icon"><Database size={18} /></span>
-                  <span className="dataset-card__copy">
-                    <span className="dataset-card__heading">
-                      <strong>{dataset.name}</strong>
-                      <span className="status-pill status-pill--ready">{String(dataset.status || 'ACTIVE').toUpperCase() === 'ACTIVE' ? '已启用' : dataset.status}</span>
-                    </span>
-                    <span className="dataset-card__description">{dataset.description || '暂无描述，可进入详情上传文档。'}</span>
+              <article className="knowledge-row" key={dataset.id}>
+                <Link className="knowledge-row__identity" to={`/datasets/${dataset.id}`}>
+                  <span className="knowledge-row__icon"><Database size={17} /></span>
+                  <span className="knowledge-row__copy">
+                    <strong>{dataset.name}</strong>
+                    <small>{dataset.description || '进入知识库上传标准、方法学与核算资料。'}</small>
                   </span>
-                  <ArrowRight className="dataset-card__arrow" size={17} />
-                </button>
-                <footer className="dataset-card__footer">
-                  <span><FileText size={13} /> {items.length} 个文档</span>
-                  <span>{readyCount} 个可检索</span>
-                  <span>更新于 {formatDate(dataset.updated_at ?? dataset.updatedAt)}</span>
-                  <span className="dataset-card__pending-actions">
-                    <button type="button" className="icon-button icon-button--quiet" onClick={() => navigate(`/datasets/${dataset.id}?tab=settings`)} aria-label={`编辑 ${dataset.name}`}><Pencil size={13} /></button>
-                    <button type="button" className="icon-button icon-button--quiet icon-button--danger" onClick={() => handleDelete(dataset)} disabled={items.length > 0 || deletingId === dataset.id} title={items.length ? '请先删除数据集中的文档' : '删除数据集'} aria-label={`删除 ${dataset.name}`}>{deletingId === dataset.id ? <Loader2 className="spin" size={13} /> : <Trash2 size={13} />}</button>
-                  </span>
-                </footer>
+                  <ArrowRight className="knowledge-row__arrow" size={16} />
+                </Link>
+                <span className="knowledge-row__state"><ShieldCheck size={13} />{String(dataset.status || 'ACTIVE').toUpperCase() === 'ACTIVE' ? '已启用' : dataset.status}</span>
+                <span className="knowledge-row__metric"><b>{items.length}</b><small>份</small></span>
+                <span className="knowledge-row__metric knowledge-row__metric--ready"><b>{readyCount}</b><small>份</small></span>
+                <time className="knowledge-row__date">{formatDate(dataset.updated_at ?? dataset.updatedAt)}</time>
+                <span className="knowledge-row__actions">
+                  <button type="button" className="icon-button icon-button--quiet" onClick={() => navigate(`/datasets/${dataset.id}?tab=settings`)} aria-label={`编辑 ${dataset.name}`}><Pencil size={13} /></button>
+                  <button type="button" className="icon-button icon-button--quiet icon-button--danger" onClick={() => handleDelete(dataset)} disabled={items.length > 0 || deletingId === dataset.id} title={items.length ? '请先删除知识库中的文档' : '删除知识库'} aria-label={`删除 ${dataset.name}`}>{deletingId === dataset.id ? <Loader2 className="spin" size={13} /> : <Trash2 size={13} />}</button>
+                </span>
               </article>
             );
           })}
@@ -232,7 +245,7 @@ export function DatasetsPage() {
           >
             <header className="dialog__header">
               <div>
-                <h2 id="dataset-create-title">创建数据集</h2>
+                <h2 id="dataset-create-title">创建知识库</h2>
                 <p className="dialog__subtitle">所选模型将用于文档索引和对话检索。</p>
               </div>
               <button type="button" className="icon-button" onClick={() => setCreateOpen(false)} disabled={submitting} aria-label="关闭">
@@ -242,7 +255,7 @@ export function DatasetsPage() {
 
             <form className="form-stack" onSubmit={handleCreate}>
               <label className="form-field">
-                <span>数据集名称 <b>*</b></span>
+                <span>知识库名称 <b>*</b></span>
                 <input maxLength={128} value={form.name} onChange={(event) => updateForm('name', event.target.value)} placeholder="例如：碳核算政策资料" autoFocus />
               </label>
               <label className="form-field">
@@ -290,7 +303,7 @@ export function DatasetsPage() {
                 <button type="button" className="button button--ghost" onClick={() => setCreateOpen(false)} disabled={submitting}>取消</button>
                 <button type="submit" className="button button--primary" disabled={submitting || !canCreate || !actions.createDataset}>
                   {submitting ? <Loader2 className="spin" size={16} /> : <Plus size={16} />}
-                  {submitting ? '正在创建' : '创建数据集'}
+                  {submitting ? '正在创建' : '创建知识库'}
                 </button>
               </footer>
             </form>
