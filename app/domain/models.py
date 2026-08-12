@@ -66,6 +66,12 @@ class Document(Base):
 
     __tablename__ = "document"
     __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "dataset_id",
+            "filename",
+            name="uk_document_user_dataset_filename",
+        ),
         Index("idx_document_dataset_created", "dataset_id", "created_at"),
         Index("idx_document_user_status", "user_id", "status"),
         Index("idx_document_queue_available", "status", "available_at", "id"),

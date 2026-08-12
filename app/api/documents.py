@@ -17,6 +17,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
@@ -69,6 +70,8 @@ _PREVIEW_IMAGE_CONTENT_TYPES = {
     ".webp": "image/webp",
 }
 
+_DUPLICATE_DOCUMENT_DETAIL = "同一数据集下已存在同名文件"
+
 
 async def _dispatch_document(db: AsyncSession, document: Document) -> None:
     """Try immediate publish; durable outbox reconciliation owns recovery."""
@@ -113,6 +116,35 @@ async def _owned_document(
     if document is None:
         raise HTTPException(status_code=404, detail="文档不存在")
     return document
+
+
+async def _ensure_unique_document_filename(
+    db: AsyncSession,
+    *,
+    user_id: int,
+    dataset_id: int,
+    filename: str,
+    exclude_document_id: int | None = None,
+) -> None:
+    """在对象存储写入前尽早拒绝同名文件。
+
+    数据库唯一约束仍是并发安全的最终防线；此查询只用于避免已知冲突时
+    还上传原始文件。
+    """
+
+    filters = [
+        Document.user_id == user_id,
+        Document.dataset_id == dataset_id,
+        Document.filename == filename,
+    ]
+    if exclude_document_id is not None:
+        filters.append(Document.id != exclude_document_id)
+    existing_id = await db.scalar(select(Document.id).where(*filters).limit(1))
+    if existing_id is not None:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_DUPLICATE_DOCUMENT_DETAIL,
+        )
 
 
 async def _save_upload_to_path(file: UploadFile, destination: Path) -> int:
@@ -637,6 +669,12 @@ async def upload_and_queue_document(
         raise HTTPException(status_code=415, detail=f"不支持的文件格式，可用格式: {supported}")
     if len(filename) > 255:
         raise HTTPException(status_code=422, detail="文件名不能超过 255 个字符")
+    await _ensure_unique_document_filename(
+        db,
+        user_id=user_id,
+        dataset_id=dataset_id,
+        filename=filename,
+    )
 
     storage = StorageFactory.get_storage()
     object_key = f"raw/{user_id}/{dataset_id}/{uuid4().hex}/{filename}"
@@ -696,6 +734,20 @@ async def upload_and_queue_document(
         db.add(document)
         await db.commit()
         await db.refresh(document)
+    except IntegrityError as exc:
+        await db.rollback()
+        try:
+            await asyncio.to_thread(storage.remove_prefix, settings.MINIO_RAW_BUCKET, object_key)
+        except Exception as cleanup_exc:
+            logger.bind(
+                event="raw_upload_cleanup_failed",
+                document_object_key=object_key,
+                error_type=type(cleanup_exc).__name__,
+            ).warning("重复文件冲突后清理原文件对象失败")
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_DUPLICATE_DOCUMENT_DETAIL,
+        ) from exc
     except Exception:
         await db.rollback()
         try:
@@ -1087,8 +1139,22 @@ async def update_document(
     """修改用户可见文件名；文件类型和对象存储键保持不变。"""
 
     document = await _owned_document(db, document_id, user_id, for_update=True)
+    await _ensure_unique_document_filename(
+        db,
+        user_id=user_id,
+        dataset_id=int(document.dataset_id),
+        filename=payload.filename,
+        exclude_document_id=int(document.id),
+    )
     document.filename = payload.filename
-    await db.commit()
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=_DUPLICATE_DOCUMENT_DETAIL,
+        ) from exc
     await db.refresh(document)
     return _document_payload(document)
 

@@ -7,6 +7,7 @@ from io import BytesIO
 import pytest
 from fastapi import HTTPException, Response, UploadFile
 from pydantic import ValidationError
+from sqlalchemy.exc import IntegrityError
 
 import app.api.documents as documents_api
 from app.api.documents import (
@@ -70,6 +71,16 @@ class _FakeSession:
         self.refreshes += 1
         if isinstance(value, Document) and value.id is None:
             value.id = 88
+
+
+class _DuplicateCommitSession(_FakeSession):
+    async def commit(self):
+        self.commits += 1
+        raise IntegrityError(
+            "INSERT INTO document (...) VALUES (...) ",
+            {},
+            RuntimeError("Duplicate entry for key 'uk_document_user_dataset_filename'"),
+        )
 
 
 def _dataset() -> Dataset:
@@ -233,7 +244,7 @@ async def test_upload_streams_to_storage_and_returns_queued_location(
     monkeypatch.setattr(documents_api.StorageFactory, "get_storage", lambda: storage)
     monkeypatch.setattr(documents_api.settings, "PARSE_TEMP_DIR", str(tmp_path))
     dataset = _dataset()
-    db = _FakeSession([dataset, dataset])
+    db = _FakeSession([dataset, None, dataset])
     response = Response()
     upload = UploadFile(filename="report.pdf", file=BytesIO(b"pdf-binary"))
 
@@ -249,6 +260,49 @@ async def test_upload_streams_to_storage_and_returns_queued_location(
     assert storage.uploads[0][2] == b"pdf-binary"
     assert db.commits == 1
     assert _active_dispatch_stub == [(88, 1)]
+
+
+@pytest.mark.asyncio
+async def test_duplicate_upload_is_rejected_before_object_storage(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    storage = _FakeStorage()
+    monkeypatch.setattr(documents_api.StorageFactory, "get_storage", lambda: storage)
+    monkeypatch.setattr(documents_api.settings, "PARSE_TEMP_DIR", str(tmp_path))
+    db = _FakeSession([_dataset(), 42])
+    upload = UploadFile(filename="report.pdf", file=BytesIO(b"duplicate-pdf"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await upload_and_queue_document(9, Response(), upload, 11, db)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "同一数据集下已存在同名文件"
+    assert storage.uploads == []
+    assert db.commits == 0
+
+
+@pytest.mark.asyncio
+async def test_concurrent_duplicate_upload_cleans_object_and_returns_conflict(
+    monkeypatch,
+    tmp_path,
+) -> None:
+    storage = _FakeStorage()
+    monkeypatch.setattr(documents_api.StorageFactory, "get_storage", lambda: storage)
+    monkeypatch.setattr(documents_api.settings, "PARSE_TEMP_DIR", str(tmp_path))
+    dataset = _dataset()
+    db = _DuplicateCommitSession([dataset, None, dataset])
+    upload = UploadFile(filename="report.pdf", file=BytesIO(b"racing-pdf"))
+
+    with pytest.raises(HTTPException) as exc_info:
+        await upload_and_queue_document(9, Response(), upload, 11, db)
+
+    assert exc_info.value.status_code == 409
+    assert exc_info.value.detail == "同一数据集下已存在同名文件"
+    assert len(storage.uploads) == 1
+    assert storage.removed == [(documents_api.settings.MINIO_RAW_BUCKET, storage.uploads[0][1])]
+    assert db.commits == 1
+    assert db.rollbacks == 1
 
 
 @pytest.mark.asyncio
@@ -305,6 +359,19 @@ async def test_document_filename_update_is_tenant_scoped_and_keeps_file_contract
     assert document.file_type == "pdf"
     assert document.raw_object_key == raw_object_key
     assert db.commits == 1
+
+    duplicate_db = _FakeSession([document, 88])
+    with pytest.raises(HTTPException) as duplicate_info:
+        await update_document(
+            7,
+            DocumentUpdate(filename="existing.pdf"),
+            11,
+            duplicate_db,
+        )
+    assert duplicate_info.value.status_code == 409
+    assert duplicate_info.value.detail == "同一数据集下已存在同名文件"
+    assert document.filename == "renamed-report.pdf"
+    assert duplicate_db.commits == 0
 
     with pytest.raises(ValidationError):
         DocumentUpdate(filename="   ")

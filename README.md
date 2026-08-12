@@ -192,7 +192,7 @@ Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。
 | 1 | `POST /api/v1/auth/login` | 使用部署配置中的管理员账号换取 Bearer JWT |
 | 2 | `POST /api/v1/llm/configs` | 分别创建 Dense、Sparse、Chat，以及按需创建 Vision 配置 |
 | 3 | `POST /api/v1/datasets` | 绑定模型配置并创建数据集 |
-| 4 | `POST /api/v1/datasets/{dataset_id}/documents` | 流式上传原文件，返回 `202 + QUEUED` |
+| 4 | `POST /api/v1/datasets/{dataset_id}/documents` | 流式上传原文件，返回 `202 + QUEUED`；同一用户同一数据集内同名返回 `409` |
 | 5 | `GET /api/v1/documents/{document_id}` | 查询排队、处理、成功或失败状态 |
 | 6 | `GET /api/v1/documents/{document_id}/preview/content` | 流式读取当前版本的完整解析 Markdown |
 | 7 | `GET /api/v1/documents/{document_id}/preview/map` | 一次读取当前版本的主体分片边界图 |
@@ -230,7 +230,8 @@ RabbitMQ 负责主动投递，MySQL `document` 行同时保存解析 lease 和 o
 RabbitMQ 确认前后崩溃都能恢复；极端窗口可能重复投递，但文档版本和 lease fencing 会拒绝
 重复处理。该方案不增加第五张业务表。失败任务按
 `DOCUMENT_QUEUE_RETRY_DELAYS_SECONDS` 退避，达到 `DOCUMENT_QUEUE_MAX_ATTEMPTS` 后收敛为
-`FAILED`。可使用 `POST /api/v1/documents/{id}/retry` 重试失败/过期任务，或使用
+`FAILED`。文件名在同一用户的同一数据集内唯一；重复上传或将文件改为已存在的名称都返回 `409`。
+可使用 `POST /api/v1/documents/{id}/retry` 重试失败/过期任务，或使用
 `POST /api/v1/documents/{id}/reparse` 基于同一原文件创建新版本；重新解析版本递增，普通
 重试不递增。`PATCH /api/v1/documents/{id}` 可修改展示文件名，`DELETE` 会同步清理原文件、
 解析产物、三路索引与 chunk（仍在有效 lease 内的 `PROCESSING` 文档拒绝删除）。
