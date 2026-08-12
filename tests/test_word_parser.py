@@ -1,15 +1,18 @@
 from __future__ import annotations
 
 import base64
+import zipfile
 from io import BytesIO
 from types import SimpleNamespace
 
 import docx
 import pytest
+from docx.oxml import parse_xml
 
 from app.rag.core.markdown_parser.models import ElementType
 from app.rag.core.markdown_parser.parser import MarkdownParser
-from app.rag.core.parser.pdf.table_structure import PdfTableStructureExtractor
+from app.rag.core.parse_task_service import ParseTaskService
+from app.rag.core.parser.exceptions import ParseBaseException
 from app.rag.core.parser.providers.word_parser import WordParser
 from app.services.document_ingestion import (
     DocumentQualityGateError,
@@ -58,7 +61,6 @@ def _complex_docx(tmp_path):
 
 def _quality_service() -> SimpleDocumentIngestionService:
     service = object.__new__(SimpleDocumentIngestionService)
-    service._pdf_table_structure_extractor = PdfTableStructureExtractor()
     return service
 
 
@@ -73,7 +75,6 @@ def test_word_parser_persists_images_and_preserves_complex_table(tmp_path) -> No
 
     markdown = parser.parse(source)
     result = MarkdownParser().parse(markdown, source_file=source.name)
-    report = PdfTableStructureExtractor().extract(markdown, merge_continuations=False)
 
     assert len(storage.uploads) == 1
     assert "http://minio.local/parsed/documents/1/images/" in markdown
@@ -85,10 +86,20 @@ def test_word_parser_persists_images_and_preserves_complex_table(tmp_path) -> No
     assert parser.metadata["source_top_level_table_count"] == 1
     assert parser.metadata["source_nested_table_count"] == 1
     assert parser.metadata["mammoth_html_table_count"] == 2
-    assert len(result.tables) == 1
-    assert len(report.tables) == 1
-    assert report.tables[0].cells[1].column_span == 2
-    assert "煤" in str(report.tables[0].text_matrix)
+    assert len(result.tables) == 2
+    assert "<table" not in markdown
+    assert 'format="rag_text" schema="table-rag-v2"' in markdown
+    nested_table = next(
+        element
+        for element in result.elements
+        if element.metadata.get("parent_table_id") == "table-001"
+    )
+    assert nested_table.metadata["table_id"] == "table-001-001"
+    previews = parser.metadata["word_table_previews"]
+    assert [preview["id"] for preview in previews] == ["table-001", "table-001-001"]
+    assert previews[0]["cells"][1]["column_span"] == 2
+    assert "嵌套表格：table-001-001" in str(previews[0])
+    assert "煤" in str(previews[1])
 
 
 def test_word_quality_attaches_structure_and_passes_complete_docx(tmp_path) -> None:
@@ -100,6 +111,7 @@ def test_word_quality_attaches_structure_and_passes_complete_docx(tmp_path) -> N
     )
     markdown = parser.parse(source)
     parse_result = MarkdownParser().parse(markdown, source_file=source.name)
+    ParseTaskService._apply_word_page_markers(parse_result)
     parse_output = {
         "markdown": markdown,
         "parse_result": parse_result,
@@ -114,8 +126,10 @@ def test_word_quality_attaches_structure_and_passes_complete_docx(tmp_path) -> N
 
     assert status == "PASSED"
     assert report["structured_table_count"] == 1
+    assert report["structured_nested_table_count"] == 1
     table = next(e for e in parse_result.elements if e.type is ElementType.TABLE)
     assert table.metadata["table_structure"]["cells"][1]["column_span"] == 2
+    assert table.metadata["page_number"] == 1
 
 
 def test_word_quality_rejects_unpersisted_images(tmp_path) -> None:
@@ -137,3 +151,86 @@ def test_word_quality_rejects_unpersisted_images(tmp_path) -> None:
 
     assert error.value.error_code == "WORD_CONTENT_VALIDATION_FAILED"
     assert "WORD_IMAGE_ASSETS_NOT_PERSISTED" in error.value.quality_report["blocking_issues"]
+
+
+def test_word_parser_converts_formula_and_propagates_saved_pages(tmp_path) -> None:
+    document = docx.Document()
+    formula = document.add_paragraph()
+    formula._p.append(
+        parse_xml(
+            '<m:oMath xmlns:m="http://schemas.openxmlformats.org/officeDocument/2006/math">'
+            "<m:r><m:t>x</m:t></m:r><m:r><m:t>+</m:t></m:r>"
+            "<m:r><m:t>1</m:t></m:r></m:oMath>"
+        )
+    )
+    document.add_page_break()
+    document.add_paragraph("第二页内容")
+    source = tmp_path / "formula-pages.docx"
+    document.save(source)
+
+    parser = WordParser()
+    markdown = parser.parse(source)
+    parse_result = MarkdownParser().parse(markdown, source_file=source.name)
+    marker_count = ParseTaskService._apply_word_page_markers(parse_result)
+
+    assert "$x+1$" in markdown
+    assert "<!-- WORD_PAGE:1 -->" in markdown
+    assert "<!-- WORD_PAGE:2 -->" in markdown
+    assert parser.metadata["source_formula_count"] == 1
+    assert parser.metadata["converted_formula_count"] == 1
+    assert parser.metadata["page_count"] == 2
+    assert marker_count == 2
+    second_page = next(e for e in parse_result.elements if "第二页内容" in e.content)
+    assert second_page.metadata["page_number"] == 2
+
+
+@pytest.mark.asyncio
+async def test_parse_task_service_removes_word_page_markers_from_retrieval(tmp_path) -> None:
+    document = docx.Document()
+    document.add_paragraph("第一页")
+    document.add_page_break()
+    document.add_paragraph("第二页")
+    source = tmp_path / "pages.docx"
+    document.save(source)
+
+    output = await ParseTaskService.aprocess(source, "docx", source_file=source.name)
+    parse_result = output["parse_result"]
+
+    assert output["metadata"]["word_page_markers"] == 2
+    assert all("WORD_PAGE" not in element.content for element in parse_result.elements)
+    first = next(element for element in parse_result.elements if "第一页" in element.content)
+    second = next(element for element in parse_result.elements if "第二页" in element.content)
+    assert first.metadata["page_number"] == 1
+    assert second.metadata["page_number"] == 2
+
+
+def test_word_parser_rejects_duplicate_ooxml_members(tmp_path) -> None:
+    document = docx.Document()
+    document.add_paragraph("正文")
+    source = tmp_path / "duplicate-member.docx"
+    document.save(source)
+    with zipfile.ZipFile(source) as archive:
+        document_xml = archive.read("word/document.xml")
+    with pytest.warns(UserWarning, match="Duplicate name"):
+        with zipfile.ZipFile(source, "a") as archive:
+            archive.writestr("word/document.xml", document_xml)
+
+    with pytest.raises(ParseBaseException, match="重复 ZIP 条目"):
+        WordParser().parse(source)
+
+
+def test_word_parser_rejects_invalid_raster_payload() -> None:
+    with pytest.raises(ParseBaseException, match="无法安全解码"):
+        WordParser._validate_raster_image(b"not-an-image")
+
+
+def test_legacy_doc_conversion_requires_libreoffice(tmp_path, monkeypatch) -> None:
+    source = tmp_path / "legacy.doc"
+    source.write_bytes(b"legacy")
+    monkeypatch.setattr(
+        "app.rag.core.parser.providers.word_parser.shutil.which",
+        lambda _binary: None,
+    )
+
+    with pytest.raises(ParseBaseException, match="未安装 LibreOffice"):
+        WordParser()._convert_legacy_doc(source, tmp_path / "converted")

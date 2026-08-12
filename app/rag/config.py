@@ -684,13 +684,16 @@ class Settings(BaseSettings):
     # Word OOXML 可靠性与资源限制。DOCX 是 ZIP 容器，必须在 Mammoth
     # 解压/解析前拦截 zip bomb、越界路径与过大媒体。
     WORD_MAX_ZIP_ENTRIES: int = Field(default=10_000, ge=1)
+    WORD_MAX_ZIP_ENTRY_BYTES: int = Field(default=128 * 1024 * 1024, ge=1)
     WORD_MAX_UNCOMPRESSED_BYTES: int = Field(default=500 * 1024 * 1024, ge=1)
     WORD_MAX_COMPRESSION_RATIO: float = Field(default=200.0, gt=1)
     WORD_MAX_IMAGES: int = Field(default=2_000, ge=1)
     WORD_MAX_SINGLE_IMAGE_BYTES: int = Field(default=20 * 1024 * 1024, ge=1)
+    WORD_MAX_SINGLE_IMAGE_PIXELS: int = Field(default=40_000_000, ge=1)
     WORD_MAX_TOTAL_IMAGE_BYTES: int = Field(default=200 * 1024 * 1024, ge=1)
     WORD_LEGACY_CONVERTER_BINARY: str = "soffice"
     WORD_LEGACY_CONVERTER_TIMEOUT_SECONDS: float = Field(default=120, gt=0)
+    WORD_MAX_CONCURRENCY: int = Field(default=2, ge=1, le=32)
     MINERU_API_URL: str = "https://mineru.net/api/v4/extract/task"
     # 精准解析 V4 官方鉴权是 Bearer Token，不是 Access/Secret 签名。
     MINERU_API_TOKEN: str | None = None

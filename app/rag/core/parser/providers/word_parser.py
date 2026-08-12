@@ -1,9 +1,14 @@
 from __future__ import annotations
 
 import hashlib
+import os
+import shutil
+import signal
 import subprocess
 import tempfile
+import threading
 import zipfile
+from dataclasses import dataclass, field, replace
 from io import BytesIO
 from pathlib import Path, PurePosixPath
 from typing import Any
@@ -11,7 +16,10 @@ from typing import Any
 import mammoth
 import mammoth.images
 from bs4 import BeautifulSoup
+from defusedxml import ElementTree as SafeET
+from defusedxml.common import DefusedXmlException
 from lxml import etree
+from PIL import Image, UnidentifiedImageError
 
 from app.rag.config import settings
 from app.rag.core.parser.exceptions import ParseBaseException
@@ -20,6 +28,7 @@ from ..base import BaseParser
 from ..html.models import HtmlParseOptions
 from ..html.renderer import HtmlMarkdownRenderer
 from ..html.service import HtmlParseService
+from ..word_math.preprocess import WORD_PAGE_BREAK_SENTINEL, preprocess_docx
 
 _CONTENT_TYPE_EXT = {
     "image/png": "png",
@@ -51,7 +60,21 @@ _OOXML_NAMESPACES = {
     "o": "urn:schemas-microsoft-com:office:office",
     "c": "http://schemas.openxmlformats.org/drawingml/2006/chart",
     "dgm": "http://schemas.openxmlformats.org/drawingml/2006/diagram",
+    "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
 }
+
+
+@dataclass(slots=True)
+class _WordRenderSummary:
+    table_count: int = 0
+    markdown_table_count: int = 0
+    rag_text_table_count: int = 0
+    table_failure_count: int = 0
+    image_count: int = 0
+    table_previews: list[dict[str, Any]] = field(default_factory=list)
+    warnings: list[str] = field(default_factory=list)
+    page_count: int = 1
+    image_pages: dict[str, int] = field(default_factory=dict)
 
 _LIST_STYLE_MAP = "\n".join(
     [
@@ -63,6 +86,8 @@ _LIST_STYLE_MAP = "\n".join(
         "p[style-name='List Number 3'] => ol|ul > li > ol|ul > li > ol > li:fresh",
     ]
 )
+
+_WORD_PARSE_SEMAPHORE = threading.BoundedSemaphore(settings.WORD_MAX_CONCURRENCY)
 
 
 class WordParser(BaseParser):
@@ -92,8 +117,9 @@ class WordParser(BaseParser):
             legacy_converter_timeout_seconds or settings.WORD_LEGACY_CONVERTER_TIMEOUT_SECONDS
         )
         self._options = HtmlParseOptions(
-            preserve_table_html=True,
+            preserve_table_html=False,
             preserve_image_urls=True,
+            adaptive_word_tables=True,
         )
         self._image_bytes_by_url: dict[str, tuple[bytes, str]] = {}
         self._image_assets: dict[str, dict[str, object]] = {}
@@ -108,11 +134,12 @@ class WordParser(BaseParser):
         path = Path(source)
         self._reset_state()
 
-        if path.suffix.lower() == ".doc":
-            with tempfile.TemporaryDirectory(prefix="word-legacy-") as temp_dir:
-                converted = self._convert_legacy_doc(path, Path(temp_dir))
-                return self._parse_docx(converted, converted_from_legacy=True)
-        return self._parse_docx(path, converted_from_legacy=False)
+        with _WORD_PARSE_SEMAPHORE:
+            if path.suffix.lower() == ".doc":
+                with tempfile.TemporaryDirectory(prefix="word-legacy-") as temp_dir:
+                    converted = self._convert_legacy_doc(path, Path(temp_dir))
+                    return self._parse_docx(converted, converted_from_legacy=True)
+            return self._parse_docx(path, converted_from_legacy=False)
 
     def _reset_state(self) -> None:
         self.metadata = {}
@@ -125,11 +152,18 @@ class WordParser(BaseParser):
     def _parse_docx(self, source: Path, *, converted_from_legacy: bool) -> str:
         file_stream = source.read_bytes()
         package = self._inspect_ooxml(file_stream)
+        with tempfile.TemporaryDirectory(prefix="word-preprocess-") as temp_dir:
+            processed_source, formula_count, saved_page_break_count, preprocess_warnings = (
+                preprocess_docx(source, Path(temp_dir) / "preprocessed.docx")
+            )
+            mammoth_stream = processed_source.read_bytes()
+        self._warnings.extend(f"WORD_PREPROCESS:{warning}" for warning in preprocess_warnings)
         try:
             result = mammoth.convert_to_html(
-                BytesIO(file_stream),
+                BytesIO(mammoth_stream),
                 convert_image=mammoth.images.img_element(self._image_hook),
                 style_map=_LIST_STYLE_MAP,
+                include_embedded_style_map=False,
             )
         except ParseBaseException:
             raise
@@ -139,9 +173,17 @@ class WordParser(BaseParser):
         mammoth_warnings = [str(message.message) for message in result.messages]
         self._warnings.extend(f"MAMMOTH:{warning}" for warning in mammoth_warnings)
         renderer = self._render_html(result.value or "")
+        self._warnings.extend(f"WORD_TABLE:{warning}" for warning in renderer.warnings)
         markdown = self._last_markdown
         mammoth_soup = BeautifulSoup(result.value or "", "lxml")
-        mammoth_text_chars = len("".join(mammoth_soup.get_text().split()))
+        mammoth_text = mammoth_soup.get_text().replace(WORD_PAGE_BREAK_SENTINEL, "")
+        mammoth_text_chars = len("".join(mammoth_text.split()))
+        detected_page_break_count = max(0, renderer.page_count - 1)
+        if detected_page_break_count != saved_page_break_count:
+            self._warnings.append(
+                "WORD_PAGE_BREAK_COUNT_MISMATCH:"
+                f"source={saved_page_break_count},output={detected_page_break_count}"
+            )
 
         critical_warnings = [
             warning
@@ -163,8 +205,25 @@ class WordParser(BaseParser):
                 ),
                 **package,
                 "table_count": renderer.table_count,
-                "record_table_count": 0,
-                "table_failure_count": 0,
+                "record_table_count": renderer.rag_text_table_count,
+                "markdown_table_count": renderer.markdown_table_count,
+                "rag_text_table_count": renderer.rag_text_table_count,
+                "table_failure_count": renderer.table_failure_count,
+                "word_table_previews": renderer.table_previews,
+                "word_table_block_count": len(renderer.table_previews),
+                "page_count": renderer.page_count,
+                "pages_or_length": renderer.page_count,
+                "pagination_supported": True,
+                "pagination_source": "saved_docx_page_breaks",
+                "saved_page_break_count": saved_page_break_count,
+                "rendered_page_break_count": detected_page_break_count,
+                "word_image_pages": renderer.image_pages,
+                "source_formula_count": int(package.get("source_formula_count") or 0),
+                "converted_formula_count": formula_count,
+                "formula_conversion_failure_count": max(
+                    0,
+                    int(package.get("source_formula_count") or 0) - formula_count,
+                ),
                 "image_count": renderer.image_count,
                 "image_occurrence_count": self._image_occurrence_count,
                 "image_asset_count": len(self._image_assets),
@@ -204,12 +263,20 @@ class WordParser(BaseParser):
                     raise ParseBaseException("Word 解析失败：OOXML ZIP 条目数超限")
                 total_uncompressed = 0
                 total_compressed = 0
+                seen_names: set[str] = set()
                 for info in infos:
-                    path = PurePosixPath(info.filename)
+                    normalized_name = info.filename.replace("\\", "/")
+                    path = PurePosixPath(normalized_name)
                     if path.is_absolute() or ".." in path.parts:
                         raise ParseBaseException("Word 解析失败：OOXML 包含非法路径")
+                    member_key = normalized_name.casefold()
+                    if member_key in seen_names:
+                        raise ParseBaseException("Word 解析失败：OOXML 包含重复 ZIP 条目")
+                    seen_names.add(member_key)
                     if info.flag_bits & 0x1:
                         raise ParseBaseException("Word 解析失败：OOXML ZIP 条目已加密")
+                    if info.file_size > settings.WORD_MAX_ZIP_ENTRY_BYTES:
+                        raise ParseBaseException("Word 解析失败：OOXML 单条目解压大小超限")
                     total_uncompressed += int(info.file_size)
                     total_compressed += max(1, int(info.compress_size))
                 if total_uncompressed > settings.WORD_MAX_UNCOMPRESSED_BYTES:
@@ -223,7 +290,28 @@ class WordParser(BaseParser):
                     raise ParseBaseException("Word 解析失败：缺少 DOCX 必要 OOXML 结构")
                 if any(name.casefold().endswith("vbaproject.bin") for name in names):
                     raise ParseBaseException("Word 解析失败：不允许含宏的 Office 文档")
+                content_types_xml = archive.read("[Content_Types].xml")
+                content_types_root = SafeET.fromstring(content_types_xml)
+                expected_main_type = (
+                    "application/vnd.openxmlformats-officedocument."
+                    "wordprocessingml.document.main+xml"
+                )
+                if not any(
+                    element.attrib.get("PartName") == "/word/document.xml"
+                    and element.attrib.get("ContentType") == expected_main_type
+                    for element in content_types_root.iter()
+                ):
+                    raise ParseBaseException("Word 解析失败：不是标准 DOCX 主文档")
                 document_xml = archive.read("word/document.xml")
+                math_xml_parts = [
+                    archive.read(name)
+                    for name in (
+                        "word/document.xml",
+                        "word/footnotes.xml",
+                        "word/endnotes.xml",
+                    )
+                    if name in names
+                ]
                 media = [
                     info
                     for info in infos
@@ -238,10 +326,32 @@ class WordParser(BaseParser):
                     raise ParseBaseException("Word 解析失败：单个内嵌媒体超限")
         except ParseBaseException:
             raise
-        except (zipfile.BadZipFile, OSError, ValueError, etree.XMLSyntaxError) as exc:
+        except (
+            zipfile.BadZipFile,
+            OSError,
+            ValueError,
+            etree.XMLSyntaxError,
+            SafeET.ParseError,
+            DefusedXmlException,
+        ) as exc:
             raise ParseBaseException(f"Word 解析失败：OOXML 结构损坏 {exc}") from exc
 
-        root = etree.fromstring(document_xml)
+        try:
+            SafeET.fromstring(document_xml)
+            root = etree.fromstring(document_xml)
+            for part in math_xml_parts:
+                SafeET.fromstring(part)
+            source_formula_count = sum(
+                len(
+                    etree.fromstring(part).xpath(
+                        ".//m:oMath",
+                        namespaces=_OOXML_NAMESPACES,
+                    )
+                )
+                for part in math_xml_parts
+            )
+        except (etree.XMLSyntaxError, SafeET.ParseError, DefusedXmlException) as exc:
+            raise ParseBaseException(f"Word 解析失败：OOXML XML 不安全或损坏 {exc}") from exc
 
         def xpath(expression: str) -> list[Any]:
             return root.xpath(expression, namespaces=_OOXML_NAMESPACES)
@@ -263,6 +373,7 @@ class WordParser(BaseParser):
             "source_chart_count": len(xpath(".//c:chart")),
             "source_diagram_count": len(xpath(".//dgm:relIds")),
             "source_textbox_count": len(xpath(".//w:txbxContent")),
+            "source_formula_count": source_formula_count,
         }
 
     def _image_hook(self, image) -> dict[str, str]:
@@ -283,6 +394,8 @@ class WordParser(BaseParser):
             source_content,
             source_content_type,
         )
+        if content_type in _VISION_CONTENT_TYPES:
+            self._validate_raster_image(content)
         ext = _CONTENT_TYPE_EXT.get(content_type, "bin")
 
         filename = f"word-image-{len(self._image_assets) + 1:04d}-{digest[:12]}.{ext}"
@@ -314,6 +427,25 @@ class WordParser(BaseParser):
             "vision_supported": vision_supported,
         }
         return {"src": url}
+
+    @staticmethod
+    def _validate_raster_image(content: bytes) -> None:
+        """校验实际解码和像素数量，避免伪造图片及解压炸弹。"""
+
+        try:
+            with Image.open(BytesIO(content)) as image:
+                width, height = image.size
+                if (
+                    width <= 0
+                    or height <= 0
+                    or width * height > settings.WORD_MAX_SINGLE_IMAGE_PIXELS
+                ):
+                    raise ParseBaseException("Word 解析失败：内嵌图片像素数量超限")
+                image.verify()
+        except ParseBaseException:
+            raise
+        except (Image.DecompressionBombError, UnidentifiedImageError, OSError) as exc:
+            raise ParseBaseException("Word 解析失败：内嵌图片无法安全解码") from exc
 
     def _normalize_image_for_vision(
         self,
@@ -358,43 +490,117 @@ class WordParser(BaseParser):
         self._warnings.append(f"WORD_IMAGE_TRANSCODE_FAILED:{content_type}")
         return content, content_type
 
-    def _render_html(self, html: str) -> HtmlMarkdownRenderer:
+    def _render_html(self, html: str) -> _WordRenderSummary:
         soup = BeautifulSoup(html, "lxml")
         HtmlParseService()._clean_soup(soup)
         root = soup.body or soup
-        renderer = HtmlMarkdownRenderer(self._options)
-        markdown = renderer.render_children(root)
-        if not markdown.strip():
+        cleaned_html = "".join(str(child) for child in root.children)
+        fragments = cleaned_html.split(WORD_PAGE_BREAK_SENTINEL)
+        if len(fragments) > 1 and any(
+            fragment.casefold().count("<table")
+            != fragment.casefold().count("</table")
+            for fragment in fragments
+        ):
+            # 分页符位于表格内部时不能按字符串切 DOM，否则会损坏整张表。
+            fragments = [cleaned_html.replace(WORD_PAGE_BREAK_SENTINEL, "")]
+            self._warnings.append("WORD_PAGE_BREAK_INSIDE_TABLE_IGNORED")
+
+        summary = _WordRenderSummary(page_count=len(fragments))
+        markdown_pages: list[str] = []
+        heading_path: list[str] = []
+        for page_number, fragment in enumerate(fragments, start=1):
+            page_soup = BeautifulSoup(fragment, "lxml")
+            page_root = page_soup.body or page_soup
+            for paragraph in page_root.find_all("p"):
+                if not paragraph.get_text(" ", strip=True) and not paragraph.find("img"):
+                    paragraph.decompose()
+            for image in page_root.find_all("img"):
+                source_ref = str(image.get("src") or "").strip()
+                if source_ref:
+                    summary.image_pages.setdefault(source_ref, page_number)
+            options = replace(
+                self._options,
+                page_number=page_number,
+                initial_heading_path=heading_path,
+                table_id_start=summary.table_count + 1,
+            )
+            renderer = HtmlMarkdownRenderer(options)
+            page_markdown = renderer.render_children(page_root).strip()
+            heading_path = renderer.heading_path
+            markdown_pages.append(
+                f"<!-- WORD_PAGE:{page_number} -->"
+                + (f"\n\n{page_markdown}" if page_markdown else "")
+            )
+            summary.table_count += renderer.table_count
+            summary.markdown_table_count += renderer.markdown_table_count
+            summary.rag_text_table_count += renderer.rag_text_table_count
+            summary.table_failure_count += renderer.table_failure_count
+            summary.image_count += renderer.image_count
+            summary.table_previews.extend(renderer.table_previews)
+            summary.warnings.extend(renderer.warnings)
+
+        if not any(page.partition("\n\n")[2].strip() for page in markdown_pages):
             raise ParseBaseException("Word 解析失败：文档无有效内容")
-        self._last_markdown = markdown
-        return renderer
+        self._last_markdown = "\n\n".join(markdown_pages)
+        return summary
 
     def _convert_legacy_doc(self, source: Path, output_dir: Path) -> Path:
         profile_dir = output_dir / "libreoffice-profile"
         profile_dir.mkdir(parents=True, exist_ok=True)
+        executable = shutil.which(self.legacy_converter_binary)
+        if executable is None:
+            raise ParseBaseException("Word .doc 转换失败：未安装 LibreOffice")
+        command = [
+            executable,
+            "--headless",
+            "--nologo",
+            "--nodefault",
+            "--nolockcheck",
+            "--nofirststartwizard",
+            f"-env:UserInstallation={profile_dir.resolve().as_uri()}",
+            "--convert-to",
+            "docx:Office Open XML Text",
+            "--outdir",
+            str(output_dir),
+            str(source.resolve()),
+        ]
+        process: subprocess.Popen[bytes] | None = None
         try:
-            completed = subprocess.run(
-                [
-                    self.legacy_converter_binary,
-                    f"-env:UserInstallation={profile_dir.resolve().as_uri()}",
-                    "--headless",
-                    "--convert-to",
-                    "docx",
-                    "--outdir",
-                    str(output_dir),
-                    str(source),
-                ],
-                check=False,
-                capture_output=True,
-                text=True,
-                timeout=self.legacy_converter_timeout_seconds,
+            process = subprocess.Popen(
+                command,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE,
+                start_new_session=True,
             )
-        except FileNotFoundError as exc:
-            raise ParseBaseException("Word .doc 转换失败：未安装 LibreOffice") from exc
-        except subprocess.TimeoutExpired as exc:
-            raise ParseBaseException("Word .doc 转换失败：LibreOffice 执行超时") from exc
-        converted = output_dir / f"{source.stem}.docx"
-        if completed.returncode != 0 or not converted.is_file() or converted.stat().st_size <= 0:
-            reason = (completed.stderr or completed.stdout or "unknown error").strip()[:500]
+            try:
+                stdout, stderr = process.communicate(
+                    timeout=self.legacy_converter_timeout_seconds
+                )
+            except subprocess.TimeoutExpired as exc:
+                try:
+                    os.killpg(process.pid, signal.SIGKILL)
+                except ProcessLookupError:
+                    pass
+                process.communicate()
+                raise ParseBaseException(
+                    "Word .doc 转换失败：LibreOffice 执行超时"
+                ) from exc
+        except OSError as exc:
+            raise ParseBaseException(f"Word .doc 转换失败：{exc}") from exc
+
+        converted_candidates = sorted(output_dir.glob("*.docx"))
+        converted = converted_candidates[0] if len(converted_candidates) == 1 else None
+        if (
+            process.returncode != 0
+            or converted is None
+            or not converted.is_file()
+            or converted.stat().st_size <= 0
+            or converted.stat().st_size > settings.DOCUMENT_UPLOAD_MAX_BYTES
+        ):
+            reason = (stderr or stdout or b"unknown error").decode(
+                "utf-8", errors="replace"
+            ).strip()[:500]
             raise ParseBaseException(f"Word .doc 转换失败：{reason}")
+        # 转换器输出也必须重新通过与原生 DOCX 相同的安全和结构检查。
+        self._inspect_ooxml(converted.read_bytes())
         return converted

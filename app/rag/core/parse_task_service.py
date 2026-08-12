@@ -25,6 +25,7 @@ class ParseTaskService:
     """
 
     _PDF_PAGE_MARKER = re.compile(r"^<!--\s*ODL_PAGE:(\d+)\s*-->$")
+    _WORD_PAGE_MARKER = re.compile(r"^<!--\s*WORD_PAGE:(\d+)\s*-->$")
 
     @staticmethod
     async def aprocess(
@@ -144,6 +145,8 @@ class ParseTaskService:
         page_marker_count = 0
         if file_type.strip().lower().lstrip(".") == "pdf":
             page_marker_count = ParseTaskService._apply_pdf_page_markers(final_parse_result)
+        elif file_type.strip().lower().lstrip(".") in {"doc", "docx"}:
+            page_marker_count = ParseTaskService._apply_word_page_markers(final_parse_result)
         final_parse_elapsed = time.monotonic() - final_parse_started_at
         logger.debug(
             "[ParseTaskService] final_markdown_parsed task_id={} elapsed={:.2f}s chars={} "
@@ -159,7 +162,10 @@ class ParseTaskService:
         metadata["heading_hierarchy_applied"] = heading_result.applied
         metadata["heading_hierarchy_reason"] = heading_result.decision.reason.value
         metadata["heading_hierarchy_insertions"] = heading_result.insertion_count
-        metadata["pdf_page_markers"] = page_marker_count
+        normalized_file_type = file_type.strip().lower().lstrip(".")
+        metadata["pdf_page_markers"] = page_marker_count if normalized_file_type == "pdf" else 0
+        if normalized_file_type in {"doc", "docx"}:
+            metadata["word_page_markers"] = page_marker_count
 
         time_cost_ms = int((time.time() - start_time) * 1000)
 
@@ -216,6 +222,25 @@ class ParseTaskService:
         retained = []
         for element in parse_result.elements:
             match = ParseTaskService._PDF_PAGE_MARKER.fullmatch(element.content.strip())
+            if match is not None:
+                current_page = int(match.group(1))
+                marker_count += 1
+                continue
+            if current_page is not None:
+                element.metadata["page_number"] = current_page
+            retained.append(element)
+        parse_result.elements = retained
+        return marker_count
+
+    @staticmethod
+    def _apply_word_page_markers(parse_result) -> int:
+        """传播 DOCX 保存态页码，并移除只用于定位的 marker 元素。"""
+
+        current_page: int | None = None
+        marker_count = 0
+        retained = []
+        for element in parse_result.elements:
+            match = ParseTaskService._WORD_PAGE_MARKER.fullmatch(element.content.strip())
             if match is not None:
                 current_page = int(match.group(1))
                 marker_count += 1

@@ -4,8 +4,9 @@ from html import escape
 from bs4 import NavigableString, Tag
 
 from .image_rewriter import HtmlImageRewriter
-from .models import HtmlParseOptions
+from .models import HtmlParseOptions, TableIR
 from .table_processor import HtmlTableProcessor
+from .word_table_processor import WordTableProcessor
 
 
 class HtmlMarkdownRenderer:
@@ -28,10 +29,18 @@ class HtmlMarkdownRenderer:
         self.options = options
         self.image_rewriter = HtmlImageRewriter(options)
         self.table_processor = HtmlTableProcessor(self.image_rewriter)
+        self.word_table_processor = WordTableProcessor()
         self.table_count = 0
         self.record_table_count = 0
+        self.markdown_table_count = 0
+        self.rag_text_table_count = 0
         self.table_failure_count = 0
         self.table_split_count = 0
+        self.table_irs: list[TableIR] = []
+        self.table_previews: list[dict] = []
+        self._next_table_id = max(1, options.table_id_start)
+        self.page_number = options.page_number
+        self.heading_path = list(options.initial_heading_path)
         self.image_count = 0
         self.image_upload_count = 0
         self.warnings: list[str] = []
@@ -52,6 +61,10 @@ class HtmlMarkdownRenderer:
         if name in {"h1", "h2", "h3", "h4", "h5", "h6"}:
             level = int(name[1])
             text = self.render_inline_children(node)
+            if text:
+                self.heading_path = self.heading_path[: level - 1]
+                self.heading_path.extend([""] * (level - 1 - len(self.heading_path)))
+                self.heading_path.append(text)
             return f"{'#' * level} {text}" if text else ""
         if name == "p":
             return self.render_inline_children(node)
@@ -89,6 +102,30 @@ class HtmlMarkdownRenderer:
         if name == "table":
             if self.options.preserve_table_html:
                 return self._render_preserved_table(node)
+            if self.options.adaptive_word_tables:
+                table_id = f"table-{self._next_table_id:03d}"
+                self._next_table_id += 1
+                result = self.word_table_processor.render(
+                    node,
+                    table_id=table_id,
+                    page_number=self.page_number,
+                    heading_path=[heading for heading in self.heading_path if heading],
+                )
+                self.table_count += 1
+                if result.strategy == "markdown_table":
+                    self.markdown_table_count += 1
+                elif result.strategy == "rag_text_table":
+                    self.rag_text_table_count += 1
+                elif result.strategy == "html_fallback":
+                    self.table_failure_count += 1
+                if result.table_ir is not None:
+                    self.table_irs.append(result.table_ir)
+                self.table_previews.extend(result.preview_tables)
+                self.image_count += result.image_count
+                self.warnings.extend(result.warnings)
+                if result.warning:
+                    self.warnings.append(result.warning)
+                return result.markdown
             result = self.table_processor.render(node)
             self.table_count += 1
             if result.strategy == "record_markdown":

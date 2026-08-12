@@ -394,6 +394,13 @@ class DerivedElementChunkBuilder:
         Returns:
             str: 原始表格文本。
         """
+        lines = content.strip().splitlines()
+        if (
+            len(lines) >= 2
+            and "LINKPARSE_TABLE_START" in lines[0]
+            and "LINKPARSE_TABLE_END" in lines[-1]
+        ):
+            return "\n".join(lines[1:-1]).strip()
         return content.strip()
 
     @staticmethod
@@ -505,6 +512,10 @@ class DerivedElementChunkBuilder:
         ``text_matrix`` retain the semantic effect of rowspan/colspan, while the
         original cell spans remain available in ``table_structure`` metadata.
         """
+
+        retrieval_text = str(structure.get("retrieval_text") or "").strip()
+        if retrieval_text:
+            return retrieval_text
 
         raw_matrix = structure.get("text_matrix")
         if not isinstance(raw_matrix, (list, tuple)):
@@ -747,7 +758,7 @@ class DerivedElementChunkBuilder:
         )
 
         if inline_in_mixed:
-            mixed_content = element.content
+            mixed_content = raw_table
         else:
             mixed_content = f"[表格引用: {element_id}]\n表格摘要：{summary}"
 
