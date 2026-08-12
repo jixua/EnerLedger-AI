@@ -7,6 +7,7 @@ from types import SimpleNamespace
 
 import docx
 import pytest
+from docx.enum.section import WD_SECTION
 from docx.oxml import parse_xml
 
 from app.rag.core.markdown_parser.models import ElementType
@@ -252,6 +253,49 @@ def test_word_parser_converts_formula_and_propagates_saved_pages(tmp_path) -> No
     assert marker_count == 2
     second_page = next(e for e in parse_result.elements if "第二页内容" in e.content)
     assert second_page.metadata["page_number"] == 2
+
+
+def test_word_parser_propagates_section_and_paragraph_page_breaks(tmp_path) -> None:
+    document = docx.Document()
+    document.add_paragraph("第一页内容")
+    document.add_section(WD_SECTION.NEW_PAGE)
+    document.add_paragraph("第二页内容")
+    third_page = document.add_paragraph("第三页内容")
+    third_page.paragraph_format.page_break_before = True
+    source = tmp_path / "section-pages.docx"
+    document.save(source)
+
+    parser = WordParser()
+    markdown = parser.parse(source)
+    parse_result = MarkdownParser().parse(markdown, source_file=source.name)
+    marker_count = ParseTaskService._apply_word_page_markers(parse_result)
+
+    assert parser.metadata["page_count"] == 3
+    assert parser.metadata["saved_page_break_count"] == 2
+    assert parser.metadata["pagination_source"] == "saved_docx_pagination_markers"
+    assert marker_count == 3
+    first = next(e for e in parse_result.elements if "第一页内容" in e.content)
+    second = next(e for e in parse_result.elements if "第二页内容" in e.content)
+    third = next(e for e in parse_result.elements if "第三页内容" in e.content)
+    assert first.metadata["page_number"] == 1
+    assert second.metadata["page_number"] == 2
+    assert third.metadata["page_number"] == 3
+
+
+def test_word_parser_does_not_count_continuous_or_final_sections(tmp_path) -> None:
+    document = docx.Document()
+    document.add_paragraph("第一节")
+    document.add_section(WD_SECTION.CONTINUOUS)
+    document.add_paragraph("连续分节正文")
+    source = tmp_path / "continuous-section.docx"
+    document.save(source)
+
+    parser = WordParser()
+    markdown = parser.parse(source)
+
+    assert parser.metadata["page_count"] == 1
+    assert parser.metadata["saved_page_break_count"] == 0
+    assert markdown.count("<!-- WORD_PAGE:") == 1
 
 
 @pytest.mark.asyncio

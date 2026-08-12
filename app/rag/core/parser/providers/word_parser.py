@@ -230,7 +230,7 @@ class WordParser(BaseParser):
                 "page_count": renderer.page_count,
                 "pages_or_length": renderer.page_count,
                 "pagination_supported": True,
-                "pagination_source": "saved_docx_page_breaks",
+                "pagination_source": "saved_docx_pagination_markers",
                 "saved_page_break_count": saved_page_break_count,
                 "rendered_page_break_count": detected_page_break_count,
                 "word_image_pages": renderer.image_pages,
