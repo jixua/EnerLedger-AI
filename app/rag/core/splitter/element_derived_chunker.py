@@ -12,6 +12,7 @@ from app.rag.core.markdown_parser.models import (
 )
 
 from .stage_models import ElementView
+from .table_protocol import extract_linkparse_table_body
 
 if TYPE_CHECKING:
     from app.rag.core.llm.tokenizer import Tokenizer
@@ -394,13 +395,9 @@ class DerivedElementChunkBuilder:
         Returns:
             str: 原始表格文本。
         """
-        lines = content.strip().splitlines()
-        if (
-            len(lines) >= 2
-            and "LINKPARSE_TABLE_START" in lines[0]
-            and "LINKPARSE_TABLE_END" in lines[-1]
-        ):
-            return "\n".join(lines[1:-1]).strip()
+        table_body = extract_linkparse_table_body(content)
+        if table_body is not None:
+            return table_body
         return content.strip()
 
     @staticmethod

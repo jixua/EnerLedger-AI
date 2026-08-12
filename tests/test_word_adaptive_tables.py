@@ -4,7 +4,18 @@ from app.rag.core.markdown_parser.models import ElementType
 from app.rag.core.markdown_parser.parser import MarkdownParser
 from app.rag.core.parser.html.models import HtmlParseOptions
 from app.rag.core.parser.html.renderer import HtmlMarkdownRenderer
+from app.rag.core.splitter.candidate_boundary_chunker import CandidateBoundaryChunker
 from app.rag.core.splitter.element_derived_chunker import DerivedElementChunkBuilder
+from app.rag.core.splitter.stage_models import SplitInput
+from app.rag.core.splitter.validators import CoarseChunkSetValidator
+
+
+class _CharacterTokenizer:
+    def count_tokens(self, text: str) -> int:
+        return len(text)
+
+    def truncate_text(self, text: str, max_tokens: int) -> tuple[str, bool]:
+        return text[:max_tokens], len(text) > max_tokens
 
 
 def _render(html: str) -> tuple[str, HtmlMarkdownRenderer]:
@@ -89,3 +100,25 @@ def test_linkparse_markers_are_not_kept_in_table_retrieval_text() -> None:
     assert "LINKPARSE_TABLE" not in raw_table
     assert "<table" not in raw_table
     assert raw_table.startswith("| 字段 | 说明 |")
+
+
+def test_marked_simple_table_passes_full_coarse_chunk_validation_without_markers() -> None:
+    markdown, _ = _render(
+        "<table><tr><td>字段</td><td>说明</td></tr>"
+        "<tr><td>name</td><td>名称</td></tr></table>"
+    )
+    parse_result = MarkdownParser().parse(markdown)
+    split_input = SplitInput(elements=parse_result.elements)
+    coarse_set = CandidateBoundaryChunker(
+        tokenizer=_CharacterTokenizer(),
+        min_candidate_chunk_tokens=10_000,
+    ).run(split_input)
+
+    CoarseChunkSetValidator().validate(coarse_set, split_input)
+
+    source_chunk = next(chunk for chunk in coarse_set.chunks if chunk.role == "mixed")
+    table_view = next(view for view in source_chunk.element_views if view.element_type == "table")
+    rendered = source_chunk.content[table_view.content_start : table_view.content_end]
+    assert table_view.metadata["table_inline_in_source"] is True
+    assert rendered.startswith("| 字段 | 说明 |")
+    assert "LINKPARSE_TABLE" not in rendered
