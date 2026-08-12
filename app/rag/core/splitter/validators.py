@@ -15,6 +15,7 @@ from .stage_models import (
     SplitInput,
 )
 from .stage_two_semantic_depth import MD_CONTAINED_ELEMENT_IDS, MD_TRUNCATED
+from .table_protocol import extract_linkparse_table_body
 
 if TYPE_CHECKING:
     from app.rag.core.llm.tokenizer import Tokenizer
@@ -382,7 +383,11 @@ class CoarseChunkSetValidator:
         elif view.element_type == ElementType.TABLE.value and view.metadata.get(
             "table_inline_in_source"
         ):
-            if rendered_content != source_element.content:
+            expected_content = source_element.content
+            marker_body = extract_linkparse_table_body(expected_content)
+            if marker_body is not None:
+                expected_content = marker_body
+            if rendered_content != expected_content:
                 raise SplitterOutputValidationError(
                     f"inline table view span in coarse chunk {chunk.id} does not recover "
                     f"source element {view.element_index} content."

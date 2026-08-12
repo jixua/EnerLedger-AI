@@ -3,7 +3,6 @@ import {
   Boxes,
   Check,
   CircleAlert,
-  Clock3,
   Database,
   HardDrive,
   Network,
@@ -95,14 +94,15 @@ export function SystemPage() {
       : "正在检查接口服务";
 
   return (
-    <div className="page-shell system-page">
-      <header className="page-heading system-heading">
-        <div>
+    <div className="page-shell system-page feature-page">
+      <header className="knowledge-hero">
+        <div className="knowledge-hero__copy">
+          <p className="eyebrow">System health overview</p>
           <h1>系统状态</h1>
-          <p>查看接口及依赖服务的当前运行状态。</p>
+          <p className="knowledge-hero__subtitle">服务与依赖</p>
         </div>
         <button
-          className="secondary-button"
+          className="secondary-button knowledge-hero__action"
           type="button"
           onClick={() => refreshHealth?.().catch(() => {})}
           disabled={healthLoading || typeof refreshHealth !== "function"}
@@ -112,7 +112,7 @@ export function SystemPage() {
         </button>
       </header>
 
-      <section className={`api-health-hero api-health-hero--${apiStatus}`}>
+      <section className={`api-health-hero api-health-hero--${apiStatus}`} aria-label="接口服务状态">
         <div className="api-health-hero__icon">
           {apiStatus === "ready" ? <Check size={24} /> : apiStatus === "failed" ? <CircleAlert size={24} /> : <Activity size={24} />}
         </div>
@@ -126,20 +126,12 @@ export function SystemPage() {
         </div>
       </section>
 
-      <div className="notice-strip notice-strip--warning">
-        <CircleAlert size={17} />
-          <span>接口服务存活不代表所有依赖均可用，未返回检查结果的服务会标记为“待检查”。</span>
-      </div>
-
       <section className="system-section">
         <div className="section-heading">
-          <div>
-            <h2>依赖服务</h2>
-          </div>
-          <span className="section-note">状态来自当前服务检查结果</span>
+          <div><h2>依赖服务</h2></div>
         </div>
 
-        <div className="dependency-grid">
+        <div className="dependency-list">
           {COMPONENTS.map((component) => {
             const Icon = component.icon;
             const status = normalizeStatus(health.components?.[component.key] ?? health[component.key]);
@@ -147,17 +139,14 @@ export function SystemPage() {
               ?? health[component.key]?.message
               ?? component.detail;
             return (
-              <article className={`dependency-card dependency-card--${status}`} key={component.key}>
-                <header>
-                  <span className="dependency-card__icon"><Icon size={19} /></span>
-                  <span className={`state-pill state-pill--${status}`}><i />{statusCopy(status)}</span>
-                </header>
-                <h3>{component.name}</h3>
-                <p>{component.role}</p>
-                <footer>
-                  <span>{liveDetail}</span>
-                  {status === "pending" ? <Clock3 size={14} /> : status === "ready" ? <Check size={14} /> : <CircleAlert size={14} />}
-                </footer>
+              <article className={`dependency-row dependency-row--${status}`} key={component.key}>
+                <span className="dependency-row__icon"><Icon size={18} /></span>
+                <div className="dependency-row__identity">
+                  <h3>{component.name}</h3>
+                  <p>{component.role}</p>
+                </div>
+                <span className="dependency-row__detail">{liveDetail}</span>
+                <span className={`state-pill state-pill--${status}`}><i />{statusCopy(status)}</span>
               </article>
             );
           })}

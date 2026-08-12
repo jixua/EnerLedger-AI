@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Navigate, useLocation, useNavigate } from "react-router-dom";
-import { CircleAlert, Leaf, LoaderCircle, LockKeyhole, UserRound } from "lucide-react";
+import { BookOpenCheck, CircleAlert, Leaf, LoaderCircle, LockKeyhole, ScanSearch, ShieldCheck, UserRound } from "lucide-react";
 
 import { useAuth } from "../state/AuthContext";
 
@@ -33,6 +33,20 @@ export function LoginPage() {
 
   return (
     <main className="login-page">
+      <aside className="login-story" aria-label="产品能力介绍">
+        <div className="login-story__brand"><Leaf size={19} /><span>能碳会计 · EnerLedger AI</span></div>
+        <div className="login-story__content">
+          <p className="eyebrow">Carbon intelligence workspace</p>
+          <h1>让碳标准成为<br />可追溯的答案。</h1>
+          <p>从复杂文档解析、结构还原到多源检索，把分散的政策、标准和方法学整理成可核验的知识底座。</p>
+          <ul>
+            <li><BookOpenCheck size={17} /><span><strong>标准入库</strong><small>Word、PDF 与复杂表格结构化</small></span></li>
+            <li><ScanSearch size={17} /><span><strong>证据检索</strong><small>答案直接回溯原文与页码</small></span></li>
+            <li><ShieldCheck size={17} /><span><strong>解析可控</strong><small>质量状态、任务进度清晰可见</small></span></li>
+          </ul>
+        </div>
+        <p className="login-story__note">Knowledge infrastructure for carbon accounting</p>
+      </aside>
       <section className="login-card" aria-labelledby="login-title">
         <header className="login-brand">
           <span><Leaf size={23} /></span>
@@ -40,7 +54,7 @@ export function LoginPage() {
         </header>
         <div className="login-heading">
           <h1 id="login-title">管理员登录</h1>
-          <p>登录后管理数据集、模型配置与文档解析任务。</p>
+          <p>进入碳知识库与文档解析工作台。</p>
         </div>
         <form onSubmit={submit} className="login-form">
           <label>

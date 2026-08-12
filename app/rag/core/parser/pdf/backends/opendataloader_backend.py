@@ -43,6 +43,14 @@ class OpenDataLoaderBackend(BasePdfBackend):
         r"(?P<bare>[^\s>]+))",
         re.IGNORECASE,
     )
+    _BREAK_TAG_PATTERN = re.compile(r"<br\s*/?>", re.IGNORECASE)
+    _BREAK_TAG_RUN_PATTERN = re.compile(
+        r"(?:<br\s*/?>\s*)+",
+        re.IGNORECASE,
+    )
+    _SINGLE_COLUMN_SEPARATOR_PATTERN = re.compile(
+        r"^\s*\|\s*:?-{3,}:?\s*\|\s*$"
+    )
 
     def __init__(
         self,
@@ -121,6 +129,9 @@ class OpenDataLoaderBackend(BasePdfBackend):
                         error_code="ODL_MARKDOWN_EMPTY",
                         retryable=False,
                     )
+                markdown, flattened_layout_table_count = (
+                    self._normalize_single_column_layout_tables(markdown)
+                )
                 assets = self._collect_image_assets(output_dir, image_dir, markdown)
                 self.metadata["opendataloader_markdown_file"] = str(
                     markdown_path.relative_to(output_dir)
@@ -128,6 +139,9 @@ class OpenDataLoaderBackend(BasePdfBackend):
                 self.metadata["opendataloader_image_count"] = len(assets)
                 self.metadata["opendataloader_table_method"] = table_method
                 self.metadata["opendataloader_markdown_with_html"] = markdown_with_html
+                self.metadata["opendataloader_flattened_layout_table_count"] = (
+                    flattened_layout_table_count
+                )
                 page_map = self._image_page_map(markdown)
                 self.metadata["opendataloader_image_page_map"] = {
                     source_path: list(page_numbers)
@@ -177,6 +191,74 @@ class OpenDataLoaderBackend(BasePdfBackend):
         self.metadata["opendataloader_runtime_health"] = health.to_dict()
         self.metadata["opendataloader_java_version"] = health.java_version or ""
         return None if health.ready else health.message
+
+    @classmethod
+    def _normalize_single_column_layout_tables(cls, markdown: str) -> tuple[str, int]:
+        """Flatten page-layout blocks that OpenDataLoader encoded as one-column tables.
+
+        A real one-column table without embedded layout breaks is preserved.  We only
+        unwrap tables whose cell payload contains an image or at least two ``br`` tags,
+        which is the shape produced for slide-like PDF pages.
+        """
+
+        lines = (markdown or "").splitlines()
+        normalized: list[str] = []
+        flattened_count = 0
+        index = 0
+        while index < len(lines):
+            header = cls._single_column_cell(lines[index])
+            if (
+                header is None
+                or index + 1 >= len(lines)
+                or cls._SINGLE_COLUMN_SEPARATOR_PATTERN.fullmatch(lines[index + 1]) is None
+            ):
+                normalized.append(lines[index])
+                index += 1
+                continue
+
+            cells = [header]
+            cursor = index + 2
+            while cursor < len(lines):
+                cell = cls._single_column_cell(lines[cursor])
+                if cell is None:
+                    break
+                cells.append(cell)
+                cursor += 1
+
+            payload = "\n".join(cell for cell in cells if cell.strip())
+            break_count = len(cls._BREAK_TAG_PATTERN.findall(payload))
+            has_image = bool(
+                re.search(r"!\[[^\]]*\]\(", payload)
+                or re.search(r"<img\b", payload, re.IGNORECASE)
+            )
+            if payload and (has_image or break_count >= 2):
+                blocks = []
+                for cell in cells:
+                    # OpenDataLoader normally emits ``<br><br>`` between visual
+                    # paragraphs.  Collapse a whole run at once so it does not
+                    # expand into four or more blank lines.
+                    block = cls._BREAK_TAG_RUN_PATTERN.sub("\n\n", cell).strip()
+                    if block:
+                        blocks.append(block)
+                normalized.extend("\n\n".join(blocks).splitlines())
+                flattened_count += 1
+                index = cursor
+                continue
+
+            normalized.extend(lines[index:cursor])
+            index = cursor
+
+        return "\n".join(normalized), flattened_count
+
+    @staticmethod
+    def _single_column_cell(line: str) -> str | None:
+        stripped = line.strip()
+        if not stripped.startswith("|") or not stripped.endswith("|"):
+            return None
+        body = stripped[1:-1]
+        if re.search(r"(?<!\\)\|", body):
+            return None
+        return body.strip()
 
     @classmethod
     def _parse_java_major_version(cls, version_output: str) -> int | None:

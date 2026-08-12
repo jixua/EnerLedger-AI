@@ -3,11 +3,16 @@ import test from "node:test";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
 import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 
 import {
   createDocumentBoundaryPlugin,
   insertDocumentBoundaryNodes,
+  mergeDocumentDetailSnapshot,
   normalizeDocumentBoundaries,
+  remarkDocumentBreakTags,
+  replaceDocumentBreakTags,
+  replaceDocumentPageMarkers,
 } from "../src/lib/document-reader.js";
 
 function documentTree() {
@@ -20,6 +25,34 @@ function documentTree() {
     ],
   };
 }
+
+test("mergeDocumentDetailSnapshot preserves same-version table structure from list summaries", () => {
+  const detailed = {
+    document_id: 29,
+    version: 1,
+    status: "READY",
+    parse_quality: {
+      status: "PASSED",
+      table_structure: { tables: [{ table_id: "table-001" }] },
+    },
+  };
+  const summary = {
+    document_id: 29,
+    version: 1,
+    status: "READY",
+    updated_at: "2026-08-12T10:46:56",
+    parse_quality: { status: "PASSED", structured_table_count: 1 },
+  };
+
+  const merged = mergeDocumentDetailSnapshot(detailed, summary);
+
+  assert.equal(merged.updated_at, summary.updated_at);
+  assert.equal(merged.parse_quality.table_structure.tables[0].table_id, "table-001");
+  assert.equal(
+    mergeDocumentDetailSnapshot(detailed, { ...summary, version: 2 }).version,
+    2,
+  );
+});
 
 test("normalizeDocumentBoundaries keeps every same-line boundary and assigns continuous reader indexes", () => {
   const normalized = normalizeDocumentBoundaries([
@@ -102,6 +135,7 @@ test("parser-only page markers stay out of the continuous reading document", () 
     type: "root",
     children: [
       { type: "html", value: "<!-- ODL_PAGE:1 -->", position: { start: { line: 1 }, end: { line: 1 } } },
+      { type: "html", value: "<!-- WORD_PAGE:2 -->", position: { start: { line: 2 }, end: { line: 2 } } },
       { type: "html", value: "<!-- PAGE_FALLBACK:VISION -->", position: { start: { line: 2 }, end: { line: 2 } } },
       { type: "html", value: "<!-- PAGE_FALLBACK:OCR -->", position: { start: { line: 3 }, end: { line: 3 } } },
       { type: "heading", depth: 1, children: [], position: { start: { line: 4 }, end: { line: 4 } } },
@@ -113,11 +147,67 @@ test("parser-only page markers stay out of the continuous reading document", () 
   insertDocumentBoundaryNodes(tree, normalized, "line");
 
   assert.equal(tree.children.some((node) => node.value === "<!-- ODL_PAGE:1 -->"), false);
+  assert.equal(tree.children.some((node) => node.value === "<!-- WORD_PAGE:2 -->"), false);
   assert.equal(tree.children.some((node) => node.value === "<!-- PAGE_FALLBACK:VISION -->"), false);
   assert.equal(tree.children.some((node) => node.value === "<!-- PAGE_FALLBACK:OCR -->"), false);
   assert.equal(tree.children.some((node) => node.value === "<!-- keep this author comment -->"), true);
   assert.equal(tree.children[0].type, "documentChunkBoundary");
   assert.equal(tree.children[1].type, "heading");
+});
+
+test("Word and PDF page comments become visible reader page markers", () => {
+  const tree = {
+    type: "root",
+    children: [
+      { type: "html", value: "<!-- WORD_PAGE:3 -->" },
+      { type: "paragraph", children: [] },
+      { type: "html", value: "<!-- ODL_PAGE:4 -->" },
+    ],
+  };
+
+  replaceDocumentPageMarkers(tree);
+
+  assert.equal(tree.children[0].type, "documentPageMarker");
+  assert.equal(tree.children[0].data.hProperties.pageNumber, "3");
+  assert.equal(tree.children[0].data.hProperties.markerType, "WORD_PAGE");
+  assert.equal(tree.children[2].data.hProperties.pageNumber, "4");
+  assert.equal(tree.children[2].data.hProperties.markerType, "ODL_PAGE");
+});
+
+test("parser br tags become safe line breaks while unrelated HTML stays escaped", () => {
+  const tree = {
+    type: "root",
+    children: [{
+      type: "table",
+      children: [{
+        type: "tableRow",
+        children: [{
+          type: "tableCell",
+          children: [
+            { type: "text", value: "甲" },
+            { type: "html", value: "<br>" },
+            { type: "html", value: "<br />" },
+            { type: "html", value: "<script>alert(1)</script>" },
+          ],
+        }],
+      }],
+    }],
+  };
+
+  replaceDocumentBreakTags(tree);
+  assert.deepEqual(
+    tree.children[0].children[0].children[0].children.map((node) => node.type),
+    ["text", "break", "break", "html"],
+  );
+
+  const html = renderToStaticMarkup(createElement(
+    ReactMarkdown,
+    { remarkPlugins: [remarkGfm, remarkDocumentBreakTags] },
+    "| |\n|---|\n|甲<br><br>乙<script>alert(1)</script>|",
+  ));
+  assert.equal(html.match(/<br\/>/g)?.length, 2);
+  assert.doesNotMatch(html, /&lt;br/);
+  assert.match(html, /&lt;script&gt;alert\(1\)&lt;\/script&gt;/);
 });
 
 test("ReactMarkdown renders the custom top-level boundary node in a single parse", () => {
