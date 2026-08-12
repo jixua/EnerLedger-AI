@@ -56,6 +56,17 @@ class MarkdownScanner:
     _HTML_TABLE_START_RE = re.compile(r"^\s*<table\b", re.IGNORECASE)
     _HTML_TABLE_END_RE = re.compile(r"</table\s*>", re.IGNORECASE)
     _HTML_TABLE_TAG_RE = re.compile(r"</?table\b[^>]*>", re.IGNORECASE)
+    # Word 自适应表格协议。marker 内的 GFM 或 RAG 文字必须整体作为一个 TABLE
+    # 元素，否则复杂表格会被拆成普通段落/列表并绕过表格质量门禁。
+    _LINKPARSE_TABLE_START_RE = re.compile(
+        r'^\s*<!--\s*LINKPARSE_TABLE_START\s+(?P<attrs>.*?)\s*-->\s*$',
+        re.IGNORECASE,
+    )
+    _LINKPARSE_TABLE_END_RE = re.compile(
+        r'^\s*<!--\s*LINKPARSE_TABLE_END\s+id="(?P<id>[^"]+)"\s*-->\s*$',
+        re.IGNORECASE,
+    )
+    _LINKPARSE_TABLE_ATTR_RE = re.compile(r'([A-Za-z_][\w-]*)="([^"]*)"')
 
     # 新增：公式块识别
     _MATH_BLOCK_START_RE = re.compile(r"^\s*(\$\$|\\\[)(.*?)$")
@@ -126,6 +137,13 @@ class MarkdownScanner:
                 element = self._extract_image(i)
                 elements.append(element)
                 i = element.end_line + 1
+
+            # LinkParse 表格边界必须优先于内部 GFM/list/paragraph 识别。
+            elif self._LINKPARSE_TABLE_START_RE.match(line) and (
+                marked_table := self._extract_linkparse_table(i)
+            ) is not None:
+                elements.append(marked_table)
+                i = marked_table.end_line + 1
 
             # HTML 表格必须先于 Markdown 表格/段落兜底识别。
             elif self._HTML_TABLE_START_RE.match(line) and (
@@ -301,6 +319,7 @@ class MarkdownScanner:
                 or self._HR_RE.match(line)
                 or self._IMAGE_LINE_RE.match(line)
                 or self._HTML_TABLE_START_RE.match(line)
+                or self._LINKPARSE_TABLE_START_RE.match(line)
             ):
                 break
 
@@ -353,6 +372,54 @@ class MarkdownScanner:
                     metadata={"table_format": "html"},
                 )
         # 未闭合标签不应吞掉后续整份文档；交给普通段落逻辑并由内容验证告警。
+        return None
+
+    def _extract_linkparse_table(self, start: int) -> MarkdownElement | None:
+        """提取一对 LINKPARSE_TABLE marker 包围的完整表格块。"""
+
+        match = self._LINKPARSE_TABLE_START_RE.match(self._lines[start])
+        if match is None:
+            return None
+        attrs = {
+            key.lower(): value
+            for key, value in self._LINKPARSE_TABLE_ATTR_RE.findall(match.group("attrs"))
+        }
+        table_id = attrs.get("id", "").strip()
+        if not table_id:
+            return None
+        for index in range(start + 1, len(self._lines)):
+            end_match = self._LINKPARSE_TABLE_END_RE.match(self._lines[index])
+            if end_match is None or end_match.group("id") != table_id:
+                continue
+            reasons = [
+                reason.strip()
+                for reason in attrs.get("reasons", "").split(",")
+                if reason.strip()
+            ]
+            metadata = {
+                "table_id": table_id,
+                "table_format": attrs.get("format", "rag_text"),
+                "table_schema": attrs.get("schema", ""),
+                "complexity_reasons": reasons,
+            }
+            if parent_id := attrs.get("parent_id", "").strip():
+                metadata["parent_table_id"] = parent_id
+                metadata["nested_table"] = True
+            for source, target in (
+                ("parent_row", "parent_row"),
+                ("parent_column", "parent_column"),
+            ):
+                raw_value = attrs.get(source)
+                if raw_value and raw_value.isdigit():
+                    metadata[target] = int(raw_value)
+            return MarkdownElement(
+                type=ElementType.TABLE,
+                content="\n".join(self._lines[start : index + 1]),
+                start_line=start,
+                end_line=index,
+                metadata=metadata,
+            )
+        # 未闭合 marker 交给普通段落，随后由 Word 质量门禁拒绝。
         return None
 
     def _extract_table(self, start: int) -> MarkdownElement | None:

@@ -29,8 +29,11 @@ RUN apt-get update \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
+        libreoffice-draw \
+        libreoffice-writer \
         tzdata \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -rf /var/lib/apt/lists/* \
+    && soffice --version
 
 COPY pyproject.toml README.md ./
 COPY app ./app

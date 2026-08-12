@@ -215,3 +215,31 @@ def test_image_page_map_retains_all_marker_pages_for_reused_markdown_and_html_re
     assert OpenDataLoaderBackend._image_page_map(markdown) == {
         "images/shared.png": (1, 2, 3)
     }
+
+
+def test_slide_like_single_column_tables_are_flattened_without_touching_real_tables() -> None:
+    markdown = (
+        "<!-- ODL_PAGE:1 -->\n\n"
+        "| |\n"
+        "|---|\n"
+        "|封面<br><br>![示意图](images/cover.png)<br><br>讲师|\n\n"
+        "|目录<br><br>1. 范围<br><br>2. 术语|\n"
+        "|---|\n\n"
+        "|真实单列|\n"
+        "|---|\n"
+        "|甲|\n"
+        "|乙|\n\n"
+        "|名称|数量|\n"
+        "|---|---|\n"
+        "|天然气|12|"
+    )
+
+    normalized, count = OpenDataLoaderBackend._normalize_single_column_layout_tables(
+        markdown
+    )
+
+    assert count == 2
+    assert "封面\n\n![示意图](images/cover.png)\n\n讲师" in normalized
+    assert "目录\n\n1. 范围\n\n2. 术语" in normalized
+    assert "|真实单列|\n|---|\n|甲|\n|乙|" in normalized
+    assert "|名称|数量|\n|---|---|\n|天然气|12|" in normalized

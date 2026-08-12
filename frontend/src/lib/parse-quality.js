@@ -307,6 +307,12 @@ export function formatParseQualityWarning(value) {
     OCR_CONFIDENCE_MISSING: "缺少 OCR 置信度",
     OCR_RESULT_PAGE_OUT_OF_RANGE: "OCR 结果页码超出 PDF 范围",
     CONFIDENCE_UNAVAILABLE: "识别服务未返回置信度",
+    WORD_IMAGE_TRANSCODE_FAILED: "特殊格式图片转换失败，其他内容已正常入库",
+    WORD_IMAGE_FORMAT_NOT_VISION_SUPPORTED: "特殊格式图片已保留，但暂不支持视觉识别",
+    WORD_OLE_PREVIEW_MISSING: "部分 Word 内嵌对象没有可用预览，其他内容已正常入库",
+    WORD_CHART_DATA_EXTRACTION_INCOMPLETE: "部分 Word 图表数据未能完整提取，其他内容已正常入库",
+    WORD_DIAGRAM_EXTRACTION_UNSUPPORTED: "部分 Word 关系图暂不能结构化提取，其他内容已正常入库",
+    WORD_UNSUPPORTED_OBJECT: "部分 Word 特殊对象无法结构化解析，其他内容已正常入库",
   };
   const label = labels[code];
   if (label) return page ? `第 ${page} 页：${label}` : label;

@@ -9,12 +9,10 @@ import {
   EyeOff,
   KeyRound,
   LoaderCircle,
-  LockKeyhole,
   Pencil,
   Plus,
   Power,
   Search,
-  SlidersHorizontal,
   Sparkles,
   Trash2,
   X,
@@ -189,22 +187,18 @@ export function ModelsPage() {
   }
 
   return (
-    <div className="page-shell models-page">
-      <header className="page-heading models-heading">
-        <div>
+    <div className="page-shell models-page feature-page">
+      <header className="knowledge-hero">
+        <div className="knowledge-hero__copy">
+          <p className="eyebrow">Model capability registry</p>
           <h1>模型配置</h1>
-          <p>管理文档检索、结果排序和对话生成所需的模型。</p>
+          <p className="knowledge-hero__subtitle">检索与生成模型</p>
         </div>
-        <button className="primary-button" type="button" onClick={openCreateForm}>
+        <button className="primary-button knowledge-hero__action" type="button" onClick={openCreateForm}>
           <Plus size={17} />
           新增模型
         </button>
       </header>
-
-      <div className="notice-strip notice-strip--secure">
-        <LockKeyhole size={17} />
-        <span>API Key 经加密后保存，列表与详情不会返回明文。</span>
-      </div>
 
       {notice ? (
         <div className={`toast-inline toast-inline--${noticeTone}`}>
@@ -239,10 +233,6 @@ export function ModelsPage() {
               placeholder="搜索模型、厂商或协议"
             />
           </label>
-          <div className="registry-summary">
-            <SlidersHorizontal size={15} />
-            <span>当前显示 {filteredModels.length} 个配置</span>
-          </div>
         </div>
 
         {filteredModels.length ? (
@@ -299,10 +289,6 @@ export function ModelsPage() {
           </div>
         )}
 
-        <footer className="registry-roadmap">
-          <CircleAlert size={16} />
-          <span>编辑 API Key 会生成新配置快照；被数据集绑定的模型不允许删除。</span>
-        </footer>
       </section>
 
       {showForm ? (

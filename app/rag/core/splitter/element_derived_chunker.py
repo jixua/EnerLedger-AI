@@ -12,6 +12,7 @@ from app.rag.core.markdown_parser.models import (
 )
 
 from .stage_models import ElementView
+from .table_protocol import extract_linkparse_table_body
 
 if TYPE_CHECKING:
     from app.rag.core.llm.tokenizer import Tokenizer
@@ -394,6 +395,9 @@ class DerivedElementChunkBuilder:
         Returns:
             str: 原始表格文本。
         """
+        table_body = extract_linkparse_table_body(content)
+        if table_body is not None:
+            return table_body
         return content.strip()
 
     @staticmethod
@@ -505,6 +509,10 @@ class DerivedElementChunkBuilder:
         ``text_matrix`` retain the semantic effect of rowspan/colspan, while the
         original cell spans remain available in ``table_structure`` metadata.
         """
+
+        retrieval_text = str(structure.get("retrieval_text") or "").strip()
+        if retrieval_text:
+            return retrieval_text
 
         raw_matrix = structure.get("text_matrix")
         if not isinstance(raw_matrix, (list, tuple)):
@@ -747,7 +755,7 @@ class DerivedElementChunkBuilder:
         )
 
         if inline_in_mixed:
-            mixed_content = element.content
+            mixed_content = raw_table
         else:
             mixed_content = f"[表格引用: {element_id}]\n表格摘要：{summary}"
 

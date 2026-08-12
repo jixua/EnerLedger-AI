@@ -20,6 +20,7 @@ from sqlalchemy import delete, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models import Document
+from app.domain.text import repair_legacy_mojibake
 from app.rag.config import settings
 from app.rag.core.dataset_config.execution_context import (
     DatasetExecutionContextLoader,
@@ -562,7 +563,8 @@ class SimpleDocumentIngestionService:
     ) -> None:
         """记录简化文档终态；调用方仍会收到原异常。"""
 
-        message = f"{type(error).__name__}: {error}"[:1000]
+        raw_message = f"{type(error).__name__}: {error}"
+        message = (repair_legacy_mojibake(raw_message) or raw_message)[:1000]
         document.status = "FAILED"
         document.error_code = str(
             getattr(error, "error_code", type(error).__name__)
@@ -688,11 +690,10 @@ class SimpleDocumentIngestionService:
         if parse_result is None:
             raise DocumentIngestionError("Word 解析器未返回 ParseResult")
 
-        table_report = self._pdf_table_structure_extractor.extract(
-            markdown,
-            merge_continuations=False,
+        table_structures = self._apply_word_structured_tables(
+            parse_result,
+            metadata.get("word_table_previews", []),
         )
-        self._apply_word_structured_tables(parse_result, table_report)
         suppressed_images = self._apply_word_image_retrieval_policy(parse_result)
 
         def integer(name: str) -> int:
@@ -711,10 +712,23 @@ class SimpleDocumentIngestionService:
         source_table_count = integer("source_table_count")
         source_top_level_tables = integer("source_top_level_table_count")
         mammoth_table_count = integer("mammoth_html_table_count")
-        parsed_table_count = sum(
-            element.type is ElementType.TABLE for element in parse_result.elements
+        parsed_tables = [
+            element for element in parse_result.elements if element.type is ElementType.TABLE
+        ]
+        parsed_top_level_table_count = sum(
+            not bool(element.metadata.get("parent_table_id")) for element in parsed_tables
         )
+        parsed_nested_table_count = len(parsed_tables) - parsed_top_level_table_count
         source_image_references = integer("source_image_reference_count")
+        supported_image_references = integer(
+            "source_supported_image_reference_count"
+        )
+        # 兼容尚未提供细分统计的旧解析结果。
+        if "source_supported_image_reference_count" not in metadata:
+            supported_image_references = source_image_references
+        legacy_vml_image_references = integer(
+            "source_legacy_vml_image_reference_count"
+        )
         image_occurrences = integer("image_occurrence_count")
         rendered_images = integer("image_count")
 
@@ -722,45 +736,97 @@ class SimpleDocumentIngestionService:
             str(item)
             for item in metadata.get("warnings", [])
             if str(item).strip()
+            and not str(item).startswith("WORD_IMAGE_TRANSCODED:")
+            and "is unlikely to display in web browsers" not in str(item)
+            and not (
+                str(item).startswith("MAMMOTH:")
+                and any(
+                    token in str(item).casefold()
+                    for token in ("oleobject", "chart", "diagram", "alternatecontent")
+                )
+            )
         ]
         blocking: list[str] = []
-        blocking.extend(
-            warning for warning in warnings if warning.startswith("WORD_IMAGE_TRANSCODE_FAILED:")
-        )
         if text_retention_ratio < 0.97:
             blocking.append(
                 "WORD_TEXT_RETENTION_LOW:"
                 f"expected>={0.97},actual={text_retention_ratio:.4f}"
+            )
+        source_formula_count = integer("source_formula_count")
+        converted_formula_count = integer("converted_formula_count")
+        if source_formula_count != converted_formula_count:
+            blocking.append(
+                "WORD_FORMULA_COUNT_MISMATCH:"
+                f"source={source_formula_count},converted={converted_formula_count}"
             )
         if source_table_count != mammoth_table_count:
             blocking.append(
                 "WORD_TABLE_COUNT_MISMATCH:"
                 f"source={source_table_count},mammoth={mammoth_table_count}"
             )
-        if source_top_level_tables != len(table_report.tables):
+        if integer("table_failure_count"):
+            blocking.append(
+                f"WORD_TABLE_IR_FAILED:count={integer('table_failure_count')}"
+            )
+        if source_table_count != len(table_structures):
             blocking.append(
                 "WORD_STRUCTURED_TABLE_COUNT_MISMATCH:"
-                f"source={source_top_level_tables},structured={len(table_report.tables)}"
+                f"source={source_table_count},structured={len(table_structures)}"
             )
-        if source_top_level_tables != parsed_table_count:
+        if source_top_level_tables != parsed_top_level_table_count:
             blocking.append(
                 "WORD_PARSE_RESULT_TABLE_COUNT_MISMATCH:"
-                f"source={source_top_level_tables},parsed={parsed_table_count}"
+                f"source={source_top_level_tables},parsed={parsed_top_level_table_count}"
             )
-        if source_image_references != image_occurrences or image_occurrences != rendered_images:
+        source_nested_tables = integer("source_nested_table_count")
+        if source_nested_tables != parsed_nested_table_count:
+            blocking.append(
+                "WORD_NESTED_TABLE_COUNT_MISMATCH:"
+                f"source={source_nested_tables},parsed={parsed_nested_table_count}"
+            )
+        if (
+            supported_image_references != image_occurrences
+            or image_occurrences != rendered_images
+        ):
             blocking.append(
                 "WORD_IMAGE_COUNT_MISMATCH:"
-                f"source={source_image_references},hook={image_occurrences},rendered={rendered_images}"
+                f"source={supported_image_references},hook={image_occurrences},rendered={rendered_images}"
             )
-        if source_image_references and not bool(metadata.get("image_assets_persisted")):
+        if supported_image_references and not bool(
+            metadata.get("image_assets_persisted")
+        ):
             blocking.append("WORD_IMAGE_ASSETS_NOT_PERSISTED")
+        if legacy_vml_image_references:
+            warnings.append(
+                "WORD_LEGACY_VML_IMAGES_NOT_RENDERED:"
+                f"count={legacy_vml_image_references}"
+            )
         critical_warnings = [
             str(item)
             for item in metadata.get("critical_warnings", [])
             if str(item).strip()
         ]
+        # OLE、Chart、Diagram 属于可降级的特殊对象：能提取预览图或 OOXML
+        # 数据就用于检索，不能恢复时给出警告，但不让已完整解析的正文/表格失效。
         if critical_warnings:
-            blocking.extend(f"WORD_UNSUPPORTED_OBJECT:{item}" for item in critical_warnings)
+            warnings.extend(f"WORD_UNSUPPORTED_OBJECT:{item}" for item in critical_warnings)
+        source_ole_objects = integer("source_ole_object_count")
+        ole_previews = integer("source_ole_preview_count")
+        if ole_previews < source_ole_objects:
+            warnings.append(
+                "WORD_OLE_PREVIEW_MISSING:"
+                f"source={source_ole_objects},preview={ole_previews}"
+            )
+        source_charts = integer("source_chart_count")
+        extracted_charts = integer("extracted_chart_count")
+        if extracted_charts < source_charts:
+            warnings.append(
+                "WORD_CHART_DATA_EXTRACTION_INCOMPLETE:"
+                f"source={source_charts},extracted={extracted_charts}"
+            )
+        source_diagrams = integer("source_diagram_count")
+        if source_diagrams:
+            warnings.append(f"WORD_DIAGRAM_EXTRACTION_UNSUPPORTED:count={source_diagrams}")
 
         status = "PASSED" if not blocking else "CONTENT_VALIDATION_FAILED"
         report = {
@@ -772,11 +838,23 @@ class SimpleDocumentIngestionService:
             "text_coverage_ratio": round(text_retention_ratio, 6),
             "source_text_chars": source_text_chars,
             "output_text_chars": mammoth_text_chars,
+            "page_count": integer("page_count"),
+            "saved_page_break_count": integer("saved_page_break_count"),
+            "word_page_marker_count": integer("word_page_markers"),
+            "source_formula_count": source_formula_count,
+            "converted_formula_count": converted_formula_count,
+            "formula_conversion_failure_count": integer(
+                "formula_conversion_failure_count"
+            ),
             "source_table_count": source_table_count,
             "source_top_level_table_count": source_top_level_tables,
-            "source_nested_table_count": integer("source_nested_table_count"),
-            "structured_table_count": len(table_report.tables),
+            "source_nested_table_count": source_nested_tables,
+            "structured_table_count": parsed_top_level_table_count,
+            "structured_nested_table_count": parsed_nested_table_count,
+            "structured_total_table_count": len(table_structures),
             "source_image_reference_count": source_image_references,
+            "source_supported_image_reference_count": supported_image_references,
+            "source_legacy_vml_image_reference_count": legacy_vml_image_references,
             "image_occurrence_count": image_occurrences,
             "image_asset_count": integer("image_asset_count"),
             "image_upload_count": integer("image_upload_count"),
@@ -784,10 +862,18 @@ class SimpleDocumentIngestionService:
                 "unsupported_vision_image_count"
             ),
             "suppressed_unexplained_image_count": suppressed_images,
+            "source_ole_object_count": integer("source_ole_object_count"),
+            "source_ole_preview_count": integer("source_ole_preview_count"),
+            "source_chart_count": integer("source_chart_count"),
+            "extracted_chart_count": integer("extracted_chart_count"),
+            "source_diagram_count": integer("source_diagram_count"),
             "mammoth_message_count": integer("mammoth_message_count"),
             "warnings": list(dict.fromkeys([*warnings, *blocking])),
             "blocking_issues": blocking,
-            "table_structure": table_report.to_dict(),
+            "table_structure": {
+                "schema_version": 2,
+                "tables": list(table_structures.values()),
+            },
             "image_assets": metadata.get("word_image_assets", []),
         }
         if blocking:
@@ -802,15 +888,123 @@ class SimpleDocumentIngestionService:
         return status, report
 
     @staticmethod
-    def _apply_word_structured_tables(parse_result: Any, table_report: Any) -> None:
-        tables = iter(table_report.tables)
+    def _apply_word_structured_tables(
+        parse_result: Any,
+        raw_previews: Any,
+    ) -> dict[str, dict[str, Any]]:
+        """按稳定 table_id 把 Word IR 绑定到最终 ParseResult。"""
+
+        previews = {
+            str(item.get("id")): item
+            for item in raw_previews
+            if isinstance(item, dict) and str(item.get("id") or "").strip()
+        } if isinstance(raw_previews, list) else {}
+        structures: dict[str, dict[str, Any]] = {}
         for element in parse_result.elements:
             if element.type is not ElementType.TABLE:
                 continue
-            table = next(tables, None)
-            if table is None:
-                break
-            element.metadata["table_structure"] = table.to_dict()
+            table_id = str(element.metadata.get("table_id") or "").strip()
+            preview = previews.get(table_id)
+            if preview is None:
+                continue
+            structure = SimpleDocumentIngestionService._word_preview_to_structure(
+                preview,
+                element,
+            )
+            element.metadata["table_structure"] = structure
+            structures[table_id] = structure
+        return structures
+
+    @staticmethod
+    def _word_preview_to_structure(
+        preview: dict[str, Any],
+        element: Any,
+    ) -> dict[str, Any]:
+        """把 LinkParse preview IR 规范化为 chunker 使用的 table_structure。"""
+
+        def positive(value: Any, default: int = 1) -> int:
+            if isinstance(value, bool):
+                return default
+            try:
+                parsed = int(value)
+            except (TypeError, ValueError):
+                return default
+            return parsed if parsed > 0 else default
+
+        row_count = positive(preview.get("row_count"))
+        column_count = positive(preview.get("column_count"))
+        matrix = [["" for _ in range(column_count)] for _ in range(row_count)]
+        cells: list[dict[str, Any]] = []
+        for index, raw_cell in enumerate(preview.get("cells", []), start=1):
+            if not isinstance(raw_cell, dict):
+                continue
+            try:
+                row = max(0, int(raw_cell.get("row") or 0))
+                column = max(0, int(raw_cell.get("column") or 0))
+            except (TypeError, ValueError):
+                continue
+            row_span = positive(raw_cell.get("row_span"))
+            column_span = positive(raw_cell.get("column_span"))
+            text = str(raw_cell.get("markdown") or "").strip()
+            cell_id = f"{preview.get('id')}-cell-{index:04d}"
+            cells.append(
+                {
+                    "cell_id": cell_id,
+                    "row_index": row,
+                    "column_index": column,
+                    "text": text,
+                    "row_span": row_span,
+                    "column_span": column_span,
+                    "is_header": bool(raw_cell.get("is_header")),
+                    "source_page": element.metadata.get("page_number"),
+                }
+            )
+            for row_offset in range(row_span):
+                for column_offset in range(column_span):
+                    target_row = row + row_offset
+                    target_column = column + column_offset
+                    if target_row < row_count and target_column < column_count:
+                        matrix[target_row][target_column] = text
+
+        try:
+            header_row_count = max(0, int(preview.get("header_row_count") or 0))
+        except (TypeError, ValueError):
+            header_row_count = 0
+        header_hierarchy: list[list[str]] = []
+        for column in range(column_count):
+            levels: list[str] = []
+            for row in range(min(header_row_count, row_count)):
+                value = matrix[row][column].strip()
+                if value and (not levels or levels[-1] != value):
+                    levels.append(value)
+            header_hierarchy.append(levels)
+
+        lines = element.content.splitlines()
+        body = "\n".join(lines[1:-1]).strip() if len(lines) >= 2 else element.content
+        page_number = element.metadata.get("page_number")
+        source_pages = [page_number] if isinstance(page_number, int) and page_number > 0 else []
+        return {
+            "table_id": str(preview.get("id") or element.metadata.get("table_id") or ""),
+            "title": str(preview.get("caption") or "").strip() or None,
+            "source_format": str(element.metadata.get("table_format") or "rag_text").upper(),
+            "source_pages": source_pages,
+            "source_page_range": {
+                "start": source_pages[0] if source_pages else None,
+                "end": source_pages[-1] if source_pages else None,
+            },
+            "row_count": row_count,
+            "column_count": column_count,
+            "header_row_count": header_row_count,
+            "header_hierarchy": header_hierarchy,
+            "cells": cells,
+            "text_matrix": matrix,
+            "retrieval_text": body,
+            "complexity_reasons": list(element.metadata.get("complexity_reasons") or []),
+            "parent_table_id": element.metadata.get("parent_table_id"),
+            "preview": preview,
+            "part_table_ids": [str(preview.get("id") or "")],
+            "warnings": [],
+        }
 
     @staticmethod
     def _apply_word_image_retrieval_policy(parse_result: Any) -> int:
