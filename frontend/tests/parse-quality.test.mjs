@@ -168,6 +168,10 @@ test("fallback and special-validation failures override a misleading passed stat
 
 test("quality warnings are translated when known and preserved when unknown", () => {
   assert.equal(formatParseQualityWarning("PAGE_7_OCR_LOW_CONFIDENCE"), "第 7 页：OCR 置信度偏低");
+  assert.equal(
+    formatParseQualityWarning("WORD_OLE_PREVIEW_MISSING:source=2,preview=1"),
+    "部分 Word 内嵌对象没有可用预览，其他内容已正常入库",
+  );
   assert.equal(formatParseQualityWarning("CUSTOM_GATE_WARNING"), "CUSTOM_GATE_WARNING");
 });
 
@@ -186,9 +190,10 @@ test("dataset create and settings send the optional VISION binding with reparse 
   assert.match(datasetDetailSource, /现有文档将生成新版本、重新解析并重建检索索引/);
 });
 
-test("quality diagnostics stay hidden and never block READY documents", () => {
+test("quality diagnostics never block READY documents but Word degradation stays visible", () => {
   assert.doesNotMatch(datasetDetailSource, /ParseQualityInline/);
-  assert.doesNotMatch(documentDetailSource, /ParseQuality/);
+  assert.match(documentDetailSource, /文档已入库，但有.*项解析提醒/);
+  assert.match(documentDetailSource, /formatParseQualityWarning/);
   assert.doesNotMatch(documentDetailSource, /当前正文未通过质量门禁/);
   assert.doesNotMatch(tasksSource, /ParseQualityInline/);
   assert.match(datasetListSource, /items\.filter\(isDocumentRetrievalReady\)/);

@@ -62,6 +62,19 @@ _OOXML_NAMESPACES = {
     "dgm": "http://schemas.openxmlformats.org/drawingml/2006/diagram",
     "m": "http://schemas.openxmlformats.org/officeDocument/2006/math",
 }
+_CHART_CONTAINER_TAGS = (
+    "areaChart",
+    "barChart",
+    "bubbleChart",
+    "doughnutChart",
+    "lineChart",
+    "ofPieChart",
+    "pieChart",
+    "radarChart",
+    "scatterChart",
+    "stockChart",
+    "surfaceChart",
+)
 
 
 @dataclass(slots=True)
@@ -175,6 +188,9 @@ class WordParser(BaseParser):
         renderer = self._render_html(result.value or "")
         self._warnings.extend(f"WORD_TABLE:{warning}" for warning in renderer.warnings)
         markdown = self._last_markdown
+        chart_markdown = str(package.get("word_chart_markdown") or "").strip()
+        if chart_markdown:
+            markdown = f"{markdown.rstrip()}\n\n{chart_markdown}\n"
         mammoth_soup = BeautifulSoup(result.value or "", "lxml")
         mammoth_text = mammoth_soup.get_text().replace(WORD_PAGE_BREAK_SENTINEL, "")
         mammoth_text_chars = len("".join(mammoth_text.split()))
@@ -185,7 +201,7 @@ class WordParser(BaseParser):
                 f"source={saved_page_break_count},output={detected_page_break_count}"
             )
 
-        critical_warnings = [
+        special_object_warnings = [
             warning
             for warning in mammoth_warnings
             if any(
@@ -243,7 +259,10 @@ class WordParser(BaseParser):
                 "mammoth_messages": mammoth_warnings,
                 "mammoth_text_chars": mammoth_text_chars,
                 "mammoth_html_table_count": len(mammoth_soup.find_all("table")),
-                "critical_warnings": critical_warnings,
+                # Mammoth 不支持 OLE/Chart 并不等于正文解析失败。保留精确诊断，
+                # 由质量报告作为非阻断警告展示。
+                "critical_warnings": [],
+                "special_object_warnings": special_object_warnings,
                 "warnings": list(dict.fromkeys(self._warnings)),
                 "_image_bytes_by_url": {
                     url: self._image_bytes_by_url[url] for url in output_unique_urls
@@ -303,6 +322,7 @@ class WordParser(BaseParser):
                 ):
                     raise ParseBaseException("Word 解析失败：不是标准 DOCX 主文档")
                 document_xml = archive.read("word/document.xml")
+                chart_summaries = self._extract_chart_summaries(archive, names)
                 math_xml_parts = [
                     archive.read(name)
                     for name in (
@@ -370,11 +390,131 @@ class WordParser(BaseParser):
             "source_text_chars": len("".join(source_text.split())),
             "paragraph_count": len(xpath(".//w:body//w:p[not(ancestor::w:tbl)]")),
             "source_ole_object_count": len(xpath(".//o:OLEObject")),
+            "source_ole_preview_count": len(
+                xpath(".//w:object[.//o:OLEObject and .//v:imagedata]")
+            ),
             "source_chart_count": len(xpath(".//c:chart")),
+            "extracted_chart_count": len(chart_summaries),
+            "word_chart_markdown": self._render_chart_markdown(chart_summaries),
             "source_diagram_count": len(xpath(".//dgm:relIds")),
             "source_textbox_count": len(xpath(".//w:txbxContent")),
             "source_formula_count": source_formula_count,
         }
+
+    @staticmethod
+    def _extract_chart_summaries(
+        archive: zipfile.ZipFile,
+        names: set[str],
+    ) -> list[dict[str, object]]:
+        """直接读取 OOXML Chart 缓存，避免依赖 Word/Excel 或 PDF 渲染。"""
+
+        summaries: list[dict[str, object]] = []
+        chart_names = sorted(
+            name
+            for name in names
+            if name.startswith("word/charts/chart") and name.endswith(".xml")
+        )
+        for chart_index, name in enumerate(chart_names, start=1):
+            try:
+                content = archive.read(name)
+                SafeET.fromstring(content)
+                root = etree.fromstring(content)
+            except (KeyError, etree.XMLSyntaxError, SafeET.ParseError, DefusedXmlException):
+                continue
+
+            chart_type = "chart"
+            for candidate in _CHART_CONTAINER_TAGS:
+                if root.xpath(f".//c:{candidate}", namespaces=_OOXML_NAMESPACES):
+                    chart_type = candidate
+                    break
+            title = "".join(
+                str(value)
+                for value in root.xpath(
+                    ".//c:chart/c:title//a:t/text()",
+                    namespaces=_OOXML_NAMESPACES,
+                )
+            ).strip()
+            series: list[dict[str, object]] = []
+            for series_index, node in enumerate(
+                root.xpath(".//c:chart//c:ser", namespaces=_OOXML_NAMESPACES),
+                start=1,
+            ):
+                labels = node.xpath(
+                    ".//c:tx//c:v/text() | .//c:tx//a:t/text()",
+                    namespaces=_OOXML_NAMESPACES,
+                )
+                series_name = str(labels[0]).strip() if labels else f"系列{series_index}"
+                category_nodes = node.xpath(
+                    "./c:cat | ./c:xVal",
+                    namespaces=_OOXML_NAMESPACES,
+                )
+                value_nodes = node.xpath(
+                    "./c:val | ./c:yVal | ./c:bubbleSize",
+                    namespaces=_OOXML_NAMESPACES,
+                )
+                categories = WordParser._chart_cached_points(category_nodes)
+                values = WordParser._chart_cached_points(value_nodes)
+                point_indexes = sorted(set(categories) | set(values))
+                points = [
+                    {
+                        "category": categories.get(index, str(index + 1)),
+                        "value": values.get(index, ""),
+                    }
+                    for index in point_indexes
+                    if categories.get(index, "") or values.get(index, "")
+                ]
+                series.append({"name": series_name, "points": points})
+            if series:
+                summaries.append(
+                    {
+                        "id": f"chart-{chart_index:03d}",
+                        "type": chart_type,
+                        "title": title,
+                        "series": series,
+                    }
+                )
+        return summaries
+
+    @staticmethod
+    def _chart_cached_points(nodes: list[Any]) -> dict[int, str]:
+        points: dict[int, str] = {}
+        for node in nodes:
+            for point in node.xpath(".//c:pt", namespaces=_OOXML_NAMESPACES):
+                try:
+                    index = int(point.get("idx", len(points)))
+                except (TypeError, ValueError):
+                    index = len(points)
+                values = point.xpath("./c:v/text()", namespaces=_OOXML_NAMESPACES)
+                if values:
+                    points[index] = str(values[0]).strip()
+        return points
+
+    @staticmethod
+    def _render_chart_markdown(charts: list[dict[str, object]]) -> str:
+        if not charts:
+            return ""
+        lines = ["## Word 图表数据"]
+        for chart in charts:
+            title = str(chart.get("title") or chart.get("id") or "图表")
+            lines.extend(
+                [
+                    "",
+                    f"### {title}",
+                    f"图表类型：{chart.get('type') or 'chart'}",
+                    "数据系列：",
+                ]
+            )
+            for series in chart.get("series", []):
+                if not isinstance(series, dict):
+                    continue
+                lines.append(f"- 系列：{series.get('name') or '未命名'}")
+                for point in series.get("points", []):
+                    if isinstance(point, dict):
+                        lines.append(
+                            "  - "
+                            f"{point.get('category') or '未分类'}：{point.get('value') or '空值'}"
+                        )
+        return "\n".join(lines)
 
     def _image_hook(self, image) -> dict[str, str]:
         with image.open() as image_stream:

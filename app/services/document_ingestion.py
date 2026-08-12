@@ -725,11 +725,17 @@ class SimpleDocumentIngestionService:
             str(item)
             for item in metadata.get("warnings", [])
             if str(item).strip()
+            and not str(item).startswith("WORD_IMAGE_TRANSCODED:")
+            and "is unlikely to display in web browsers" not in str(item)
+            and not (
+                str(item).startswith("MAMMOTH:")
+                and any(
+                    token in str(item).casefold()
+                    for token in ("oleobject", "chart", "diagram", "alternatecontent")
+                )
+            )
         ]
         blocking: list[str] = []
-        blocking.extend(
-            warning for warning in warnings if warning.startswith("WORD_IMAGE_TRANSCODE_FAILED:")
-        )
         if text_retention_ratio < 0.97:
             blocking.append(
                 "WORD_TEXT_RETENTION_LOW:"
@@ -779,16 +785,27 @@ class SimpleDocumentIngestionService:
             for item in metadata.get("critical_warnings", [])
             if str(item).strip()
         ]
+        # OLE、Chart、Diagram 属于可降级的特殊对象：能提取预览图或 OOXML
+        # 数据就用于检索，不能恢复时给出警告，但不让已完整解析的正文/表格失效。
         if critical_warnings:
-            blocking.extend(f"WORD_UNSUPPORTED_OBJECT:{item}" for item in critical_warnings)
-        for field_name, label in (
-            ("source_ole_object_count", "OLE_OBJECT"),
-            ("source_chart_count", "CHART"),
-            ("source_diagram_count", "DIAGRAM"),
-        ):
-            count = integer(field_name)
-            if count:
-                blocking.append(f"WORD_UNSUPPORTED_SOURCE_OBJECT:{label}:count={count}")
+            warnings.extend(f"WORD_UNSUPPORTED_OBJECT:{item}" for item in critical_warnings)
+        source_ole_objects = integer("source_ole_object_count")
+        ole_previews = integer("source_ole_preview_count")
+        if ole_previews < source_ole_objects:
+            warnings.append(
+                "WORD_OLE_PREVIEW_MISSING:"
+                f"source={source_ole_objects},preview={ole_previews}"
+            )
+        source_charts = integer("source_chart_count")
+        extracted_charts = integer("extracted_chart_count")
+        if extracted_charts < source_charts:
+            warnings.append(
+                "WORD_CHART_DATA_EXTRACTION_INCOMPLETE:"
+                f"source={source_charts},extracted={extracted_charts}"
+            )
+        source_diagrams = integer("source_diagram_count")
+        if source_diagrams:
+            warnings.append(f"WORD_DIAGRAM_EXTRACTION_UNSUPPORTED:count={source_diagrams}")
 
         status = "PASSED" if not blocking else "CONTENT_VALIDATION_FAILED"
         report = {
@@ -822,6 +839,11 @@ class SimpleDocumentIngestionService:
                 "unsupported_vision_image_count"
             ),
             "suppressed_unexplained_image_count": suppressed_images,
+            "source_ole_object_count": integer("source_ole_object_count"),
+            "source_ole_preview_count": integer("source_ole_preview_count"),
+            "source_chart_count": integer("source_chart_count"),
+            "extracted_chart_count": integer("extracted_chart_count"),
+            "source_diagram_count": integer("source_diagram_count"),
             "mammoth_message_count": integer("mammoth_message_count"),
             "warnings": list(dict.fromkeys([*warnings, *blocking])),
             "blocking_issues": blocking,

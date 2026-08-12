@@ -153,6 +153,76 @@ def test_word_quality_rejects_unpersisted_images(tmp_path) -> None:
     assert "WORD_IMAGE_ASSETS_NOT_PERSISTED" in error.value.quality_report["blocking_issues"]
 
 
+def test_word_quality_warns_but_does_not_block_unsupported_special_objects(
+    tmp_path,
+) -> None:
+    document = docx.Document()
+    document.add_paragraph("主体文本完整")
+    source = tmp_path / "special-objects.docx"
+    document.save(source)
+    parser = WordParser()
+    markdown = parser.parse(source)
+    metadata = parser.extract_metadata()
+    metadata.update(
+        {
+            "source_ole_object_count": 2,
+            "source_ole_preview_count": 1,
+            "source_chart_count": 1,
+            "extracted_chart_count": 0,
+            "special_object_warnings": ["An OLEObject was ignored"],
+            "warnings": ["WORD_IMAGE_TRANSCODE_FAILED:image/x-wmf"],
+        }
+    )
+    parse_output = {
+        "markdown": markdown,
+        "parse_result": MarkdownParser().parse(markdown, source_file=source.name),
+        "metadata": metadata,
+    }
+
+    status, report = _quality_service()._process_word_quality(
+        identity=SimpleNamespace(filename=source.name),
+        parse_output=parse_output,
+        markdown=markdown,
+    )
+
+    assert status == "PASSED"
+    assert report["blocking_issues"] == []
+    assert "WORD_IMAGE_TRANSCODE_FAILED:image/x-wmf" in report["warnings"]
+    assert "WORD_OLE_PREVIEW_MISSING:source=2,preview=1" in report["warnings"]
+    assert (
+        "WORD_CHART_DATA_EXTRACTION_INCOMPLETE:source=1,extracted=0"
+        in report["warnings"]
+    )
+
+
+def test_word_chart_cache_is_converted_to_retrieval_markdown() -> None:
+    chart_xml = """<?xml version="1.0" encoding="UTF-8"?>
+<c:chartSpace xmlns:c="http://schemas.openxmlformats.org/drawingml/2006/chart"
+ xmlns:a="http://schemas.openxmlformats.org/drawingml/2006/main">
+ <c:chart><c:plotArea><c:lineChart><c:ser>
+  <c:tx><c:strRef><c:strCache><c:pt idx="0"><c:v>排放量</c:v></c:pt></c:strCache></c:strRef></c:tx>
+  <c:cat><c:strRef><c:strCache>
+   <c:pt idx="0"><c:v>2024</c:v></c:pt><c:pt idx="1"><c:v>2025</c:v></c:pt>
+  </c:strCache></c:strRef></c:cat>
+  <c:val><c:numRef><c:numCache>
+   <c:pt idx="0"><c:v>10</c:v></c:pt><c:pt idx="1"><c:v>8</c:v></c:pt>
+  </c:numCache></c:numRef></c:val>
+ </c:ser></c:lineChart></c:plotArea></c:chart>
+</c:chartSpace>""".encode()
+    stream = BytesIO()
+    with zipfile.ZipFile(stream, "w") as archive:
+        archive.writestr("word/charts/chart1.xml", chart_xml)
+    with zipfile.ZipFile(BytesIO(stream.getvalue())) as archive:
+        charts = WordParser._extract_chart_summaries(archive, set(archive.namelist()))
+
+    markdown = WordParser._render_chart_markdown(charts)
+
+    assert charts[0]["type"] == "lineChart"
+    assert "系列：排放量" in markdown
+    assert "2024：10" in markdown
+    assert "2025：8" in markdown
+
+
 def test_word_parser_converts_formula_and_propagates_saved_pages(tmp_path) -> None:
     document = docx.Document()
     formula = document.add_paragraph()

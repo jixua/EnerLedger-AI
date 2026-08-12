@@ -29,6 +29,7 @@ RUN apt-get update \
         libgl1 \
         libglib2.0-0 \
         libgomp1 \
+        libreoffice-draw \
         libreoffice-writer \
         tzdata \
     && rm -rf /var/lib/apt/lists/* \

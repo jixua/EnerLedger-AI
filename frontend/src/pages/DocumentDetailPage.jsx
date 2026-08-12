@@ -24,6 +24,7 @@ import {
   createDocumentBoundaryPlugin,
   normalizeDocumentBoundaries,
 } from "../lib/document-reader";
+import { formatParseQualityWarning, normalizeParseQuality } from "../lib/parse-quality";
 import { useApp } from "../state/AppContext";
 
 const CHUNK_TYPE_LABELS = {
@@ -367,6 +368,7 @@ export function DocumentDetailPage() {
   const sourceChunkCount = preview
     ? Math.max(Number.isFinite(rawSourceChunkCount) ? rawSourceChunkCount : 0, readerBoundaries.length)
     : null;
+  const parseQuality = normalizeParseQuality(document);
 
   return (
     <div className="page page--document-detail">
@@ -396,6 +398,20 @@ export function DocumentDetailPage() {
       </section>
 
       {documentError ? <div className="notice notice--error" role="alert"><AlertCircle size={16} /><p>{documentError}</p><button type="button" onClick={() => setDocumentError("")} aria-label="关闭错误">×</button></div> : null}
+
+      {status === "READY" && parseQuality.warnings.length ? (
+        <div className="notice notice--warning" role="status">
+          <AlertCircle size={16} />
+          <div>
+            <strong>文档已入库，但有 {parseQuality.warnings.length} 项解析提醒</strong>
+            <ul>
+              {parseQuality.warnings.map((warning) => (
+                <li key={warning}>{formatParseQualityWarning(warning)}</li>
+              ))}
+            </ul>
+          </div>
+        </div>
+      ) : null}
 
       {status !== "READY" ? (
         <section className={`panel document-processing-state document-processing-state--${status.toLowerCase()}`}>
