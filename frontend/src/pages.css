@@ -1077,6 +1077,9 @@
 .document-structured-table__cell-line + .document-structured-table__cell-line { margin-top: 6px; }
 .document-reader-markdown .katex-display { max-width: 100%; margin: 1.25em 0; padding: 10px 0; overflow-x: auto; overflow-y: hidden; }
 .document-reader-markdown .katex { overflow-wrap: normal; font-size: 1.05em; }
+.document-page-marker { display: flex; align-items: center; gap: 12px; margin: 1.8em 0 1.25em; color: var(--muted); }
+.document-page-marker__line { height: 1px; flex: 1; background: color-mix(in srgb, var(--hairline) 82%, var(--action)); }
+.document-page-marker__label { display: inline-flex; align-items: center; gap: 6px; padding: 4px 10px; border: 1px solid var(--hairline); border-radius: 999px; background: var(--surface-soft); color: var(--body); font-size: 12px; font-weight: 650; line-height: 1; white-space: nowrap; }
 
 .document-chunk-boundary { width: 100%; display: grid; grid-template-columns: minmax(28px, 1fr) minmax(0, auto) minmax(28px, 1fr); align-items: center; gap: 10px; margin: 34px 0 30px; scroll-margin-top: 18px; }
 .document-chunk-boundary--start { margin: 0 0 28px; }

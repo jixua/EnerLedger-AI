@@ -38,7 +38,7 @@ test("document reader renders one continuous markdown flow with explicit chunk s
   assert.match(pageSource, /normalizeDocumentBoundaries\(preview\?\.boundaries \|\| \[\]\)/);
   assert.match(pageSource, /createDocumentBoundaryPlugin\(readerBoundaries, preview\?\.boundary_precision\)/);
   assert.equal(pageSource.match(/<ReactMarkdown/g)?.length, 1);
-  assert.match(pageSource, /remarkPlugins=\{\[remarkGfm, remarkMath, structuredTablePlugin, boundaryPlugin, remarkDocumentHtmlTables\]\}/);
+  assert.match(pageSource, /remarkPlugins=\{\[remarkGfm, remarkMath, remarkDocumentPageMarkers, structuredTablePlugin, boundaryPlugin, remarkDocumentHtmlTables\]\}/);
   assert.match(pageSource, /rehypePlugins=\{\[rehypeKatex\]\}/);
   assert.match(pageSource, /\{renderedPreviewContent\}/);
   assert.match(pageSource, /"document-chunk-boundary"/);
@@ -48,6 +48,9 @@ test("document reader renders one continuous markdown flow with explicit chunk s
   assert.match(pageSource, /"隐藏分片线"/);
   assert.match(pageStyles, /\.document-reader__paper/);
   assert.match(pageStyles, /\.document-chunk-boundary/);
+  assert.match(pageSource, /"document-page-marker"/);
+  assert.match(pageSource, /第 \{pageNumber\} 页/);
+  assert.match(pageStyles, /\.document-page-marker__label/);
 });
 
 test("document reader preserves merged Word tables through a restricted renderer", () => {

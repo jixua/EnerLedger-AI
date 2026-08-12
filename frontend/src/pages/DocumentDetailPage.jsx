@@ -30,6 +30,7 @@ import { DocumentPreviewImage } from "../components/DocumentPreviewImage";
 import {
   createDocumentBoundaryPlugin,
   normalizeDocumentBoundaries,
+  remarkDocumentPageMarkers,
 } from "../lib/document-reader";
 import { normalizeDocumentMath } from "../lib/document-math";
 import { formatParseQualityWarning, normalizeParseQuality } from "../lib/parse-quality";
@@ -267,6 +268,23 @@ export function DocumentDetailPage() {
         const tableId = String(node?.properties?.tableId ?? node?.properties?.tableid ?? "");
         return <DocumentStructuredTable structure={tableStructureMap.get(tableId)} />;
       },
+      "document-page-marker": ({ node }) => {
+        const pageNumber = String(node?.properties?.pageNumber ?? node?.properties?.pagenumber ?? "");
+        const markerType = String(node?.properties?.markerType ?? node?.properties?.markertype ?? "");
+        return (
+          <div
+            id={`document-page-${pageNumber}`}
+            className="document-page-marker"
+            role="separator"
+            aria-label={`第 ${pageNumber} 页`}
+            title={markerType === "WORD_PAGE" ? "Word 原始页码" : "PDF 原始页码"}
+          >
+            <span className="document-page-marker__line" aria-hidden="true" />
+            <span className="document-page-marker__label"><FileText size={13} />第 {pageNumber} 页</span>
+            <span className="document-page-marker__line" aria-hidden="true" />
+          </div>
+        );
+      },
       "document-chunk-boundary": ({ node }) => {
         const rawIndexes = node?.properties?.boundaryIndexes ?? node?.properties?.boundaryindexes ?? "";
         const entries = String(rawIndexes)
@@ -489,7 +507,7 @@ export function DocumentDetailPage() {
               <article className="document-reader__paper" aria-label={`${document.filename} 的解析后正文`}>
                 <div className="document-reader-markdown">
                   <ReactMarkdown
-                    remarkPlugins={[remarkGfm, remarkMath, structuredTablePlugin, boundaryPlugin, remarkDocumentHtmlTables]}
+                    remarkPlugins={[remarkGfm, remarkMath, remarkDocumentPageMarkers, structuredTablePlugin, boundaryPlugin, remarkDocumentHtmlTables]}
                     rehypePlugins={[rehypeKatex]}
                     components={markdownComponents}
                   >

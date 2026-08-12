@@ -8,6 +8,7 @@ import {
   createDocumentBoundaryPlugin,
   insertDocumentBoundaryNodes,
   normalizeDocumentBoundaries,
+  replaceDocumentPageMarkers,
 } from "../src/lib/document-reader.js";
 
 function documentTree() {
@@ -102,6 +103,7 @@ test("parser-only page markers stay out of the continuous reading document", () 
     type: "root",
     children: [
       { type: "html", value: "<!-- ODL_PAGE:1 -->", position: { start: { line: 1 }, end: { line: 1 } } },
+      { type: "html", value: "<!-- WORD_PAGE:2 -->", position: { start: { line: 2 }, end: { line: 2 } } },
       { type: "html", value: "<!-- PAGE_FALLBACK:VISION -->", position: { start: { line: 2 }, end: { line: 2 } } },
       { type: "html", value: "<!-- PAGE_FALLBACK:OCR -->", position: { start: { line: 3 }, end: { line: 3 } } },
       { type: "heading", depth: 1, children: [], position: { start: { line: 4 }, end: { line: 4 } } },
@@ -113,11 +115,31 @@ test("parser-only page markers stay out of the continuous reading document", () 
   insertDocumentBoundaryNodes(tree, normalized, "line");
 
   assert.equal(tree.children.some((node) => node.value === "<!-- ODL_PAGE:1 -->"), false);
+  assert.equal(tree.children.some((node) => node.value === "<!-- WORD_PAGE:2 -->"), false);
   assert.equal(tree.children.some((node) => node.value === "<!-- PAGE_FALLBACK:VISION -->"), false);
   assert.equal(tree.children.some((node) => node.value === "<!-- PAGE_FALLBACK:OCR -->"), false);
   assert.equal(tree.children.some((node) => node.value === "<!-- keep this author comment -->"), true);
   assert.equal(tree.children[0].type, "documentChunkBoundary");
   assert.equal(tree.children[1].type, "heading");
+});
+
+test("Word and PDF page comments become visible reader page markers", () => {
+  const tree = {
+    type: "root",
+    children: [
+      { type: "html", value: "<!-- WORD_PAGE:3 -->" },
+      { type: "paragraph", children: [] },
+      { type: "html", value: "<!-- ODL_PAGE:4 -->" },
+    ],
+  };
+
+  replaceDocumentPageMarkers(tree);
+
+  assert.equal(tree.children[0].type, "documentPageMarker");
+  assert.equal(tree.children[0].data.hProperties.pageNumber, "3");
+  assert.equal(tree.children[0].data.hProperties.markerType, "WORD_PAGE");
+  assert.equal(tree.children[2].data.hProperties.pageNumber, "4");
+  assert.equal(tree.children[2].data.hProperties.markerType, "ODL_PAGE");
 });
 
 test("ReactMarkdown renders the custom top-level boundary node in a single parse", () => {

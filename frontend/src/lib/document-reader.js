@@ -112,7 +112,45 @@ function isParserPageMarker(node) {
   if (node?.type !== "html") return false;
   const value = String(node.value ?? "");
   return /^\s*<!--\s*ODL_PAGE\s*:\s*\d+\s*-->\s*$/i.test(value)
+    || /^\s*<!--\s*WORD_PAGE\s*:\s*\d+\s*-->\s*$/i.test(value)
     || /^\s*<!--\s*PAGE_FALLBACK\s*:\s*(?:VISION|OCR)\s*-->\s*$/i.test(value);
+}
+
+const DOCUMENT_PAGE_MARKER = /^\s*<!--\s*(ODL_PAGE|WORD_PAGE)\s*:\s*(\d+)\s*-->\s*$/i;
+
+/** Convert parser page comments into explicit reader page-divider nodes. */
+export function replaceDocumentPageMarkers(tree) {
+  const visit = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node.children)) {
+      node.children = node.children.map((child) => {
+        const match = child?.type === "html"
+          ? String(child.value || "").match(DOCUMENT_PAGE_MARKER)
+          : null;
+        if (!match) {
+          visit(child);
+          return child;
+        }
+        return {
+          type: "documentPageMarker",
+          position: child.position,
+          data: {
+            hName: "document-page-marker",
+            hProperties: {
+              pageNumber: match[2],
+              markerType: match[1].toUpperCase(),
+            },
+          },
+        };
+      });
+    }
+  };
+  visit(tree);
+  return tree;
+}
+
+export function remarkDocumentPageMarkers() {
+  return (tree) => replaceDocumentPageMarkers(tree);
 }
 
 /**
