@@ -279,9 +279,7 @@ export function DocumentDetailPage() {
             aria-label={`第 ${pageNumber} 页`}
             title={markerType === "WORD_PAGE" ? "Word 原始页码" : "PDF 原始页码"}
           >
-            <span className="document-page-marker__line" aria-hidden="true" />
-            <span className="document-page-marker__label"><FileText size={13} />第 {pageNumber} 页</span>
-            <span className="document-page-marker__line" aria-hidden="true" />
+            <span className="document-page-marker__label">第 {pageNumber} 页</span>
           </div>
         );
       },

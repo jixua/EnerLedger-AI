@@ -51,6 +51,8 @@ test("document reader renders one continuous markdown flow with explicit chunk s
   assert.match(pageSource, /"document-page-marker"/);
   assert.match(pageSource, /第 \{pageNumber\} 页/);
   assert.match(pageStyles, /\.document-page-marker__label/);
+  assert.match(pageStyles, /justify-content: flex-end/);
+  assert.doesNotMatch(pageStyles, /\.document-page-marker__line/);
 });
 
 test("document reader preserves merged Word tables through a restricted renderer", () => {
