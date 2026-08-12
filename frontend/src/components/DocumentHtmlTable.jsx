@@ -10,6 +10,7 @@ import { DocumentPreviewImage } from "./DocumentPreviewImage";
 const LINKPARSE_TABLE_START = /^\s*<!--\s*LINKPARSE_TABLE_START\s+([^]*?)\s*-->\s*$/i;
 const LINKPARSE_TABLE_END = /^\s*<!--\s*LINKPARSE_TABLE_END\s+id="([^"]+)"\s*-->\s*$/i;
 const LINKPARSE_TABLE_ATTRIBUTE = /([A-Za-z_][\w-]*)="([^"]*)"/g;
+const STRUCTURED_TABLE_FORMATS = new Set(["markdown", "rag_text", "html_fallback"]);
 
 const CONTAINER_TAGS = new Set([
   "table",
@@ -130,7 +131,7 @@ export function createDocumentStructuredTablesPlugin(structures = []) {
         const startNode = parent.children[index];
         const attributes = startNode?.type === "html" ? tableAttributes(startNode.value) : null;
         const tableId = String(attributes?.id || "");
-        const structuralFormat = ["rag_text", "html_fallback"].includes(String(attributes?.format || ""));
+        const structuralFormat = STRUCTURED_TABLE_FORMATS.has(String(attributes?.format || ""));
         if (!tableId || !structuralFormat || !availableIds.has(tableId)) {
           visit(startNode);
           continue;
