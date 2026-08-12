@@ -29,6 +29,7 @@ import {
 import { DocumentPreviewImage } from "../components/DocumentPreviewImage";
 import {
   createDocumentBoundaryPlugin,
+  mergeDocumentDetailSnapshot,
   normalizeDocumentBoundaries,
   remarkDocumentPageMarkers,
 } from "../lib/document-reader";
@@ -258,6 +259,10 @@ export function DocumentDetailPage() {
     () => createDocumentStructuredTablesPlugin(tableStructures),
     [tableStructures],
   );
+  const renderedPreviewContent = useMemo(
+    () => normalizeDocumentMath(preview?.content || ""),
+    [preview?.content],
+  );
   const markdownComponents = useMemo(
     () => ({
       a: ({ children, node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
@@ -297,7 +302,9 @@ export function DocumentDetailPage() {
   );
 
   useEffect(() => {
-    if (contextDocument) setDocument(contextDocument);
+    if (contextDocument) {
+      setDocument((current) => mergeDocumentDetailSnapshot(current, contextDocument));
+    }
   }, [contextDocument]);
 
   const refreshDocument = useCallback(async () => {
@@ -411,10 +418,6 @@ export function DocumentDetailPage() {
   const sourceChunkCount = preview
     ? Math.max(Number.isFinite(rawSourceChunkCount) ? rawSourceChunkCount : 0, readerBoundaries.length)
     : null;
-  const renderedPreviewContent = useMemo(
-    () => normalizeDocumentMath(preview?.content || ""),
-    [preview?.content],
-  );
   const parseQuality = normalizeParseQuality(document);
 
   return (

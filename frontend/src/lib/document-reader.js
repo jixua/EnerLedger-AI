@@ -3,6 +3,28 @@ function finiteInteger(value) {
   return Number.isInteger(number) ? number : null;
 }
 
+function hasDetailedTableStructure(document) {
+  return Array.isArray(document?.parse_quality?.table_structure?.tables);
+}
+
+/** Keep detail-only parse metadata when a same-version list summary arrives later. */
+export function mergeDocumentDetailSnapshot(current, incoming) {
+  if (!incoming) return current ?? null;
+  if (!current) return incoming;
+
+  const currentId = Number(current.document_id ?? current.documentId ?? current.id);
+  const incomingId = Number(incoming.document_id ?? incoming.documentId ?? incoming.id);
+  const currentVersion = Number(current.version ?? 0);
+  const incomingVersion = Number(incoming.version ?? 0);
+  if (currentId !== incomingId || currentVersion !== incomingVersion) return incoming;
+
+  const merged = { ...current, ...incoming };
+  if (hasDetailedTableStructure(current) && !hasDetailedTableStructure(incoming)) {
+    merged.parse_quality = current.parse_quality;
+  }
+  return merged;
+}
+
 function boundaryOrder(left, right) {
   const leftLine = finiteInteger(left.boundary?.start_line);
   const rightLine = finiteInteger(right.boundary?.start_line);

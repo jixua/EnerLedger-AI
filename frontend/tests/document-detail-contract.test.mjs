@@ -53,6 +53,12 @@ test("document reader renders one continuous markdown flow with explicit chunk s
   assert.match(pageStyles, /\.document-page-marker__label/);
   assert.match(pageStyles, /justify-content: flex-end/);
   assert.doesNotMatch(pageStyles, /\.document-page-marker__line/);
+  assert.ok(
+    pageSource.indexOf("const renderedPreviewContent = useMemo")
+      < pageSource.indexOf("if (!routeIsValid)"),
+    "all hooks must run before the first conditional return",
+  );
+  assert.match(pageSource, /mergeDocumentDetailSnapshot\(current, contextDocument\)/);
 });
 
 test("document reader preserves merged Word tables through a restricted renderer", () => {

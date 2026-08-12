@@ -7,6 +7,7 @@ import ReactMarkdown from "react-markdown";
 import {
   createDocumentBoundaryPlugin,
   insertDocumentBoundaryNodes,
+  mergeDocumentDetailSnapshot,
   normalizeDocumentBoundaries,
   replaceDocumentPageMarkers,
 } from "../src/lib/document-reader.js";
@@ -21,6 +22,34 @@ function documentTree() {
     ],
   };
 }
+
+test("mergeDocumentDetailSnapshot preserves same-version table structure from list summaries", () => {
+  const detailed = {
+    document_id: 29,
+    version: 1,
+    status: "READY",
+    parse_quality: {
+      status: "PASSED",
+      table_structure: { tables: [{ table_id: "table-001" }] },
+    },
+  };
+  const summary = {
+    document_id: 29,
+    version: 1,
+    status: "READY",
+    updated_at: "2026-08-12T10:46:56",
+    parse_quality: { status: "PASSED", structured_table_count: 1 },
+  };
+
+  const merged = mergeDocumentDetailSnapshot(detailed, summary);
+
+  assert.equal(merged.updated_at, summary.updated_at);
+  assert.equal(merged.parse_quality.table_structure.tables[0].table_id, "table-001");
+  assert.equal(
+    mergeDocumentDetailSnapshot(detailed, { ...summary, version: 2 }).version,
+    2,
+  );
+});
 
 test("normalizeDocumentBoundaries keeps every same-line boundary and assigns continuous reader indexes", () => {
   const normalized = normalizeDocumentBoundaries([
