@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
@@ -258,6 +259,22 @@ def _quality_report_summary(report: dict[str, Any] | None) -> dict[str, Any] | N
     return summary
 
 
+def _document_parse_time_ms(document: Document) -> int | None:
+    """Prefer the complete processing attempt duration for API compatibility."""
+
+    started_at = document.processing_started_at
+    finished_at = document.finished_at
+    if isinstance(started_at, datetime) and isinstance(finished_at, datetime):
+        if started_at.tzinfo is not None:
+            started_at = started_at.astimezone(UTC).replace(tzinfo=None)
+        if finished_at.tzinfo is not None:
+            finished_at = finished_at.astimezone(UTC).replace(tzinfo=None)
+        duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+        if duration_ms >= 0:
+            return duration_ms
+    return document.parse_time_ms
+
+
 def _document_payload(document: Document, *, quality_detail: bool = True) -> dict:
     parse_quality = (
         document.parse_quality
@@ -285,7 +302,7 @@ def _document_payload(document: Document, *, quality_detail: bool = True) -> dic
         "reparse_requested": document.reparse_requested,
         "page_count": document.page_count,
         "chunk_count": document.chunk_count,
-        "parse_time_ms": document.parse_time_ms,
+        "parse_time_ms": _document_parse_time_ms(document),
         "parse_quality_status": document.parse_quality_status,
         "parse_quality": parse_quality,
         "retrieval_ready": _document_retrieval_ready(document),

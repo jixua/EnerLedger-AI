@@ -126,6 +126,29 @@ def test_document_payload_exposes_parse_quality_without_internal_storage_fields(
     assert "parsed_object_key" not in payload
 
 
+def test_document_payload_reports_complete_processing_attempt_duration() -> None:
+    document = _document(status="READY")
+    document.processing_started_at = utc_now()
+    document.finished_at = document.processing_started_at + timedelta(
+        minutes=2,
+        seconds=3,
+        milliseconds=456,
+    )
+    document.parse_time_ms = 1200
+
+    assert _document_payload(document)["parse_time_ms"] == 123_456
+
+
+def test_document_payload_falls_back_for_legacy_or_invalid_timestamps() -> None:
+    document = _document(status="READY")
+    document.parse_time_ms = 1680
+    assert _document_payload(document)["parse_time_ms"] == 1680
+
+    document.processing_started_at = utc_now()
+    document.finished_at = document.processing_started_at - timedelta(seconds=1)
+    assert _document_payload(document)["parse_time_ms"] == 1680
+
+
 def test_document_retrieval_ready_matches_pdf_quality_gate() -> None:
     legacy_pdf = _document(status="READY")
     assert _document_payload(legacy_pdf)["retrieval_ready"] is False
