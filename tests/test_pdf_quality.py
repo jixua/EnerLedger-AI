@@ -66,6 +66,27 @@ def _write_mixed_text_and_scan_pdf(path: Path) -> None:
     document.close()
 
 
+def _write_text_and_scan_pages(
+    path: Path,
+    *,
+    text_page_count: int,
+    scan_page_count: int,
+) -> None:
+    document = pymupdf.open()
+    for page_number in range(1, text_page_count + 1):
+        page = document.new_page(width=240, height=320)
+        page.insert_text(
+            (20, 40),
+            f"Born digital page {page_number} must stay readable.",
+            fontsize=9,
+        )
+    for _ in range(scan_page_count):
+        page = document.new_page(width=240, height=320)
+        page.insert_image(page.rect, stream=_png_bytes())
+    document.save(path)
+    document.close()
+
+
 def _write_scan_pdf_with_blank_page(path: Path) -> None:
     document = pymupdf.open()
     scan_page = document.new_page(width=240, height=320)
@@ -152,6 +173,34 @@ def test_scan_detection_does_not_classify_mixed_document(tmp_path: Path) -> None
     assert report.is_scanned_document is False
     assert report.substantive_page_count == 2
     assert report.scanned_page_numbers == (2,)
+    assert report.scanned_page_ratio == 0.5
+
+
+def test_scan_detection_classifies_document_at_ratio_threshold(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "scan-dominant.pdf"
+    _write_text_and_scan_pages(pdf_path, text_page_count=1, scan_page_count=4)
+
+    report = _analyzer().detect_scanned_document(
+        pdf_path,
+        min_scanned_page_ratio=0.8,
+    )
+
+    assert report.is_scanned_document is True
+    assert report.scanned_page_ratio == 0.8
+    assert report.to_dict()["min_scanned_page_ratio"] == 0.8
+
+
+def test_scan_detection_rejects_document_below_ratio_threshold(tmp_path: Path) -> None:
+    pdf_path = tmp_path / "mixed-below-threshold.pdf"
+    _write_text_and_scan_pages(pdf_path, text_page_count=1, scan_page_count=3)
+
+    report = _analyzer().detect_scanned_document(
+        pdf_path,
+        min_scanned_page_ratio=0.8,
+    )
+
+    assert report.is_scanned_document is False
+    assert report.scanned_page_ratio == 0.75
 
 
 def test_scan_detection_ignores_blank_pages(tmp_path: Path) -> None:
@@ -172,6 +221,21 @@ def test_scan_detection_rejects_page_count_above_preflight_limit(tmp_path: Path)
 
     with pytest.raises(ValueError, match="page limit exceeded"):
         _analyzer().detect_scanned_document(pdf_path, max_pages=1)
+
+
+@pytest.mark.parametrize("ratio", [0, -0.1, 1.1])
+def test_scan_detection_rejects_invalid_page_ratio(
+    tmp_path: Path,
+    ratio: float,
+) -> None:
+    pdf_path = tmp_path / "scan.pdf"
+    _write_image_only_pdf(pdf_path)
+
+    with pytest.raises(ValueError, match="min_scanned_page_ratio"):
+        _analyzer().detect_scanned_document(
+            pdf_path,
+            min_scanned_page_ratio=ratio,
+        )
 
 
 def test_analyze_collects_page_geometry_and_accepts_strict_markers(tmp_path: Path) -> None:

@@ -94,6 +94,7 @@ class PdfParserService:
                 scan_report = self._scan_detector.detect_scanned_document(
                     source,
                     max_pages=settings.PDF_MAX_PAGES,
+                    min_scanned_page_ratio=settings.PDF_SCAN_MIN_PAGE_RATIO,
                 )
             except (OSError, RuntimeError, TypeError, ValueError) as exc:
                 metadata["pdf_scan_detection"] = {

@@ -40,6 +40,17 @@ def _write_text_pdf(path: Path) -> None:
     document.close()
 
 
+def _write_scan_dominant_pdf(path: Path) -> None:
+    document = pymupdf.open()
+    text_page = document.new_page(width=240, height=320)
+    text_page.insert_text((20, 40), "Born digital cover page", fontsize=9)
+    for _ in range(4):
+        scan_page = document.new_page(width=240, height=320)
+        scan_page.insert_image(scan_page.rect, stream=_png_bytes())
+    document.save(path)
+    document.close()
+
+
 class _RecordingBackend(BasePdfBackend):
     def __init__(self, name: str, calls: list[str], markdown: str) -> None:
         super().__init__()
@@ -109,6 +120,23 @@ def test_born_digital_pdf_keeps_configured_backend_order(tmp_path: Path) -> None
     assert metadata["pdf_parser_backend_order"] == ["opendataloader", "mineru"]
     assert metadata["pdf_parser_route"] == "configured_backend_order"
     assert metadata["pdf_scan_detection"]["is_scanned_document"] is False
+
+
+def test_scan_dominant_pdf_uses_mineru_at_configured_ratio(tmp_path: Path) -> None:
+    source = tmp_path / "scan-dominant.pdf"
+    _write_scan_dominant_pdf(source)
+    calls: list[str] = []
+
+    markdown, metadata = PdfParserService(_registry(calls)).parse(
+        source,
+        PdfParseOptions(backend="opendataloader"),
+    )
+
+    assert markdown == "MinerU parsed"
+    assert calls == ["mineru"]
+    assert metadata["pdf_parser_route"] == "scanned_document_mineru"
+    assert metadata["pdf_scan_detection"]["scanned_page_ratio"] == 0.8
+    assert metadata["pdf_scan_detection"]["min_scanned_page_ratio"] == 0.8
 
 
 def test_scanned_pdf_falls_back_when_mineru_is_unavailable(tmp_path: Path) -> None:

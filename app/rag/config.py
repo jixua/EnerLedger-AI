@@ -646,6 +646,7 @@ class Settings(BaseSettings):
     # Born-digital PDF 正文与有序 ODL 输出的最低 source recall；
     # 同一阈值也作为 output precision 门禁，防止重复或额外幻觉文本入索引。
     PDF_QUALITY_MIN_TEXT_RETENTION_RATIO: float = Field(default=0.97, ge=0, le=1)
+    PDF_SCAN_MIN_PAGE_RATIO: float = Field(default=0.8, gt=0, le=1)
     PDF_FALLBACK_RENDER_DPI: int = Field(default=280, ge=250, le=300)
     PDF_FALLBACK_MAX_CONCURRENCY: int = Field(default=2, ge=1, le=8)
     PDF_FALLBACK_MAX_RENDERED_PAGE_PIXELS: int = Field(default=50_000_000, ge=1)
