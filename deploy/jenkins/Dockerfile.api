@@ -1,7 +1,7 @@
 # syntax=docker/dockerfile:1.7
 
-# OpenDataLoader 运行时需要 Java 11+；固定使用 Java 21 JRE，并把它复制进 Python 镜像。
-FROM eclipse-temurin:21-jre-jammy AS java-runtime
+# 开发服务器已缓存 Java 17 JRE；OpenDataLoader 要求 Java 11+。
+FROM eclipse-temurin:17-jre AS java-runtime
 
 FROM python:3.11-slim-bookworm AS runtime
 
@@ -23,7 +23,6 @@ COPY --from=java-runtime /opt/java/openjdk /opt/java/openjdk
 
 WORKDIR /app
 
-# OpenCV/OpenDataLoader 运行库、LightGBM OpenMP 运行库以及健康检查工具。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
@@ -42,9 +41,9 @@ RUN apt-get update \
 RUN --mount=type=cache,id=enerledger-pip,target=/root/.cache/pip,sharing=locked \
     python -m pip install --upgrade pip "uv==${UV_VERSION}"
 
-# 依赖只由 pyproject.toml/uv.lock 决定。业务源码变化不会击穿这一层；
-# 固定 cache id 让依赖变更时也只下载本机缓存中缺失的包。
-COPY pyproject.toml uv.lock ./
+# Jenkins 构建上下文包含 source/ 与 deploy/。第三方依赖只由锁文件决定，
+# 普通业务源码变化不会触发依赖重装。
+COPY source/pyproject.toml source/uv.lock ./
 RUN --mount=type=cache,id=enerledger-uv,target=/root/.cache/uv,sharing=locked \
     uv export \
         --frozen \
@@ -59,21 +58,33 @@ RUN --mount=type=cache,id=enerledger-uv,target=/root/.cache/uv,sharing=locked \
         --requirements /tmp/requirements.txt \
     && rm -f /tmp/requirements.txt
 
-# infinity-sdk 等分词依赖会读取这些 NLTK 资源。它们位于业务源码层之前，
-# 构建期固化，普通代码修改不会重新下载，运行期也不需要联网。
-RUN python -m nltk.downloader \
-    -d "${NLTK_DATA}" \
-    punkt punkt_tab stopwords wordnet omw-1.4
+# 固定语料位于源码层之前，业务代码改变时直接复用这一镜像层。
+RUN mkdir -p "${NLTK_DATA}/tokenizers" "${NLTK_DATA}/corpora" \
+    && curl -fsSL --retry 3 -o /tmp/punkt.zip \
+        https://cdn.jsdelivr.net/gh/nltk/nltk_data@gh-pages/packages/tokenizers/punkt.zip \
+    && curl -fsSL --retry 3 -o /tmp/punkt_tab.zip \
+        https://cdn.jsdelivr.net/gh/nltk/nltk_data@gh-pages/packages/tokenizers/punkt_tab.zip \
+    && curl -fsSL --retry 3 -o /tmp/stopwords.zip \
+        https://cdn.jsdelivr.net/gh/nltk/nltk_data@gh-pages/packages/corpora/stopwords.zip \
+    && curl -fsSL --retry 3 -o /tmp/wordnet.zip \
+        https://cdn.jsdelivr.net/gh/nltk/nltk_data@gh-pages/packages/corpora/wordnet.zip \
+    && curl -fsSL --retry 3 -o /tmp/omw-1.4.zip \
+        https://gh-proxy.com/https://raw.githubusercontent.com/nltk/nltk_data/gh-pages/packages/corpora/omw-1.4.zip \
+    && printf '%s  %s\n' \
+        d25c591c894fedeaf8649ef26653c51b74282e8af43bd0a8867eb16f79a89c4b567328a7c83f7651ec9e41dc746cba87b0c8bdbbe736db7f18c62a56820a92e6 \
+        /tmp/omw-1.4.zip | sha512sum -c - \
+    && python -c "import zipfile; [zipfile.ZipFile('/tmp/' + name + '.zip').extractall('${NLTK_DATA}/' + target) for name, target in [('punkt', 'tokenizers'), ('punkt_tab', 'tokenizers'), ('stopwords', 'corpora'), ('wordnet', 'corpora'), ('omw-1.4', 'corpora')]]" \
+    && rm -f /tmp/punkt.zip /tmp/punkt_tab.zip /tmp/stopwords.zip /tmp/wordnet.zip /tmp/omw-1.4.zip
 
-COPY README.md ./
-COPY app ./app
+COPY source/README.md ./
+COPY source/app ./app
 
 RUN --mount=type=cache,id=enerledger-uv,target=/root/.cache/uv,sharing=locked \
     uv pip install --system --link-mode=copy --no-deps .
 
-COPY alembic.ini ./alembic.ini
-COPY migrations ./migrations
-COPY docker ./docker
+COPY source/alembic.ini ./alembic.ini
+COPY source/migrations ./migrations
+COPY source/docker ./docker
 
 RUN useradd --create-home --uid 10001 rag \
     && mkdir -p /tmp/energy-carbon-rag /app/logs \
