@@ -24,6 +24,7 @@ import {
   createDocumentBoundaryPlugin,
   normalizeDocumentBoundaries,
 } from "../lib/document-reader";
+import { formatDuration, resolveDocumentDurationMs } from "../lib/document-duration";
 import { useApp } from "../state/AppContext";
 
 const CHUNK_TYPE_LABELS = {
@@ -79,12 +80,6 @@ function formatTime(value) {
   if (!value) return "—";
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString("zh-CN");
-}
-
-function formatDuration(milliseconds) {
-  if (!Number.isFinite(Number(milliseconds))) return "—";
-  const value = Number(milliseconds);
-  return value < 1000 ? `${value} ms` : `${(value / 1000).toFixed(1)} s`;
 }
 
 function formatRange(start, end, prefix, { lineNumber = false } = {}) {
@@ -391,7 +386,7 @@ export function DocumentDetailPage() {
       <section className="document-detail-meta" aria-label="文档解析摘要">
         <span><Layers3 size={14} />{status === "READY" ? (sourceChunkCount === null ? "正在读取正文分片" : `${sourceChunkCount} 个正文分片`) : statusMeta(document).label}</span>
         <span>{document.page_count == null ? "页数未记录" : `${document.page_count} 页`}</span>
-        <span>{status === "READY" ? `解析耗时 ${formatDuration(document.parse_time_ms)}` : `已尝试 ${Number(document.attempt_count || 0)} 次`}</span>
+        <span>{status === "READY" ? `解析耗时 ${formatDuration(resolveDocumentDurationMs(document))}` : `已尝试 ${Number(document.attempt_count || 0)} 次`}</span>
         <span>版本 v{document.version ?? 1}</span>
       </section>
 
