@@ -378,7 +378,13 @@ class SimpleDocumentIngestionService:
                 document_version=int(document.version or 1),
             )
             page_count = self._page_count(parse_output.get("metadata"))
-            parse_time_ms = int(parse_output.get("time_cost_ms") or 0)
+            parser_time_ms = int(parse_output.get("time_cost_ms") or 0)
+            finished_at = datetime.now(UTC).replace(tzinfo=None)
+            parse_time_ms = self._processing_duration_ms(
+                document,
+                finished_at=finished_at,
+                fallback_ms=parser_time_ms,
+            )
             await self.mark_ready(
                 document,
                 db,
@@ -390,6 +396,7 @@ class SimpleDocumentIngestionService:
                 parse_quality_status=parse_quality_status,
                 parse_quality=parse_quality,
                 lease_token=lease_token,
+                finished_at=finished_at,
             )
             await self._cleanup_superseded_parsed_output(
                 identity,
@@ -494,6 +501,7 @@ class SimpleDocumentIngestionService:
         parse_quality_status: str,
         parse_quality: dict[str, Any],
         lease_token: str | None = None,
+        finished_at: datetime | None = None,
     ) -> None:
         """将文档的解析产物和终态与 chunk 真值集一次提交。"""
 
@@ -511,6 +519,7 @@ class SimpleDocumentIngestionService:
             if document.file_type.lower() == "pdf"
             else str(parse_quality.get("parser_backend") or document.parser_backend or "") or None
         )
+        completed_at = finished_at or datetime.now(UTC).replace(tzinfo=None)
         values = {
             "parsed_bucket": parsed_bucket,
             "parsed_object_key": parsed_object_key,
@@ -527,7 +536,7 @@ class SimpleDocumentIngestionService:
             "lease_token": None,
             "lease_owner": None,
             "lease_expires_at": None,
-            "finished_at": datetime.now(UTC).replace(tzinfo=None),
+            "finished_at": completed_at,
             "reparse_requested": False,
         }
         if lease_token is not None:
@@ -554,6 +563,26 @@ class SimpleDocumentIngestionService:
         # expire_on_commit=False 时让直接调用者看到与数据库一致的终态。
         for field_name, value in values.items():
             setattr(document, field_name, value)
+
+    @staticmethod
+    def _processing_duration_ms(
+        document: Document,
+        *,
+        finished_at: datetime,
+        fallback_ms: int,
+    ) -> int:
+        """Return the current queue attempt duration, excluding time spent queued."""
+
+        started_at = document.processing_started_at
+        safe_fallback = max(int(fallback_ms), 0)
+        if started_at is None:
+            return safe_fallback
+        if started_at.tzinfo is not None:
+            started_at = started_at.astimezone(UTC).replace(tzinfo=None)
+        if finished_at.tzinfo is not None:
+            finished_at = finished_at.astimezone(UTC).replace(tzinfo=None)
+        duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+        return duration_ms if duration_ms >= 0 else safe_fallback
 
     async def mark_failed(
         self,

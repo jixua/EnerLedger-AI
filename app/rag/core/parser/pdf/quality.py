@@ -72,6 +72,48 @@ class PdfQualityThresholds:
 
 
 @dataclass(frozen=True, slots=True)
+class PdfScanDetectionReport:
+    """Source-only classification used before selecting a PDF parser backend."""
+
+    page_count: int
+    substantive_page_count: int
+    scanned_page_numbers: tuple[int, ...]
+    blank_page_numbers: tuple[int, ...]
+    min_scanned_page_ratio: float
+
+    @property
+    def scanned_page_count(self) -> int:
+        return len(self.scanned_page_numbers)
+
+    @property
+    def scanned_page_ratio(self) -> float:
+        return (
+            self.scanned_page_count / self.substantive_page_count
+            if self.substantive_page_count
+            else 0.0
+        )
+
+    @property
+    def is_scanned_document(self) -> bool:
+        return bool(
+            self.substantive_page_count
+            and self.scanned_page_ratio >= self.min_scanned_page_ratio
+        )
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "page_count": self.page_count,
+            "substantive_page_count": self.substantive_page_count,
+            "scanned_page_count": self.scanned_page_count,
+            "scanned_page_ratio": round(self.scanned_page_ratio, 6),
+            "min_scanned_page_ratio": self.min_scanned_page_ratio,
+            "scanned_page_numbers": list(self.scanned_page_numbers),
+            "blank_page_numbers": list(self.blank_page_numbers),
+            "is_scanned_document": self.is_scanned_document,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class PdfPageQuality:
     page_number: int
     width: float
@@ -372,6 +414,66 @@ class PdfQualityAnalyzer:
             warnings=tuple(dict.fromkeys(global_warnings)),
             per_page=tuple(per_page),
             thresholds=self.thresholds,
+        )
+
+    def detect_scanned_document(
+        self,
+        pdf_path: str | Path,
+        *,
+        max_pages: int | None = None,
+        min_scanned_page_ratio: float = 0.8,
+    ) -> PdfScanDetectionReport:
+        """Classify a scan-dominant PDF before any parser backend is invoked.
+
+        The page decision intentionally reuses ``_analyze_page`` so backend routing
+        and the post-parse quality gate cannot disagree about raster-dominant pages,
+        hidden OCR layers, or the configured image coverage threshold. Truly blank
+        pages do not affect the ratio, while a small born-digital cover or appendix
+        does not prevent an otherwise scanned document from using MinerU.
+        """
+
+        if not 0 < min_scanned_page_ratio <= 1:
+            raise ValueError("min_scanned_page_ratio must be greater than 0 and at most 1")
+
+        document = pymupdf.open(filename=str(pdf_path))
+        try:
+            page_count = document.page_count
+            if max_pages is not None and page_count > max_pages:
+                raise ValueError(
+                    "PDF scan detection page limit exceeded: "
+                    f"actual={page_count},limit={max_pages}"
+                )
+            scanned_pages: list[int] = []
+            blank_pages: list[int] = []
+            substantive_page_count = 0
+            for page_index in range(page_count):
+                page_number = page_index + 1
+                page_quality = self._analyze_page(
+                    document.load_page(page_index),
+                    page_number=page_number,
+                    markdown_section="",
+                    ocr_result=None,
+                )
+                substantive = bool(
+                    page_quality.image_count
+                    or page_quality.pdf_text_char_count
+                    or page_quality.vector_drawing_count
+                )
+                if not substantive:
+                    blank_pages.append(page_number)
+                    continue
+                substantive_page_count += 1
+                if page_quality.is_image_only:
+                    scanned_pages.append(page_number)
+        finally:
+            document.close()
+
+        return PdfScanDetectionReport(
+            page_count=page_count,
+            substantive_page_count=substantive_page_count,
+            scanned_page_numbers=tuple(scanned_pages),
+            blank_page_numbers=tuple(blank_pages),
+            min_scanned_page_ratio=min_scanned_page_ratio,
         )
 
     def _analyze_page(
@@ -992,6 +1094,7 @@ __all__ = [
     "PdfPageQuality",
     "PdfQualityAnalyzer",
     "PdfQualityReport",
+    "PdfScanDetectionReport",
     "PdfQualityStatus",
     "PdfQualityThresholds",
 ]

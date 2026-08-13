@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import UTC, datetime
 from types import SimpleNamespace
 
 import pymupdf
@@ -300,6 +301,36 @@ def _document() -> Document:
         parser_backend="opendataloader",
         status="PROCESSING",
     )
+
+
+def test_processing_duration_uses_current_attempt_timestamps() -> None:
+    document = _document()
+    document.processing_started_at = datetime(2026, 8, 13, 7, 0, 0)
+
+    duration_ms = SimpleDocumentIngestionService._processing_duration_ms(
+        document,
+        finished_at=datetime(2026, 8, 13, 7, 2, 3, 456000, tzinfo=UTC),
+        fallback_ms=27,
+    )
+
+    assert duration_ms == 123_456
+
+
+def test_processing_duration_falls_back_when_attempt_timestamp_is_missing_or_invalid() -> None:
+    document = _document()
+    finished_at = datetime(2026, 8, 13, 7, 0, 0)
+    assert SimpleDocumentIngestionService._processing_duration_ms(
+        document,
+        finished_at=finished_at,
+        fallback_ms=27,
+    ) == 27
+
+    document.processing_started_at = datetime(2026, 8, 13, 7, 0, 1)
+    assert SimpleDocumentIngestionService._processing_duration_ms(
+        document,
+        finished_at=finished_at,
+        fallback_ms=27,
+    ) == 27
 
 
 def _write_pdf(path, *, page_count: int = 3) -> None:
