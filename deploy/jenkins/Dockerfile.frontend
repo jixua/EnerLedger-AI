@@ -1,0 +1,20 @@
+# syntax=docker/dockerfile:1.7
+
+FROM node:20-alpine AS build
+
+WORKDIR /app
+COPY source/frontend/package.json source/frontend/package-lock.json ./
+RUN --mount=type=cache,id=enerledger-npm,target=/root/.npm,sharing=locked \
+    npm ci --no-audit --no-fund
+COPY source/frontend .
+ENV VITE_API_BASE_URL="" \
+    VITE_DEMO_MODE=false \
+    VITE_DOCUMENT_POLL_INTERVAL_MS=3000
+RUN npm run build
+
+FROM nginx:1.27-alpine
+COPY --from=build /app/dist/client /usr/share/nginx/html
+COPY deploy/nginx.conf /etc/nginx/conf.d/default.conf
+EXPOSE 80
+HEALTHCHECK --interval=15s --timeout=5s --start-period=10s --retries=5 \
+    CMD wget -qO- http://127.0.0.1/ >/dev/null || exit 1

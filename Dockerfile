@@ -1,3 +1,5 @@
+# syntax=docker/dockerfile:1.7
+
 # OpenDataLoader 运行时需要 Java 11+；固定使用 Java 21 JRE，并把它复制进 Python 镜像。
 FROM eclipse-temurin:21-jre-jammy AS java-runtime
 
@@ -14,6 +16,8 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     RECALL_LTR_MODE=off \
     PATH="/opt/java/openjdk/bin:${PATH}" \
     TZ=Asia/Shanghai
+
+ARG UV_VERSION=0.11.14
 
 COPY --from=java-runtime /opt/java/openjdk /opt/java/openjdk
 
@@ -32,16 +36,37 @@ RUN apt-get update \
         tzdata \
     && rm -rf /var/lib/apt/lists/*
 
-COPY pyproject.toml README.md ./
-COPY app ./app
+RUN --mount=type=cache,id=enerledger-pip,target=/root/.cache/pip,sharing=locked \
+    python -m pip install --upgrade pip "uv==${UV_VERSION}"
 
-RUN python -m pip install --upgrade pip \
-    && python -m pip install .
+# 依赖只由 pyproject.toml/uv.lock 决定。业务源码变化不会击穿这一层；
+# 固定 cache id 让依赖变更时也只下载本机缓存中缺失的包。
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,id=enerledger-uv,target=/root/.cache/uv,sharing=locked \
+    uv export \
+        --frozen \
+        --no-dev \
+        --no-emit-project \
+        --format requirements.txt \
+        --output-file /tmp/requirements.txt > /dev/null \
+    && uv pip install \
+        --system \
+        --link-mode=copy \
+        --require-hashes \
+        --requirements /tmp/requirements.txt \
+    && rm -f /tmp/requirements.txt
 
-# infinity-sdk 等分词依赖会读取这些 NLTK 资源。构建期固化，运行期不联网下载。
+# infinity-sdk 等分词依赖会读取这些 NLTK 资源。它们位于业务源码层之前，
+# 构建期固化，普通代码修改不会重新下载，运行期也不需要联网。
 RUN python -m nltk.downloader \
     -d "${NLTK_DATA}" \
     punkt punkt_tab stopwords wordnet omw-1.4
+
+COPY README.md ./
+COPY app ./app
+
+RUN --mount=type=cache,id=enerledger-uv,target=/root/.cache/uv,sharing=locked \
+    uv pip install --system --link-mode=copy --no-deps .
 
 COPY alembic.ini ./alembic.ini
 COPY migrations ./migrations
