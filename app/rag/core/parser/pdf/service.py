@@ -23,6 +23,7 @@ from app.rag.core.parser.pdf.models import (
     PdfParseOptions,
     PdfPreparedImageAsset,
 )
+from app.rag.core.parser.pdf.quality import PdfQualityAnalyzer
 from app.rag.core.parser.pdf.registry import (
     PdfBackendRegistry,
     create_default_pdf_backend_registry,
@@ -57,8 +58,21 @@ class PdfParserService:
         thread_name_prefix="pdf-image-upload",
     )
 
-    def __init__(self, registry: PdfBackendRegistry | None = None) -> None:
+    def __init__(
+        self,
+        registry: PdfBackendRegistry | None = None,
+        scan_detector: PdfQualityAnalyzer | None = None,
+    ) -> None:
         self._registry = registry or create_default_pdf_backend_registry()
+        self._scan_detector = scan_detector or PdfQualityAnalyzer(
+            min_effective_text_chars=settings.PDF_QUALITY_MIN_EFFECTIVE_TEXT_CHARS,
+            image_only_max_text_chars=settings.PDF_QUALITY_IMAGE_ONLY_MAX_TEXT_CHARS,
+            image_only_min_coverage_ratio=(
+                settings.PDF_QUALITY_IMAGE_ONLY_MIN_COVERAGE_RATIO
+            ),
+            min_ocr_confidence=settings.PDF_QUALITY_MIN_OCR_CONFIDENCE,
+            min_text_retention_ratio=settings.PDF_QUALITY_MIN_TEXT_RETENTION_RATIO,
+        )
 
     def parse(self, source: Path | None, options: PdfParseOptions) -> tuple[str, dict]:
         """根据 backend 链路解析 PDF。
@@ -73,6 +87,44 @@ class PdfParserService:
         }
 
         backend_order = self._build_backend_order(options.backend)
+        if source is None:
+            metadata["pdf_scan_detection"] = {"status": "skipped", "reason": "source_missing"}
+        else:
+            try:
+                scan_report = self._scan_detector.detect_scanned_document(
+                    source,
+                    max_pages=settings.PDF_MAX_PAGES,
+                )
+            except (OSError, RuntimeError, TypeError, ValueError) as exc:
+                metadata["pdf_scan_detection"] = {
+                    "status": "failed",
+                    "error_type": type(exc).__name__,
+                }
+                timing_logger.bind(
+                    event="pdf_scan_detection_failed",
+                    outcome="failed",
+                    error_type=type(exc).__name__,
+                    error_message=truncate_log_value(exc),
+                ).warning("PDF 扫描件预检失败，保持原解析器顺序")
+            else:
+                metadata["pdf_scan_detection"] = {
+                    "status": "completed",
+                    **scan_report.to_dict(),
+                }
+                if scan_report.is_scanned_document:
+                    available_backends = set(self._registry.available_backends())
+                    if "mineru" in available_backends:
+                        backend_order = [
+                            "mineru",
+                            *(name for name in backend_order if name != "mineru"),
+                        ]
+                        metadata["pdf_parser_route"] = "scanned_document_mineru"
+                    else:
+                        metadata["pdf_parser_route"] = "scanned_document_mineru_unavailable"
+                else:
+                    metadata["pdf_parser_route"] = "configured_backend_order"
+
+        metadata["pdf_parser_backend_order"] = list(backend_order)
         markdown = ""
         binary_assets: list[PdfBinaryAsset] = []
         selected_backend = None
