@@ -197,9 +197,11 @@ class GoogleProvider(BaseProvider):
             system_instruction=system_prompt,
         )
         latency_ms = int((time.time() - start) * 1000)
+        candidate = ((data.get("candidates") or [{}])[0] or {})
         return GenerateResult(
             content=_extract_text(data),
             model=data.get("modelVersion", self.model_name),
+            finish_reason=candidate.get("finishReason"),
             usage=_usage(data),
             provider_type=self.provider_type,
             latency_ms=latency_ms,

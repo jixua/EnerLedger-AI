@@ -1,6 +1,6 @@
 # 能碳会计 AI 智能体
 
-这是一个面向企业能碳管理场景、可独立运行的智能应用项目。后端使用 Python，当前范围包括数据集管理、文档异步解析、BM25/Sparse/Dense 三路索引与混合检索，以及基于来源片段的 LLM 流式对话；`frontend/` 提供不区分用户端与管理端的一体化 Web 界面。
+这是一个面向企业能碳管理场景、可独立运行的智能应用项目。后端使用 Python，当前范围包括数据集管理、文档异步解析、企业文档大模型分析、BM25/Sparse/Dense 三路索引与混合检索，以及基于来源片段的 LLM 流式对话；`frontend/` 提供不区分用户端与管理端的一体化 Web 界面。
 
 本项目不是把 LinkRag 作为 SDK、wheel、Git 依赖或本地路径依赖安装后调用，也不会把请求转发给另一套 LinkRag 服务。解析、索引、召回、融合和模型适配源码均维护在当前仓库的 `app/rag` 中。
 
@@ -14,6 +14,7 @@
 - MySQL 只保留 `dataset`、`document`、`document_chunk`、`llm_config` 四张业务表；单管理员身份由部署配置提供，不新增用户表，也不提供注册接口。
 - 不建立解析日志、阶段流水线、会话、消息、用量日志、厂商目录或模型目录表。
 - `document.status` 使用 `QUEUED`、`PROCESSING`、`READY`、`FAILED`。只有 `READY` 文档可以参与检索。
+- `POST /api/v1/documents/{document_id}/analysis` 读取文档当前版本的全部主体分片，分批调用 Chat 模型提取证据，生成 Markdown 分析报告并保存到 MinIO；`GET` 同路径读取当前版本最近一次成功报告。
 - `POST /api/v1/rag/stream` 在一次请求中完成三路召回、上下文拼装和 LLM SSE 输出；当前不持久化会话或回答历史。
 
 Alembic 会额外创建自己的版本记录表 `alembic_version`，它不属于业务表。
@@ -198,10 +199,12 @@ Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。
 | 7 | `GET /api/v1/documents/{document_id}/preview/map` | 一次读取当前版本的主体分片边界图 |
 | 8 | `GET /api/v1/documents/{document_id}/preview/versions/{version}/assets/{asset_ref}` | 租户校验后流式读取 Markdown 内的私有图片 |
 | 9 | `GET /api/v1/documents/{document_id}/chunks` | 按当前文档版本分页查看分片正文、顺序、类型与来源信息 |
-| 10 | `GET /api/v1/documents` | 按用户查询全局解析队列，可按数据集和状态筛选 |
-| 11 | `POST /api/v1/recall` | 仅执行三路召回与融合 |
-| 12 | `POST /api/v1/rag/stream` | 混合检索后用 Chat 模型流式生成回复 |
-| 13 | `GET /api/v1/system/status` | 查询中间件、持久队列和可观测 worker 状态 |
+| 10 | `GET /api/v1/documents/{document_id}/analysis` | 从 MinIO 读取当前版本最近一次成功的分析报告 |
+| 11 | `POST /api/v1/documents/{document_id}/analysis` | 分析当前版本全文，持久化并返回 Markdown 报告与引用映射 |
+| 12 | `GET /api/v1/documents` | 按用户查询全局解析队列，可按数据集和状态筛选 |
+| 13 | `POST /api/v1/recall` | 仅执行三路召回与融合 |
+| 14 | `POST /api/v1/rag/stream` | 混合检索后用 Chat 模型流式生成回复 |
+| 15 | `GET /api/v1/system/status` | 查询中间件、持久队列和可观测 worker 状态 |
 
 除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。当前产品只配置一个管理员，不提供注册入口；管理员密码只以 scrypt 哈希保存在部署环境中。接口字段以运行中的 OpenAPI `/docs` 为准。
 
@@ -216,6 +219,38 @@ curl -N http://127.0.0.1:8000/api/v1/rag/stream \
 ```
 
 可能返回的事件包括 `stream_started`、`recall_done`、`answer_delta`、`answer_done` 和 `error`；没有可用检索上下文时仍会依次返回 `recall_done`、固定说明文本和 `answer_done`，不会调用 Chat 模型。
+
+### 企业文档分析
+
+只有当前租户的 `READY` 文档可以发起分析。默认使用数据集绑定的 Chat 模型，也可以在请求体中用 `llm_config_id` 指定当前租户可用的 Chat 配置：
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/v1/documents/123/analysis \
+  -H 'Authorization: Bearer <登录接口返回的 access_token>' \
+  -H 'Content-Type: application/json' \
+  -d '{}'
+```
+
+服务会按顺序读取文档当前版本的全部主体分片，排除解析产生的派生元素，并采用“分批证据提取 → 汇总成文”的两阶段模型调用。输入超过 `DOCUMENT_ANALYSIS_MAX_INPUT_TOKENS` 时返回明确错误，不会静默截断。报告结构参考产品碳足迹评价报告，包含以下固定 Markdown 章节：
+
+1. 报告摘要；
+2. 评价对象和目标；
+3. 评价方法和工具；
+4. 评价边界界定；
+5. 功能单位或核算口径；
+6. 生命周期与活动数据清单分析；
+7. 碳足迹核算及评价；
+8. 量化数据质量与可靠性；
+9. 不确定性分析；
+10. 文档规范性检查；
+11. 资料缺口与整改建议；
+12. 结论与分析限制。
+
+报告中的事实性发现使用 `[文档片段N]` 标注来源，响应同时返回编号、分片 ID、页码和内容摘要的映射。当前阶段仅以被分析文档为事实依据，尚未把外部标准知识库纳入判定，因此通用检查维度不能视为具体标准条款，报告也不能替代正式审查或认证。
+
+生成成功后，Markdown 以不可变内容哈希文件保存到当前解析版本目录下的 `analysis/`，`latest.json` 保存引用映射、模型、用量、生成时间和 Markdown 对象指针，并在最后更新作为提交标记。页面刷新后通过 `GET` 接口复用已保存报告；重新生成会切换指针并尽力清理旧报告。分析期间若文档版本或解析产物发生变化，本次结果不会持久化。重新解析与删除文档沿用解析目录前缀清理，可一并清除对应版本的分析产物。
+
+前端可直接预览报告、下载 Markdown，或调用 `GET /api/v1/documents/{document_id}/analysis/docx` 将当前已持久化报告导出为 DOCX。DOCX 导出不重新调用大模型。
 
 ## 文档状态
 

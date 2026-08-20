@@ -76,6 +76,7 @@ function Sidebar({ collapsed, mobileOpen, onCollapse, onMobileClose }) {
 }
 
 function getBreadcrumb(pathname) {
+  if (/^\/datasets\/[^/]+\/documents\/[^/]+\/analysis\/?$/.test(pathname)) return "分析报告";
   if (/^\/datasets\/[^/]+\/documents\/[^/]+\/?$/.test(pathname)) return "文档详情";
   if (pathname.startsWith("/datasets/")) return "数据集详情";
   return navigation.find((item) => item.to !== "/" && pathname.startsWith(item.to))?.label || "对话";

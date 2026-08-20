@@ -23,6 +23,8 @@ class GenerateResult(BaseModel):
     usage: UsageInfo
     provider_type: str
     latency_ms: int
+    # 厂商结束原因用于识别 token 截断；缺失时保持兼容旧 provider。
+    finish_reason: str | None = None
 
 
 class StreamChunk(BaseModel):
