@@ -314,6 +314,7 @@ class OpenAICompatibleProvider(BaseProvider):
         return GenerateResult(
             content=message["content"],
             model=response.get("model", self.model_name),
+            finish_reason=response["choices"][0].get("finish_reason"),
             usage=UsageInfo(
                 prompt_tokens=usage.get("prompt_tokens", 0),
                 completion_tokens=usage.get("completion_tokens", 0),

@@ -242,6 +242,20 @@ class Settings(BaseSettings):
     RECALL_GENERATION_CONTEXT_TOKEN_BUDGET: int = 4000
 
     # ==========================================
+    # 企业文档分析 (Enterprise Document Analysis)
+    # ==========================================
+    # 分析覆盖当前版本的全部主体分片；超过总预算明确拒绝，不静默截断。
+    DOCUMENT_ANALYSIS_BATCH_TOKEN_BUDGET: int = Field(default=12000, ge=2048, le=32768)
+    DOCUMENT_ANALYSIS_MAX_CHUNKS_PER_BATCH: int = Field(default=6, ge=1, le=50)
+    DOCUMENT_ANALYSIS_MAX_INPUT_TOKENS: int = Field(default=96000, ge=12000, le=262144)
+    DOCUMENT_ANALYSIS_EVIDENCE_MAX_OUTPUT_TOKENS: int = Field(default=4096, ge=512, le=8192)
+    DOCUMENT_ANALYSIS_EVIDENCE_REPAIR_ATTEMPTS: int = Field(default=1, ge=0, le=2)
+    DOCUMENT_ANALYSIS_EVIDENCE_SPLIT_MAX_DEPTH: int = Field(default=2, ge=0, le=4)
+    DOCUMENT_ANALYSIS_REPORT_MAX_OUTPUT_TOKENS: int = Field(default=12000, ge=1024, le=16384)
+    DOCUMENT_ANALYSIS_REPORT_REPAIR_ATTEMPTS: int = Field(default=1, ge=0, le=2)
+    DOCUMENT_ANALYSIS_MODEL_TIMEOUT_MS: int = Field(default=180000, ge=10000, le=600000)
+
+    # ==========================================
     # 召回后重排 (Post-Recall Rerank / LINK-130)
     # ==========================================
     # 重排模块输出的候选条数兜底默认值。调用方未显式传 top_n 时生效；

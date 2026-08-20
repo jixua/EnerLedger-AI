@@ -20,6 +20,7 @@ setup_logger()
 
 from app.api.auth import router as auth_router
 from app.api.datasets import router as datasets_router
+from app.api.document_analysis import router as document_analysis_router
 from app.api.documents import router as documents_router
 from app.api.llm import router as llm_router
 from app.api.rag import router as rag_router
@@ -69,6 +70,7 @@ app.include_router(auth_router)
 app.include_router(llm_router)
 app.include_router(datasets_router)
 app.include_router(documents_router)
+app.include_router(document_analysis_router)
 app.include_router(recall_router)
 app.include_router(rag_router)
 app.include_router(system_router)
