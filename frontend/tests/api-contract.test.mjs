@@ -10,7 +10,9 @@ import {
   isDocumentPreviewAssetUrl,
   listDocumentChunks,
   getSystemStatus,
+  importArxivPapers,
   listAllDocuments,
+  searchArxivPapers,
   updateDocument,
   updateDataset,
 } from "../src/lib/api.js";
@@ -194,6 +196,40 @@ test("system page reads the detailed backend status endpoint", async () => {
 
   assert.equal(capturedUrl, "/api/v1/system/status");
   assert.equal(result.components.mysql.status, "ready");
+});
+
+test("arXiv crawler encodes keyword and bounded result count", async () => {
+  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return jsonResponse({ source: "arXiv", query: "carbon footprint", total_results: 0, items: [] });
+  };
+
+  await searchArxivPapers({ query: " carbon footprint ", maxResults: 5 });
+
+  assert.equal(
+    captured.url,
+    "http://api.local/api/v1/crawler/arxiv?query=carbon+footprint&max_results=5",
+  );
+  assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
+});
+
+test("arXiv import sends selected paper ids to the target dataset", async () => {
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return jsonResponse({ dataset_id: 7, queued_count: 2, failed_count: 0, items: [] }, 202);
+  };
+
+  await importArxivPapers({ datasetId: "7", arxivIds: ["2608.12345v1", "2608.12346v1"] });
+
+  assert.equal(captured.url, "/api/v1/crawler/arxiv/import");
+  assert.equal(captured.init.method, "POST");
+  assert.deepEqual(JSON.parse(captured.init.body), {
+    dataset_id: 7,
+    arxiv_ids: ["2608.12345v1", "2608.12346v1"],
+  });
 });
 
 test("RAG stream sends snake_case payload and consumes terminal SSE event", async () => {

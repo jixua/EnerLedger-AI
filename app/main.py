@@ -14,11 +14,13 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.rag.config import settings
 from app.rag.database import close_database, init_database
 from app.rag.observability.logging import logger, setup_logger
+from app.services.arxiv_crawler import arxiv_crawler
 from app.services.document_dispatch import run_document_dispatch_reconciler
 
 setup_logger()
 
 from app.api.auth import router as auth_router
+from app.api.crawler import router as crawler_router
 from app.api.datasets import router as datasets_router
 from app.api.document_analysis import router as document_analysis_router
 from app.api.documents import router as documents_router
@@ -48,6 +50,7 @@ async def lifespan(_: FastAPI):
     await drain_usage_reports()
     await close_recall_pipeline_resources()
     await close_ingestion_resources()
+    await arxiv_crawler.close()
     await close_database()
     await logger.complete()
 
@@ -67,6 +70,7 @@ app.add_middleware(
     expose_headers=["Location", "X-Request-Id", "X-Document-Version"],
 )
 app.include_router(auth_router)
+app.include_router(crawler_router)
 app.include_router(llm_router)
 app.include_router(datasets_router)
 app.include_router(documents_router)
