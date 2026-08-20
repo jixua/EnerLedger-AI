@@ -198,6 +198,31 @@ export function getSystemStatus({ signal } = {}) {
   return apiRequest("/api/v1/system/status", { signal });
 }
 
+export function searchArxivPapers(
+  { query, maxResults = 10 },
+  { signal } = {},
+) {
+  const path = appendQuery("/api/v1/crawler/arxiv", {
+    query: String(query || "").trim(),
+    max_results: maxResults,
+  });
+  return apiRequest(path, { signal });
+}
+
+export function importArxivPapers(
+  { datasetId, arxivIds },
+  { signal } = {},
+) {
+  return apiRequest("/api/v1/crawler/arxiv/import", {
+    method: "POST",
+    body: {
+      dataset_id: Number(datasetId),
+      arxiv_ids: arxivIds,
+    },
+    signal,
+  });
+}
+
 export function listModelConfigs(
   { capability, includeInactive = false } = {},
   { signal } = {},

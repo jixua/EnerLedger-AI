@@ -22,13 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
 from app.domain.models import Dataset, Document
-from app.domain.text import repair_legacy_mojibake
 from app.domain.schemas import (
     DocumentChunkPage,
     DocumentPreviewMap,
     DocumentRead,
     DocumentUpdate,
 )
+from app.domain.text import repair_legacy_mojibake
 from app.rag.config import settings
 from app.rag.database import get_db
 from app.rag.models.chunk_record import ChunkRecordDB
@@ -687,18 +687,71 @@ async def upload_and_queue_document(
         dir=parse_temp_root,
     ) as temp_dir:
         source_path = Path(temp_dir) / f"source.{file_type}"
-        file_size = await _save_upload_to_path(file, source_path)
+        await _save_upload_to_path(file, source_path)
         _validate_word_file_signature(source_path, file_type)
-        try:
-            await asyncio.to_thread(
-                storage.upload_from_path,
-                settings.MINIO_RAW_BUCKET,
-                object_key,
-                source_path,
-                content_type,
-            )
-        except Exception as exc:
-            raise HTTPException(status_code=502, detail="原始文件上传对象存储失败") from exc
+        document = await queue_document_from_path(
+            dataset_id=dataset_id,
+            user_id=user_id,
+            filename=filename,
+            source_path=source_path,
+            content_type=content_type,
+            db=db,
+            storage=storage,
+            object_key=object_key,
+            ownership_checked=True,
+        )
+
+    response.headers["Location"] = f"/api/v1/documents/{document.id}"
+    return _document_payload(document)
+
+
+async def queue_document_from_path(
+    *,
+    dataset_id: int,
+    user_id: int,
+    filename: str,
+    source_path: Path,
+    content_type: str,
+    db: AsyncSession,
+    storage: Any | None = None,
+    object_key: str | None = None,
+    ownership_checked: bool = False,
+) -> Document:
+    """把已经落盘的受支持文件放入与普通上传相同的解析队列。"""
+
+    if not ownership_checked:
+        await _owned_dataset(db, dataset_id, user_id)
+    safe_filename = PurePath(filename).name
+    file_type = PurePath(safe_filename).suffix.lower().lstrip(".")
+    if not safe_filename or file_type not in SUPPORTED_FILE_TYPES:
+        raise HTTPException(status_code=415, detail="不支持的文件格式")
+    if len(safe_filename) > 255:
+        raise HTTPException(status_code=422, detail="文件名不能超过 255 个字符")
+    file_size = source_path.stat().st_size
+    if file_size <= 0:
+        raise HTTPException(status_code=422, detail="文件不能为空")
+    if file_size > settings.DOCUMENT_UPLOAD_MAX_BYTES:
+        raise HTTPException(
+            status_code=status.HTTP_413_REQUEST_ENTITY_TOO_LARGE,
+            detail=f"文件超过上传上限 {settings.DOCUMENT_UPLOAD_MAX_BYTES} bytes",
+        )
+    _validate_word_file_signature(source_path, file_type)
+
+    storage = storage or StorageFactory.get_storage()
+    object_key = object_key or (
+        f"raw/{user_id}/{dataset_id}/{uuid4().hex}/{safe_filename}"
+    )
+    normalized_content_type = (content_type or "application/octet-stream")[:128]
+    try:
+        await asyncio.to_thread(
+            storage.upload_from_path,
+            settings.MINIO_RAW_BUCKET,
+            object_key,
+            source_path,
+            normalized_content_type,
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail="原始文件上传对象存储失败") from exc
 
     # 对象上传期间数据集可能被并发删除；提交 Document 前重新加锁校验，使删除与插入串行。
     try:
@@ -717,10 +770,10 @@ async def upload_and_queue_document(
     document = Document(
         dataset_id=dataset_id,
         user_id=user_id,
-        filename=filename,
+        filename=safe_filename,
         file_type=file_type,
         file_size=file_size,
-        content_type=content_type,
+        content_type=normalized_content_type,
         raw_bucket=settings.MINIO_RAW_BUCKET,
         raw_object_key=object_key,
         parser_backend="opendataloader" if file_type == "pdf" else "builtin",
@@ -748,8 +801,7 @@ async def upload_and_queue_document(
         raise
 
     await _dispatch_document(db, document)
-    response.headers["Location"] = f"/api/v1/documents/{document.id}"
-    return _document_payload(document)
+    return document
 
 
 # 保留旧函数名，避免内部调用方升级期间 import 失败；HTTP 契约已经改为 202 + QUEUED。

@@ -12,6 +12,7 @@ const TasksPage = lazy(() => import("./pages/TasksPage").then((module) => ({ def
 const PlaygroundPage = lazy(() => import("./pages/PlaygroundPage").then((module) => ({ default: module.PlaygroundPage })));
 const ModelsPage = lazy(() => import("./pages/ModelsPage").then((module) => ({ default: module.ModelsPage })));
 const SystemPage = lazy(() => import("./pages/SystemPage").then((module) => ({ default: module.SystemPage })));
+const CrawlerPage = lazy(() => import("./pages/CrawlerPage").then((module) => ({ default: module.CrawlerPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage").then((module) => ({ default: module.LoginPage })));
 
 function PageLoader() {
@@ -42,6 +43,7 @@ export function App() {
             <Route path="playground" element={<Navigate to="/" replace />} />
             <Route path="models" element={<Suspense fallback={<PageLoader />}><ModelsPage /></Suspense>} />
             <Route path="system" element={<Suspense fallback={<PageLoader />}><SystemPage /></Suspense>} />
+            <Route path="crawler" element={<Suspense fallback={<PageLoader />}><CrawlerPage /></Suspense>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

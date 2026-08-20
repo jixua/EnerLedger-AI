@@ -8,6 +8,8 @@ def test_openapi_contains_every_frontend_runtime_endpoint() -> None:
         ("post", "/api/v1/auth/login"),
         ("get", "/api/v1/auth/me"),
         ("get", "/api/v1/system/status"),
+        ("get", "/api/v1/crawler/arxiv"),
+        ("post", "/api/v1/crawler/arxiv/import"),
         ("get", "/api/v1/llm/configs"),
         ("post", "/api/v1/llm/configs"),
         ("patch", "/api/v1/llm/configs/{config_id}"),

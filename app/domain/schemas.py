@@ -1,5 +1,6 @@
 """控制面 API 的 Pydantic 契约。"""
 
+import re
 from datetime import datetime
 from pathlib import PurePath
 from typing import Annotated, Any, Literal, Self
@@ -37,6 +38,64 @@ class CurrentAdmin(BaseModel):
     user_id: int
     username: str
     role: Literal["admin"] = "admin"
+
+
+class ArxivPaper(BaseModel):
+    arxiv_id: str
+    title: str
+    summary: str
+    authors: list[str]
+    categories: list[str]
+    published_at: datetime
+    updated_at: datetime
+    abstract_url: AnyHttpUrl
+    pdf_url: AnyHttpUrl
+
+
+class ArxivSearchResponse(BaseModel):
+    source: Literal["arXiv"] = "arXiv"
+    query: str
+    total_results: int
+    fetched_at: datetime
+    items: list[ArxivPaper]
+
+
+class ArxivImportRequest(BaseModel):
+    dataset_id: int = Field(gt=0)
+    arxiv_ids: list[str] = Field(min_length=1, max_length=10)
+
+    @field_validator("arxiv_ids")
+    @classmethod
+    def validate_arxiv_ids(cls, values: list[str]) -> list[str]:
+        pattern = re.compile(
+            r"^(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z]{2})?/\d{7})(?:v\d+)?$",
+            re.IGNORECASE,
+        )
+        normalized: list[str] = []
+        for value in values:
+            arxiv_id = value.strip()
+            if not pattern.fullmatch(arxiv_id):
+                raise ValueError(f"无效的 arXiv ID：{value}")
+            if arxiv_id not in normalized:
+                normalized.append(arxiv_id)
+        if not normalized:
+            raise ValueError("至少选择一篇论文")
+        return normalized
+
+
+class ArxivImportItem(BaseModel):
+    arxiv_id: str
+    status: Literal["QUEUED", "FAILED"]
+    document_id: int | None = None
+    filename: str
+    message: str | None = None
+
+
+class ArxivImportResponse(BaseModel):
+    dataset_id: int
+    queued_count: int
+    failed_count: int
+    items: list[ArxivImportItem]
 
 
 class DatasetCreate(BaseModel):
