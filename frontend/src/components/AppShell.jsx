@@ -5,6 +5,7 @@ import {
   Bot,
   CalendarDays,
   Database,
+  Globe2,
   Menu,
   MessageSquareText,
   PanelLeftClose,
@@ -21,6 +22,7 @@ import { useAuth } from "../state/AuthContext";
 const navigation = [
   { to: "/", label: "对话", icon: MessageSquareText, end: true },
   { to: "/datasets", label: "碳知识库", icon: Database },
+  { to: "/crawler", label: "论文采集", icon: Globe2 },
   { to: "/tasks", label: "解析队列", icon: Workflow },
   { to: "/models", label: "模型配置", icon: Bot },
   { to: "/system", label: "系统状态", icon: Activity },
