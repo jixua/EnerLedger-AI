@@ -10,6 +10,11 @@
 - PDF 固定使用源码内的 OpenDataLoader；它在 Python 进程中调用 Java，因此运行镜像仍需 OpenJDK 21。
 - 上传入口支持 PDF、DOC/DOCX、HTML/HTM；旧版二进制 `.doc` 由
   LibreOffice 独立进程限时转换为 DOCX，再进入同一套 Mammoth 结构解析。
+- Word 表格先构建统一 IR：无合并、嵌套、图片或多块内容的简单表格输出 GFM
+  Markdown；复杂表格输出 `table-rag-v2` 文字结构，并保留跨行、跨列及父子表格
+  元数据供预览和检索使用。HTML 只作为异常诊断回退，出现回退时质量门禁会拒绝入库。
+- Word 解析会将 OMML 公式转为 LaTeX，并传播文档中已保存的显式分页信息；分页和
+  表格协议 marker 只承担定位/结构边界职责，不进入最终检索文本。
 - 文档上传后立即向 RabbitMQ 发布只携带文档 ID 的持久消息，独立 `parse-worker` 通过 `basic_consume` 主动接收并完成解析、切分和三路索引；MySQL 仅保存状态、租约与幂等真值。
 - MySQL 只保留 `dataset`、`document`、`document_chunk`、`llm_config` 四张业务表；单管理员身份由部署配置提供，不新增用户表，也不提供注册接口。
 - 不建立解析日志、阶段流水线、会话、消息、用量日志、厂商目录或模型目录表。

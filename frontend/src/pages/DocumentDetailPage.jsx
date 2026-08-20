@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   ArrowLeft,
@@ -17,14 +17,26 @@ import {
   Workflow,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
+import rehypeKatex from "rehype-katex";
 import { Link, useParams } from "react-router-dom";
 import remarkGfm from "remark-gfm";
-import { DocumentHtmlTable, remarkDocumentHtmlTables } from "../components/DocumentHtmlTable";
+import remarkMath from "remark-math";
+import {
+  createDocumentStructuredTablesPlugin,
+  DocumentHtmlTable,
+  DocumentStructuredTable,
+  remarkDocumentHtmlTables,
+} from "../components/DocumentHtmlTable";
 import { DocumentPreviewImage } from "../components/DocumentPreviewImage";
 import {
   createDocumentBoundaryPlugin,
+  mergeDocumentDetailSnapshot,
   normalizeDocumentBoundaries,
+  remarkDocumentBreakTags,
+  remarkDocumentPageMarkers,
 } from "../lib/document-reader";
+import { normalizeDocumentMath } from "../lib/document-math";
+import { documentErrorMessage } from "../lib/text";
 import { useApp } from "../state/AppContext";
 
 const CHUNK_TYPE_LABELS = {
@@ -203,6 +215,38 @@ function BoundaryGroup({ entries, approximate = false }) {
   );
 }
 
+const DOCUMENT_REHYPE_PLUGINS = [rehypeKatex];
+
+const DocumentMarkdown = memo(function DocumentMarkdown({
+  boundaryPlugin,
+  components,
+  content,
+  structuredTablePlugin,
+}) {
+  const remarkPlugins = useMemo(
+    () => [
+      remarkGfm,
+      remarkMath,
+      remarkDocumentBreakTags,
+      remarkDocumentPageMarkers,
+      structuredTablePlugin,
+      boundaryPlugin,
+      remarkDocumentHtmlTables,
+    ],
+    [boundaryPlugin, structuredTablePlugin],
+  );
+
+  return (
+    <ReactMarkdown
+      remarkPlugins={remarkPlugins}
+      rehypePlugins={DOCUMENT_REHYPE_PLUGINS}
+      components={components}
+    >
+      {content}
+    </ReactMarkdown>
+  );
+});
+
 export function DocumentDetailPage() {
   const params = useParams();
   const datasetId = Number(params.datasetId);
@@ -234,12 +278,50 @@ export function DocumentDetailPage() {
     () => createDocumentBoundaryPlugin(readerBoundaries, preview?.boundary_precision),
     [preview?.boundary_precision, readerBoundaries],
   );
+  const tableStructures = useMemo(
+    () => document?.parse_quality?.table_structure?.tables || [],
+    [document?.parse_quality?.table_structure?.tables],
+  );
+  const tableStructureMap = useMemo(
+    () => new Map(tableStructures.map((structure) => [
+      String(structure?.table_id || structure?.preview?.id || ""),
+      structure,
+    ])),
+    [tableStructures],
+  );
+  const structuredTablePlugin = useMemo(
+    () => createDocumentStructuredTablesPlugin(tableStructures),
+    [tableStructures],
+  );
+  const renderedPreviewContent = useMemo(
+    () => normalizeDocumentMath(preview?.content || ""),
+    [preview?.content],
+  );
   const markdownComponents = useMemo(
     () => ({
       a: ({ children, node: _node, ...props }) => <a {...props} target="_blank" rel="noreferrer">{children}</a>,
       img: (props) => <DocumentPreviewImage {...props} />,
       table: ({ children, node: _node, ...props }) => <div className="document-reader-table"><table {...props}>{children}</table></div>,
       "document-html-table": (props) => <DocumentHtmlTable {...props} />,
+      "document-structured-table": ({ node }) => {
+        const tableId = String(node?.properties?.tableId ?? node?.properties?.tableid ?? "");
+        return <DocumentStructuredTable structure={tableStructureMap.get(tableId)} />;
+      },
+      "document-page-marker": ({ node }) => {
+        const pageNumber = String(node?.properties?.pageNumber ?? node?.properties?.pagenumber ?? "");
+        const markerType = String(node?.properties?.markerType ?? node?.properties?.markertype ?? "");
+        return (
+          <div
+            id={`document-page-${pageNumber}`}
+            className="document-page-marker"
+            role="separator"
+            aria-label={`第 ${pageNumber} 页`}
+            title={markerType === "WORD_PAGE" ? "Word 原始页码" : "PDF 原始页码"}
+          >
+            <span className="document-page-marker__label">第 {pageNumber} 页</span>
+          </div>
+        );
+      },
       "document-chunk-boundary": ({ node }) => {
         const rawIndexes = node?.properties?.boundaryIndexes ?? node?.properties?.boundaryindexes ?? "";
         const entries = String(rawIndexes)
@@ -247,14 +329,16 @@ export function DocumentDetailPage() {
           .map((value) => readerBoundaries[Number(value)])
           .filter(Boolean);
         const approximate = String(node?.properties?.placementApproximate ?? node?.properties?.placementapproximate) === "true";
-        return showBoundaries ? <BoundaryGroup entries={entries} approximate={approximate} /> : null;
+        return <BoundaryGroup entries={entries} approximate={approximate} />;
       },
     }),
-    [readerBoundaries, showBoundaries],
+    [readerBoundaries, tableStructureMap],
   );
 
   useEffect(() => {
-    if (contextDocument) setDocument(contextDocument);
+    if (contextDocument) {
+      setDocument((current) => mergeDocumentDetailSnapshot(current, contextDocument));
+    }
   }, [contextDocument]);
 
   const refreshDocument = useCallback(async () => {
@@ -368,7 +452,6 @@ export function DocumentDetailPage() {
   const sourceChunkCount = preview
     ? Math.max(Number.isFinite(rawSourceChunkCount) ? rawSourceChunkCount : 0, readerBoundaries.length)
     : null;
-
   return (
     <div className="page page--document-detail">
       <header className="document-detail-header">
@@ -404,7 +487,7 @@ export function DocumentDetailPage() {
           <div>
             <p className="eyebrow">{status === "FAILED" ? "解析未完成" : "后台解析队列"}</p>
             <h2>{status === "FAILED" ? "当前版本解析失败" : status === "QUEUED" ? "文档正在等待处理" : "正在解析并建立检索索引"}</h2>
-            <p>{status === "FAILED" ? (document.error_message || "解析或索引阶段出现异常，请重试后查看文档。") : "完整文档与分片边界会在解析和检索索引全部完成后开放。"}</p>
+            <p>{status === "FAILED" ? documentErrorMessage(document, "解析或索引阶段出现异常，请重试后查看文档。") : "完整文档与分片边界会在解析和检索索引全部完成后开放。"}</p>
             {document.error_code ? <code>{document.error_code}</code> : null}
           </div>
           <Link className="button button--secondary" to="/tasks"><Workflow size={15} />查看解析队列</Link>
@@ -432,17 +515,20 @@ export function DocumentDetailPage() {
           {previewError ? <div className="notice notice--error document-reader__notice" role="alert"><AlertCircle size={16} /><p>{previewError}</p><button type="button" className="button button--tiny" onClick={() => setPreviewRefreshKey((current) => current + 1)}>重试加载</button>{preview ? <button type="button" onClick={() => setPreviewError("")} aria-label="关闭加载错误">×</button> : null}</div> : null}
 
           {preview?.reparse_required ? <div className="notice notice--warning document-reader__notice document-reader__notice--compact"><AlertCircle size={15} /><div><strong>历史版本边界：</strong><span>原文可正常阅读，分片线按现有行号恢复；重新解析后可获得精确边界。</span></div></div> : null}
-          {preview?.boundary_precision === "approximate_line" ? <div className="notice notice--warning document-reader__notice document-reader__notice--compact"><AlertCircle size={15} /><div><strong>近似位置：</strong><span>语义切分可能位于段落内部，分片线显示在最近的安全文档结构边缘；同一位置会完整保留多个边界。</span></div></div> : null}
-
           {loadingPreview && !preview ? (
             <div className="document-reader__loading"><Loader2 className="spin" size={20} /><p>正在还原完整文档…</p></div>
           ) : !preview ? (
             <div className="empty-state document-reader__empty document-reader__empty--error"><AlertCircle size={22} /><h3>文档内容暂时无法加载</h3><p>{previewError || "请重试加载，或返回数据集确认文档解析状态。"}</p><button type="button" className="button button--secondary" onClick={() => setPreviewRefreshKey((current) => current + 1)}><RefreshCw size={15} />重新加载</button></div>
           ) : preview.content ? (
             <div className="document-reader__canvas">
-              <article className="document-reader__paper" aria-label={`${document.filename} 的解析后正文`}>
+              <article className={`document-reader__paper${showBoundaries ? "" : " document-reader__paper--boundaries-hidden"}`} aria-label={`${document.filename} 的解析后正文`}>
                 <div className="document-reader-markdown">
-                  <ReactMarkdown remarkPlugins={[remarkGfm, boundaryPlugin, remarkDocumentHtmlTables]} components={markdownComponents}>{preview.content}</ReactMarkdown>
+                  <DocumentMarkdown
+                    boundaryPlugin={boundaryPlugin}
+                    components={markdownComponents}
+                    content={renderedPreviewContent}
+                    structuredTablePlugin={structuredTablePlugin}
+                  />
                 </div>
               </article>
             </div>

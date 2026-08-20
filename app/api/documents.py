@@ -9,6 +9,7 @@ import os
 import re
 import tempfile
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from pathlib import Path, PurePath, PurePosixPath
 from typing import Any, Literal
 from urllib.parse import unquote, urlsplit
@@ -21,6 +22,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
 from app.domain.models import Dataset, Document
+from app.domain.text import repair_legacy_mojibake
 from app.domain.schemas import (
     DocumentChunkPage,
     DocumentPreviewMap,
@@ -46,6 +48,8 @@ from app.services.document_queue import (
 router = APIRouter(prefix="/api/v1", tags=["文档解析"])
 
 SUPPORTED_FILE_TYPES = {"pdf", "doc", "docx", "html", "htm"}
+_OLE_COMPOUND_FILE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
+_ZIP_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 DOCUMENT_STATUSES = {
     DOCUMENT_STATUS_QUEUED,
     DOCUMENT_STATUS_PROCESSING,
@@ -134,6 +138,22 @@ async def _save_upload_to_path(file: UploadFile, destination: Path) -> int:
     return total
 
 
+def _validate_word_file_signature(path: Path, file_type: str) -> None:
+    """在进入队列前拒绝仅靠后缀伪装的 DOC/DOCX。"""
+
+    if file_type not in {"doc", "docx"}:
+        return
+    with path.open("rb") as source:
+        header = source.read(8)
+    valid = (
+        header.startswith(_OLE_COMPOUND_FILE_MAGIC)
+        if file_type == "doc"
+        else header.startswith(_ZIP_MAGICS)
+    )
+    if not valid:
+        raise HTTPException(status_code=422, detail=f"文件内容不是有效的 {file_type.upper()} 文档")
+
+
 _QUALITY_SUMMARY_FIELDS = (
     "schema_version",
     "status",
@@ -155,6 +175,8 @@ _QUALITY_SUMMARY_FIELDS = (
     "source_table_count",
     "structured_table_count",
     "source_image_reference_count",
+    "source_supported_image_reference_count",
+    "source_legacy_vml_image_reference_count",
     "image_asset_count",
     "image_upload_count",
     "suppressed_unexplained_image_count",
@@ -258,6 +280,22 @@ def _quality_report_summary(report: dict[str, Any] | None) -> dict[str, Any] | N
     return summary
 
 
+def _document_parse_time_ms(document: Document) -> int | None:
+    """Prefer the complete processing attempt duration for API compatibility."""
+
+    started_at = document.processing_started_at
+    finished_at = document.finished_at
+    if isinstance(started_at, datetime) and isinstance(finished_at, datetime):
+        if started_at.tzinfo is not None:
+            started_at = started_at.astimezone(UTC).replace(tzinfo=None)
+        if finished_at.tzinfo is not None:
+            finished_at = finished_at.astimezone(UTC).replace(tzinfo=None)
+        duration_ms = int((finished_at - started_at).total_seconds() * 1000)
+        if duration_ms >= 0:
+            return duration_ms
+    return document.parse_time_ms
+
+
 def _document_payload(document: Document, *, quality_detail: bool = True) -> dict:
     parse_quality = (
         document.parse_quality
@@ -281,11 +319,11 @@ def _document_payload(document: Document, *, quality_detail: bool = True) -> dic
         "lease_expires_at": document.lease_expires_at,
         "finished_at": document.finished_at,
         "error_code": document.error_code,
-        "error_message": document.error_message,
+        "error_message": repair_legacy_mojibake(document.error_message),
         "reparse_requested": document.reparse_requested,
         "page_count": document.page_count,
         "chunk_count": document.chunk_count,
-        "parse_time_ms": document.parse_time_ms,
+        "parse_time_ms": _document_parse_time_ms(document),
         "parse_quality_status": document.parse_quality_status,
         "parse_quality": parse_quality,
         "retrieval_ready": _document_retrieval_ready(document),
@@ -650,6 +688,7 @@ async def upload_and_queue_document(
     ) as temp_dir:
         source_path = Path(temp_dir) / f"source.{file_type}"
         file_size = await _save_upload_to_path(file, source_path)
+        _validate_word_file_signature(source_path, file_type)
         try:
             await asyncio.to_thread(
                 storage.upload_from_path,

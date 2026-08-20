@@ -1,5 +1,5 @@
 import { ImageOff, Loader2, RefreshCw } from "lucide-react";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   getDocumentPreviewAsset,
   isDocumentPreviewAssetUrl,
@@ -7,12 +7,41 @@ import {
 
 export function DocumentPreviewImage({ src, alt, node: _node, ...props }) {
   const protectedAsset = isDocumentPreviewAssetUrl(src);
+  const placeholderRef = useRef(null);
   const [attempt, setAttempt] = useState(0);
-  const [state, setState] = useState({ status: protectedAsset ? "loading" : "direct", url: "", error: "" });
+  const [nearViewport, setNearViewport] = useState(false);
+  const [state, setState] = useState({ status: protectedAsset ? "deferred" : "direct", url: "", error: "" });
+
+  useEffect(() => {
+    if (!protectedAsset) {
+      setNearViewport(true);
+      return undefined;
+    }
+    if (typeof IntersectionObserver === "undefined") {
+      setNearViewport(true);
+      return undefined;
+    }
+    const target = placeholderRef.current;
+    if (!target) return undefined;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (!entries.some((entry) => entry.isIntersecting)) return;
+        setNearViewport(true);
+        observer.disconnect();
+      },
+      { rootMargin: "1200px 0px" },
+    );
+    observer.observe(target);
+    return () => observer.disconnect();
+  }, [protectedAsset, src]);
 
   useEffect(() => {
     if (!protectedAsset) {
       setState({ status: "direct", url: "", error: "" });
+      return undefined;
+    }
+    if (!nearViewport) {
+      setState({ status: "deferred", url: "", error: "" });
       return undefined;
     }
 
@@ -39,14 +68,14 @@ export function DocumentPreviewImage({ src, alt, node: _node, ...props }) {
       controller.abort();
       if (objectUrl) URL.revokeObjectURL(objectUrl);
     };
-  }, [attempt, protectedAsset, src]);
+  }, [attempt, nearViewport, protectedAsset, src]);
 
   const imageAlt = alt || "文档图片";
   if (!protectedAsset) {
-    return <img {...props} src={src} alt={imageAlt} loading="lazy" />;
+    return <img {...props} src={src} alt={imageAlt} loading="lazy" decoding="async" />;
   }
   if (state.status === "ready") {
-    return <img {...props} src={state.url} alt={imageAlt} loading="lazy" />;
+    return <img {...props} src={state.url} alt={imageAlt} loading="lazy" decoding="async" />;
   }
   if (state.status === "error") {
     return (
@@ -58,9 +87,9 @@ export function DocumentPreviewImage({ src, alt, node: _node, ...props }) {
     );
   }
   return (
-    <span className="document-reader-image-state" role="status" aria-label={`正在加载图片：${imageAlt}`}>
-      <Loader2 className="spin" size={18} aria-hidden="true" />
-      <span>正在加载图片</span>
+    <span ref={placeholderRef} className="document-reader-image-state" role="status" aria-label={`${state.status === "deferred" ? "等待加载" : "正在加载"}图片：${imageAlt}`}>
+      {state.status === "loading" ? <Loader2 className="spin" size={18} aria-hidden="true" /> : null}
+      <span>{state.status === "deferred" ? "滚动到附近后加载图片" : "正在加载图片"}</span>
     </span>
   );
 }

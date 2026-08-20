@@ -2,6 +2,7 @@ import { useMemo, useState } from 'react';
 import { AlertCircle, CheckCircle2, Clock3, FileText, Loader2, RefreshCw, Search, XCircle } from 'lucide-react';
 import { Link } from 'react-router-dom';
 import { isDocumentRetrievalReady } from '../lib/parse-quality';
+import { documentErrorMessage } from '../lib/text';
 import { useApp } from '../state/AppContext';
 
 const FILTERS = [
@@ -90,7 +91,7 @@ export function TasksPage() {
       if (activeFilter !== 'ALL' && status !== activeFilter) return false;
       const dataset = datasetById.get(Number(datasetIdOf(document)));
       if (!normalizedKeyword) return true;
-      return `${document.filename || ''} ${dataset?.name || ''} ${document.error_message || ''}`
+      return `${document.filename || ''} ${dataset?.name || ''} ${documentErrorMessage(document, '')}`
         .toLowerCase()
         .includes(normalizedKeyword);
     });
@@ -130,35 +131,21 @@ export function TasksPage() {
   const isLoading = typeof loading === 'boolean' ? loading : Boolean(loading.documents || loading.initial);
 
   return (
-    <div className="page page--tasks">
-      <header className="page-header">
-        <div>
+    <div className="page page--tasks feature-page">
+      <header className="knowledge-hero">
+        <div className="knowledge-hero__copy">
+          <p className="eyebrow">Document processing queue</p>
           <h1>解析队列</h1>
-          <p className="page-header__description">集中查看所有数据集的文档排队、处理、重试与索引状态。</p>
+          <p className="knowledge-hero__subtitle">{counts.RETRIEVAL_READY} 份文档可检索</p>
         </div>
-        <button type="button" className="button button--secondary" onClick={refreshAll} disabled={refreshing || (!actions.loadAllDocuments && !actions.loadDocuments)}>
+        <button type="button" className="button button--secondary knowledge-hero__action" onClick={refreshAll} disabled={refreshing || (!actions.loadAllDocuments && !actions.loadDocuments)}>
           <RefreshCw className={refreshing ? 'spin' : ''} size={16} />
           {refreshing ? '刷新中' : '刷新状态'}
         </button>
       </header>
 
-      <div className="notice notice--subtle">
-        <AlertCircle size={17} />
-        <div>
-          <strong>文档将在后台依次处理</strong>
-          <p>你可以在这里查看处理进度，并重新提交失败的文档。</p>
-        </div>
-      </div>
-
       {refreshError ? <div className="notice notice--error"><AlertCircle size={16} /><p>{refreshError}</p></div> : null}
       {actionNotice ? <div className="notice notice--success"><CheckCircle2 size={16} /><p>{actionNotice}</p></div> : null}
-
-      <section className="task-metrics" aria-label="任务状态摘要">
-        <article className="task-metric task-metric--queued"><Clock3 size={17} /><div><strong>{counts.QUEUED}</strong><span>排队 / 待重试</span></div></article>
-        <article className="task-metric task-metric--processing"><Loader2 className={counts.PROCESSING ? 'spin' : ''} size={17} /><div><strong>{counts.PROCESSING}</strong><span>处理中</span></div></article>
-        <article className="task-metric task-metric--ready"><CheckCircle2 size={17} /><div><strong>{counts.RETRIEVAL_READY}</strong><span>可检索</span></div></article>
-        <article className="task-metric task-metric--failed"><XCircle size={17} /><div><strong>{counts.FAILED}</strong><span>失败</span></div></article>
-      </section>
 
       <section className="panel panel--flush">
         <div className="task-toolbar">
@@ -202,7 +189,7 @@ export function TasksPage() {
                       <td>
                         <div className="task-result-cell">
                           {documentStatus === 'FAILED' ? (
-                            <span className="table-error" title={document.error_message || ''}>{document.error_message || '解析或索引失败'}</span>
+                            <span className="table-error" title={documentErrorMessage(document)}>{documentErrorMessage(document)}</span>
                           ) : documentStatus === 'READY' ? (
                             <span>{document.chunk_count ?? 0} 个片段 · {document.page_count ?? '-'} 页</span>
                           ) : (

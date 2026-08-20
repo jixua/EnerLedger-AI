@@ -23,6 +23,7 @@ import {
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { UploadDialog } from "../components/UploadDialog";
 import { isDocumentRetrievalReady } from "../lib/parse-quality";
+import { documentErrorMessage } from "../lib/text";
 import { useApp } from "../state/AppContext";
 
 const TABS = [
@@ -361,7 +362,7 @@ export function DatasetDetailPage() {
       <header className="dataset-detail-header">
         <div className="dataset-detail-header__main">
           <Link className="icon-button" to="/datasets" aria-label="返回数据集列表"><ArrowLeft size={18} /></Link>
-          <div><p className="eyebrow">数据集 #{dataset.id}</p><h1>{dataset.name}</h1><p>{dataset.description || "暂无描述"}</p></div>
+          <div><p className="eyebrow">数据集 #{dataset.id}</p><h1>{dataset.name}</h1>{dataset.description ? <p>{dataset.description}</p> : null}</div>
         </div>
         <div className="dataset-detail-header__actions">
           <Link className="button button--secondary" to="/tasks"><Clock3 size={16} />解析队列</Link>
@@ -388,10 +389,6 @@ export function DatasetDetailPage() {
 
       {activeTab === "documents" ? (
         <section className="panel document-panel" id="dataset-panel-documents" role="tabpanel" aria-labelledby="dataset-tab-documents" tabIndex={0}>
-          <div className="section-heading document-panel__heading">
-            <div><h2>文档</h2><p>上传后将自动进入解析队列并建立检索索引。</p></div>
-          </div>
-
           {loadingDocuments && datasetDocuments.length === 0 ? (
             <div className="empty-state empty-state--loading"><Loader2 className="spin" size={20} /><p>正在读取文档…</p></div>
           ) : datasetDocuments.length === 0 ? (
@@ -424,7 +421,7 @@ export function DatasetDetailPage() {
                         <div className="document-row__identity" role="cell"><span className="file-icon"><FileText size={16} /></span><span><Link className="document-name-link" to={`/datasets/${datasetId}/documents/${id}`}>{document.filename || `文档 #${id}`}</Link><small>{String(document.file_type || "").toUpperCase()} · {formatBytes(document.file_size)} · {document.parser_backend || "—"}</small></span></div>
                         <div className="document-row__status" role="cell" data-label="状态"><StatusPill document={document} />{Number(document.attempt_count) > 0 ? <small>尝试 {document.attempt_count} 次</small> : null}</div>
                         <div className="document-row__result" role="cell" data-label="解析结果">
-                          {status === "FAILED" ? <p className="document-error">{document.error_message || "解析或索引失败"}</p> : <><strong>{document.chunk_count ?? 0} 个分片 · {document.page_count ?? "—"} 页</strong><small>{status === "READY" ? `耗时 ${formatDuration(document.parse_time_ms)}` : status === "QUEUED" ? `可用时间 ${formatTime(document.available_at || document.queued_at)}` : `开始于 ${formatTime(document.processing_started_at)}`}</small></>}
+                          {status === "FAILED" ? <p className="document-error">{documentErrorMessage(document)}</p> : <><strong>{document.chunk_count ?? 0} 个分片 · {document.page_count ?? "—"} 页</strong><small>{status === "READY" ? `耗时 ${formatDuration(document.parse_time_ms)}` : status === "QUEUED" ? `可用时间 ${formatTime(document.available_at || document.queued_at)}` : `开始于 ${formatTime(document.processing_started_at)}`}</small></>}
                         </div>
                         <time className="document-row__time" role="cell" data-label="更新时间">{formatTime(document.updated_at)}</time>
                         <div className="document-row__actions" role="cell" data-label="操作">

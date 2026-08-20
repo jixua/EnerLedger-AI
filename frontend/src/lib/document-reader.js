@@ -3,6 +3,28 @@ function finiteInteger(value) {
   return Number.isInteger(number) ? number : null;
 }
 
+function hasDetailedTableStructure(document) {
+  return Array.isArray(document?.parse_quality?.table_structure?.tables);
+}
+
+/** Keep detail-only parse metadata when a same-version list summary arrives later. */
+export function mergeDocumentDetailSnapshot(current, incoming) {
+  if (!incoming) return current ?? null;
+  if (!current) return incoming;
+
+  const currentId = Number(current.document_id ?? current.documentId ?? current.id);
+  const incomingId = Number(incoming.document_id ?? incoming.documentId ?? incoming.id);
+  const currentVersion = Number(current.version ?? 0);
+  const incomingVersion = Number(incoming.version ?? 0);
+  if (currentId !== incomingId || currentVersion !== incomingVersion) return incoming;
+
+  const merged = { ...current, ...incoming };
+  if (hasDetailedTableStructure(current) && !hasDetailedTableStructure(incoming)) {
+    merged.parse_quality = current.parse_quality;
+  }
+  return merged;
+}
+
 function boundaryOrder(left, right) {
   const leftLine = finiteInteger(left.boundary?.start_line);
   const rightLine = finiteInteger(right.boundary?.start_line);
@@ -112,7 +134,66 @@ function isParserPageMarker(node) {
   if (node?.type !== "html") return false;
   const value = String(node.value ?? "");
   return /^\s*<!--\s*ODL_PAGE\s*:\s*\d+\s*-->\s*$/i.test(value)
+    || /^\s*<!--\s*WORD_PAGE\s*:\s*\d+\s*-->\s*$/i.test(value)
     || /^\s*<!--\s*PAGE_FALLBACK\s*:\s*(?:VISION|OCR)\s*-->\s*$/i.test(value);
+}
+
+const DOCUMENT_PAGE_MARKER = /^\s*<!--\s*(ODL_PAGE|WORD_PAGE)\s*:\s*(\d+)\s*-->\s*$/i;
+const DOCUMENT_BREAK_TAG = /^\s*<br\s*\/?>\s*$/i;
+
+/** Convert parser-emitted HTML break tags without enabling arbitrary raw HTML. */
+export function replaceDocumentBreakTags(tree) {
+  const visit = (node) => {
+    if (!node || typeof node !== "object" || !Array.isArray(node.children)) return;
+    node.children = node.children.map((child) => {
+      if (child?.type === "html" && DOCUMENT_BREAK_TAG.test(String(child.value || ""))) {
+        return { type: "break", position: child.position };
+      }
+      visit(child);
+      return child;
+    });
+  };
+  visit(tree);
+  return tree;
+}
+
+export function remarkDocumentBreakTags() {
+  return (tree) => replaceDocumentBreakTags(tree);
+}
+
+/** Convert parser page comments into explicit reader page-divider nodes. */
+export function replaceDocumentPageMarkers(tree) {
+  const visit = (node) => {
+    if (!node || typeof node !== "object") return;
+    if (Array.isArray(node.children)) {
+      node.children = node.children.map((child) => {
+        const match = child?.type === "html"
+          ? String(child.value || "").match(DOCUMENT_PAGE_MARKER)
+          : null;
+        if (!match) {
+          visit(child);
+          return child;
+        }
+        return {
+          type: "documentPageMarker",
+          position: child.position,
+          data: {
+            hName: "document-page-marker",
+            hProperties: {
+              pageNumber: match[2],
+              markerType: match[1].toUpperCase(),
+            },
+          },
+        };
+      });
+    }
+  };
+  visit(tree);
+  return tree;
+}
+
+export function remarkDocumentPageMarkers() {
+  return (tree) => replaceDocumentPageMarkers(tree);
 }
 
 /**
