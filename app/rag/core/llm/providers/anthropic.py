@@ -274,6 +274,7 @@ class AnthropicProvider(BaseProvider):
         return GenerateResult(
             content=content,
             model=response.get("model", self.model_name),
+            finish_reason=response.get("stop_reason"),
             usage=UsageInfo(
                 prompt_tokens=usage["input_tokens"],
                 completion_tokens=usage["output_tokens"],
