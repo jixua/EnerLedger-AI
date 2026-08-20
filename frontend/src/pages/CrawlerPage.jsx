@@ -89,6 +89,7 @@ export function CrawlerPage() {
       const nextResult = await searchArxivPapers({ query: normalized, maxResults });
       setResult(nextResult);
       setSelectedIds([]);
+      setDatasetId("");
     } catch (requestError) {
       setError(requestError?.message || "论文采集失败，请稍后重试");
     } finally {
@@ -110,17 +111,23 @@ export function CrawlerPage() {
 
   async function handleImport() {
     if (!datasetId || selectedIds.length === 0 || importing) return;
+    const targetDatasetId = Number(datasetId);
     setImporting(true);
     setError("");
     setImportResult(null);
     try {
-      const response = await importArxivPapers({ datasetId, arxivIds: selectedIds });
+      const selectedPapers = result.items
+        .filter((paper) => selectedIds.includes(paper.arxiv_id))
+        .map((paper) => ({ arxiv_id: paper.arxiv_id, title: paper.title }));
+      const response = await importArxivPapers({ datasetId, papers: selectedPapers });
       setImportResult(response);
       const queuedIds = new Set(
         response.items.filter((item) => item.status === "QUEUED").map((item) => item.arxiv_id),
       );
       setSelectedIds((current) => current.filter((id) => !queuedIds.has(id)));
-      await actions.loadDocuments?.(Number(datasetId));
+      setDatasetId("");
+      setImporting(false);
+      void Promise.resolve(actions.loadDocuments?.(targetDatasetId)).catch(() => {});
     } catch (requestError) {
       setError(requestError?.message || "论文导入失败，请稍后重试");
     } finally {
