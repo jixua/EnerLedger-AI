@@ -198,7 +198,7 @@ test("system page reads the detailed backend status endpoint", async () => {
   assert.equal(result.components.mysql.status, "ready");
 });
 
-test("arXiv crawler encodes keyword and bounded result count", async () => {
+test("arXiv crawler requires the target dataset before AI-optimized search", async () => {
   configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
   let captured;
   globalThis.fetch = async (url, init) => {
@@ -206,11 +206,16 @@ test("arXiv crawler encodes keyword and bounded result count", async () => {
     return jsonResponse({ source: "arXiv", query: "carbon footprint", total_results: 0, items: [] });
   };
 
-  await searchArxivPapers({ query: " carbon footprint ", maxResults: 5 });
+  await searchArxivPapers({
+    query: " 动力电池碳排 ",
+    maxResults: 5,
+    datasetId: 7,
+    aiOptimize: true,
+  });
 
   assert.equal(
     captured.url,
-    "http://api.local/api/v1/crawler/arxiv?query=carbon+footprint&max_results=5",
+    "http://api.local/api/v1/crawler/arxiv?query=%E5%8A%A8%E5%8A%9B%E7%94%B5%E6%B1%A0%E7%A2%B3%E6%8E%92&max_results=5&dataset_id=7&ai_optimize=true",
   );
   assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
 });

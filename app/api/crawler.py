@@ -17,9 +17,15 @@ from app.domain.schemas import (
     ArxivSearchResponse,
 )
 from app.rag.config import settings
+from app.rag.core.llm.provider_lifecycle import aclose_resolved_models
+from app.rag.core.llm.user_model_resolver import aresolve_model
 from app.rag.database import get_db
 from app.rag.observability.logging import logger
 from app.services.arxiv_crawler import ArxivCrawlerError, arxiv_crawler
+from app.services.arxiv_query_optimizer import (
+    optimize_arxiv_query_with_ai,
+    rule_based_arxiv_query,
+)
 
 router = APIRouter(prefix="/api/v1/crawler", tags=["资料采集"])
 
@@ -27,13 +33,59 @@ router = APIRouter(prefix="/api/v1/crawler", tags=["资料采集"])
 @router.get("/arxiv", response_model=ArxivSearchResponse)
 async def search_arxiv_papers(
     query: Annotated[str, Query(min_length=2, max_length=120)],
+    dataset_id: Annotated[int, Query(gt=0)],
     max_results: Annotated[int, Query(ge=1, le=20)] = 10,
-    _: int = Depends(get_user_id),
+    ai_optimize: bool = True,
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
 ) -> ArxivSearchResponse:
-    """按关键词采集 arXiv 最新论文的描述性元数据。"""
+    """用数据集 Chat 模型优化自然语言主题，再采集 arXiv 论文元数据。"""
 
     try:
-        return await arxiv_crawler.search(query, max_results=max_results)
+        dataset = await _owned_dataset(db, dataset_id, user_id)
+        optimization = rule_based_arxiv_query(query)
+        if ai_optimize and dataset.chat_config_id is None:
+            optimization = rule_based_arxiv_query(
+                query,
+                warning="目标数据集未绑定对话模型，已使用英文分词规则检索",
+            )
+        elif ai_optimize and dataset.chat_config_id is not None:
+            resolved = None
+            try:
+                resolved = await aresolve_model(
+                    user_id=user_id,
+                    config_id=int(dataset.chat_config_id),
+                    capability="CHAT",
+                    db=db,
+                )
+                optimization = await optimize_arxiv_query_with_ai(
+                    query,
+                    provider=resolved.provider,
+                    model_name=resolved.model_name,
+                )
+            except Exception as exc:  # noqa: BLE001 - AI 优化失败不阻断基础检索
+                logger.bind(
+                    event="arxiv_query_optimization_failed",
+                    dataset_id=dataset_id,
+                    llm_config_id=dataset.chat_config_id,
+                    error_type=type(exc).__name__,
+                ).warning("arXiv AI 检索词优化失败，回退规则检索")
+                optimization = rule_based_arxiv_query(
+                    query,
+                    warning="AI 检索词优化失败，已回退为英文分词检索",
+                )
+            finally:
+                await aclose_resolved_models([resolved])
+
+        return await arxiv_crawler.search(
+            query,
+            max_results=max_results,
+            search_query=optimization.search_query,
+            optimized_query=optimization.optimized_query,
+            optimization_mode=optimization.mode,
+            optimization_model=optimization.model_name,
+            optimization_warning=optimization.warning,
+        )
     except ArxivCrawlerError as exc:
         raise HTTPException(
             status_code=status.HTTP_502_BAD_GATEWAY,
