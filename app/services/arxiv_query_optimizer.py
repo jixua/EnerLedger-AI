@@ -7,10 +7,12 @@ import json
 import re
 from dataclasses import dataclass
 from typing import Literal
+from urllib.parse import urlparse
 
 from app.rag.core.llm.base_provider import BaseProvider
 
 ARXIV_QUERY_OPTIMIZATION_TIMEOUT_SECONDS = 30.0
+ARXIV_QUERY_OPTIMIZATION_MAX_TOKENS = 512
 ARXIV_QUERY_OPTIMIZER_SYSTEM_PROMPT = """你是学术检索词优化器。
 把用户输入的中文或英文研究主题转换成适合 arXiv 全字段检索的英文术语。
 
@@ -113,6 +115,32 @@ def rule_based_arxiv_query(
     )
 
 
+def rule_based_fallback_warning(query: str, *, reason: str) -> str:
+    """准确描述规则回退；纯中文输入不能声称已经完成英文分词。"""
+
+    if re.search(r"[A-Za-z]", query):
+        fallback = "英文分词规则检索"
+    else:
+        fallback = "原始主题检索（中文匹配结果可能有限）"
+    return f"{reason}，已回退为{fallback}"
+
+
+def _generation_options(provider: BaseProvider) -> dict[str, object]:
+    """仅对官方 DeepSeek 端点启用其明确支持的结构化输出能力。"""
+
+    endpoint = str(getattr(provider, "api_base_url", "") or "").strip()
+    hostname = (urlparse(endpoint).hostname or "").lower()
+    if hostname != "api.deepseek.com":
+        return {}
+
+    options: dict[str, object] = {"response_format": {"type": "json_object"}}
+    provider_model = str(getattr(provider, "model_name", "") or "").lower()
+    if provider_model.startswith("deepseek-v4"):
+        # 短检索词转换不需要思考模式，避免推理内容耗尽正文 token 预算。
+        options["thinking"] = {"type": "disabled"}
+    return options
+
+
 async def optimize_arxiv_query_with_ai(
     query: str,
     *,
@@ -125,10 +153,15 @@ async def optimize_arxiv_query_with_ai(
             prompt=f"<研究主题>\n{original}\n</研究主题>",
             system_prompt=ARXIV_QUERY_OPTIMIZER_SYSTEM_PROMPT,
             temperature=0.0,
-            max_tokens=256,
+            max_tokens=ARXIV_QUERY_OPTIMIZATION_MAX_TOKENS,
+            **_generation_options(provider),
         ),
         timeout=ARXIV_QUERY_OPTIMIZATION_TIMEOUT_SECONDS,
     )
+    if str(getattr(result, "finish_reason", "") or "").lower() == "length":
+        raise ArxivQueryOptimizationError("AI 输出达到 token 上限，未生成完整检索词")
+    if not str(result.content or "").strip():
+        raise ArxivQueryOptimizationError("AI 返回了空的检索词结果")
     terms = _terms_from_model_output(result.content)
     return ArxivQueryOptimization(
         original_query=original,

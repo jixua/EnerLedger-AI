@@ -25,6 +25,7 @@ from app.services.arxiv_crawler import ArxivCrawlerError, arxiv_crawler
 from app.services.arxiv_query_optimizer import (
     optimize_arxiv_query_with_ai,
     rule_based_arxiv_query,
+    rule_based_fallback_warning,
 )
 
 router = APIRouter(prefix="/api/v1/crawler", tags=["资料采集"])
@@ -47,7 +48,10 @@ async def search_arxiv_papers(
         if ai_optimize and dataset.chat_config_id is None:
             optimization = rule_based_arxiv_query(
                 query,
-                warning="目标数据集未绑定对话模型，已使用英文分词规则检索",
+                warning=rule_based_fallback_warning(
+                    query,
+                    reason="目标数据集未绑定对话模型",
+                ),
             )
         elif ai_optimize and dataset.chat_config_id is not None:
             resolved = None
@@ -69,10 +73,16 @@ async def search_arxiv_papers(
                     dataset_id=dataset_id,
                     llm_config_id=dataset.chat_config_id,
                     error_type=type(exc).__name__,
-                ).warning("arXiv AI 检索词优化失败，回退规则检索")
+                ).warning(
+                    "arXiv AI 检索词优化失败，回退规则检索，原因={}",
+                    type(exc).__name__,
+                )
                 optimization = rule_based_arxiv_query(
                     query,
-                    warning="AI 检索词优化失败，已回退为英文分词检索",
+                    warning=rule_based_fallback_warning(
+                        query,
+                        reason="AI 检索词优化失败",
+                    ),
                 )
             finally:
                 await aclose_resolved_models([resolved])
