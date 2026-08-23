@@ -2,34 +2,54 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const pageSource = await readFile(
+const crawlerPageSource = await readFile(
   new URL("../src/pages/CrawlerPage.jsx", import.meta.url),
   "utf8",
 );
 
 test("crawler requires a dataset and places the query before compact selectors", () => {
-  const datasetSelector = pageSource.indexOf('className="crawler-search__dataset"');
-  const resultLimit = pageSource.indexOf('className="crawler-search__limit"');
-  const queryInput = pageSource.indexOf('className="crawler-search__input"');
+  const datasetSelector = crawlerPageSource.indexOf('className="crawler-search__dataset"');
+  const resultLimit = crawlerPageSource.indexOf('className="crawler-search__limit"');
+  const queryInput = crawlerPageSource.indexOf('className="crawler-search__input"');
 
   assert.ok(queryInput >= 0);
   assert.ok(datasetSelector > queryInput);
   assert.ok(resultLimit > datasetSelector);
-  assert.match(pageSource, /disabled=\{!datasetId \|\| loading \|\| query\.trim\(\)\.length < 2\}/);
-  assert.match(pageSource, /if \(!datasetId \|\| normalized\.length < 2 \|\| loading\) return/);
+  assert.match(
+    crawlerPageSource,
+    /disabled=\{!datasetId \|\| loading \|\| query\.trim\(\)\.length < 2\}/,
+  );
+  assert.match(
+    crawlerPageSource,
+    /if \(!datasetId \|\| normalized\.length < 2 \|\| loading\) return/,
+  );
 });
 
 test("crawler always enables AI optimization without showing a toggle or success card", () => {
-  assert.match(pageSource, /aiOptimize: true/);
-  assert.doesNotMatch(pageSource, /setAiOptimize|crawler-search__ai|crawler-search__note/);
-  assert.doesNotMatch(pageSource, /AI 优化检索|规则优化检索/);
-  assert.match(pageSource, /result\?\.optimization_warning/);
+  assert.match(crawlerPageSource, /aiOptimize: true/);
+  assert.doesNotMatch(
+    crawlerPageSource,
+    /setAiOptimize|crawler-search__ai|crawler-search__note/,
+  );
+  assert.doesNotMatch(crawlerPageSource, /AI 优化检索|规则优化检索/);
+  assert.match(crawlerPageSource, /result\?\.optimization_warning/);
 });
 
-test("changing dataset invalidates old search results and fixes the import target", () => {
-  assert.match(pageSource, /function handleDatasetChange/);
-  assert.match(pageSource, /setResult\(null\)/);
-  assert.match(pageSource, /setSelectedIds\(\[\]\)/);
-  assert.match(pageSource, /crawler-import__target/);
-  assert.doesNotMatch(pageSource, /aria-label="目标数据集"/);
+test("search results remain bound to the selected dataset", () => {
+  assert.match(crawlerPageSource, /function handleDatasetChange/);
+  assert.match(crawlerPageSource, /setResult\(null\)/);
+  assert.match(crawlerPageSource, /setSelectedIds\(\[\]\)/);
+  assert.match(crawlerPageSource, /crawler-import__target/);
+  assert.doesNotMatch(crawlerPageSource, /setDatasetId\(""\)/);
+  assert.doesNotMatch(crawlerPageSource, /aria-label="目标数据集"/);
+});
+
+test("crawler unlocks import before background document refresh", () => {
+  const unlockIndex = crawlerPageSource.indexOf("setImporting(false);");
+  const refreshIndex = crawlerPageSource.indexOf(
+    "Promise.resolve(actions.loadDocuments?.(targetDatasetId))",
+  );
+
+  assert.ok(unlockIndex >= 0);
+  assert.ok(refreshIndex > unlockIndex);
 });

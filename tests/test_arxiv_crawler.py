@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from app.api import crawler as crawler_api
-from app.domain.schemas import ArxivImportRequest, ArxivSearchResponse
+from app.domain.schemas import ArxivImportPaper, ArxivImportRequest, ArxivSearchResponse
 from app.services.arxiv_crawler import ArxivRequestGate, parse_arxiv_feed
 from app.services.arxiv_query_optimizer import ArxivQueryOptimization
 
@@ -184,7 +184,15 @@ async def test_arxiv_import_downloads_and_queues_selected_papers(monkeypatch) ->
     monkeypatch.setattr(crawler_api, "queue_document_from_path", fake_queue)
 
     result = await crawler_api.import_arxiv_papers(
-        payload=ArxivImportRequest(dataset_id=7, arxiv_ids=["2608.12345v1"]),
+        payload=ArxivImportRequest(
+            dataset_id=7,
+            papers=[
+                ArxivImportPaper(
+                    arxiv_id="2608.12345v1",
+                    title="Carbon Accounting with AI",
+                )
+            ],
+        ),
         user_id=3,
         db=FakeDb(),
     )
@@ -192,8 +200,16 @@ async def test_arxiv_import_downloads_and_queues_selected_papers(monkeypatch) ->
     assert result.queued_count == 1
     assert result.failed_count == 0
     assert result.items[0].document_id == 91
-    assert result.items[0].filename == "arxiv-2608.12345v1.pdf"
+    assert result.items[0].filename == "Carbon Accounting with AI.pdf"
     queue_call = next(value for name, value in calls if name == "queue")
     assert queue_call["dataset_id"] == 7
     assert queue_call["content_type"] == "application/pdf"
     assert any(name == "download" for name, _ in calls)
+
+
+def test_paper_filename_uses_sanitized_title() -> None:
+    assert (
+        crawler_api._paper_filename("  A/B: Carbon? Study.pdf  ")
+        == "A B Carbon Study.pdf"
+    )
+    assert crawler_api._paper_filename("碳核算：方法与实践") == "碳核算：方法与实践.pdf"

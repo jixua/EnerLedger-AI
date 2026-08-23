@@ -1,6 +1,7 @@
 """在线资料采集与数据集导入 API。"""
 
 import asyncio
+import re
 import tempfile
 from pathlib import Path
 from typing import Annotated
@@ -29,6 +30,16 @@ from app.services.arxiv_query_optimizer import (
 )
 
 router = APIRouter(prefix="/api/v1/crawler", tags=["资料采集"])
+
+
+def _paper_filename(title: str) -> str:
+    """把论文标题转换成可安全用于对象存储和下载的 PDF 文件名。"""
+
+    normalized = re.sub(r'[<>:"/\\|?*\x00-\x1f]+', " ", title)
+    normalized = re.sub(r"\s+", " ", normalized).strip(" .")
+    normalized = re.sub(r"\.pdf$", "", normalized, flags=re.IGNORECASE).strip(" .")
+    safe_title = normalized[:251].rstrip(" .") or "未命名论文"
+    return f"{safe_title}.pdf"
 
 
 @router.get("/arxiv", response_model=ArxivSearchResponse)
@@ -124,8 +135,9 @@ async def import_arxiv_papers(
         prefix="energy-carbon-arxiv-",
         dir=parse_temp_root,
     ) as temp_dir:
-        for index, arxiv_id in enumerate(payload.arxiv_ids):
-            filename = f"arxiv-{arxiv_id.replace('/', '-')}.pdf"
+        for index, paper in enumerate(payload.papers):
+            arxiv_id = paper.arxiv_id
+            filename = _paper_filename(paper.title)
             source_path = Path(temp_dir) / f"paper-{index}.pdf"
             try:
                 await arxiv_crawler.download_pdf(

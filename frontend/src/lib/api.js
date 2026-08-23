@@ -212,14 +212,14 @@ export function searchArxivPapers(
 }
 
 export function importArxivPapers(
-  { datasetId, arxivIds },
+  { datasetId, papers },
   { signal } = {},
 ) {
   return apiRequest("/api/v1/crawler/arxiv/import", {
     method: "POST",
     body: {
       dataset_id: Number(datasetId),
-      arxiv_ids: arxivIds,
+      papers,
     },
     signal,
   });
