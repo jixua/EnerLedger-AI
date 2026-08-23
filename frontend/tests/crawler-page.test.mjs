@@ -7,14 +7,14 @@ const pageSource = await readFile(
   "utf8",
 );
 
-test("crawler requires a dataset before search and places that selector first", () => {
+test("crawler requires a dataset and places the query before compact selectors", () => {
   const datasetSelector = pageSource.indexOf('className="crawler-search__dataset"');
   const resultLimit = pageSource.indexOf('className="crawler-search__limit"');
   const queryInput = pageSource.indexOf('className="crawler-search__input"');
 
-  assert.ok(datasetSelector >= 0);
+  assert.ok(queryInput >= 0);
+  assert.ok(datasetSelector > queryInput);
   assert.ok(resultLimit > datasetSelector);
-  assert.ok(queryInput > resultLimit);
   assert.match(pageSource, /disabled=\{!datasetId \|\| loading \|\| query\.trim\(\)\.length < 2\}/);
   assert.match(pageSource, /if \(!datasetId \|\| normalized\.length < 2 \|\| loading\) return/);
 });

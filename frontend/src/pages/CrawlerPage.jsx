@@ -161,6 +161,17 @@ export function CrawlerPage() {
       <form className="panel crawler-search" onSubmit={handleSubmit}>
         <p className="crawler-search__title">选择目标数据集后检索</p>
         <div className="crawler-search__controls">
+          <div className="crawler-search__input">
+            <Search size={17} />
+            <input
+              id="crawler-query"
+              aria-label="检索关键词"
+              value={query}
+              onChange={(event) => setQuery(event.target.value)}
+              maxLength={120}
+              placeholder="例如：carbon accounting"
+            />
+          </div>
           <label className="crawler-search__dataset">
             <span>目标数据集</span>
             <select value={datasetId} onChange={(event) => handleDatasetChange(event.target.value)}>
@@ -176,17 +187,6 @@ export function CrawlerPage() {
               <option value={20}>20 篇</option>
             </select>
           </label>
-          <div className="crawler-search__input">
-            <Search size={17} />
-            <input
-              id="crawler-query"
-              aria-label="检索关键词"
-              value={query}
-              onChange={(event) => setQuery(event.target.value)}
-              maxLength={120}
-              placeholder="例如：carbon accounting"
-            />
-          </div>
           <button className="button button--primary" type="submit" disabled={!datasetId || loading || query.trim().length < 2}>
             {loading ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}
             {loading ? "正在采集" : "开始采集"}
