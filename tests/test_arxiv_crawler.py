@@ -9,6 +9,7 @@ import pytest
 from app.api import crawler as crawler_api
 from app.domain.schemas import ArxivImportPaper, ArxivImportRequest, ArxivSearchResponse
 from app.services.arxiv_crawler import ArxivRequestGate, parse_arxiv_feed
+from app.services.arxiv_query_optimizer import ArxivQueryOptimization
 
 ATOM_FEED = b"""<?xml version="1.0" encoding="UTF-8"?>
 <feed xmlns="http://www.w3.org/2005/Atom"
@@ -52,20 +53,86 @@ async def test_arxiv_api_uses_authenticated_fixed_crawler(monkeypatch) -> None:
     expected = parse_arxiv_feed(ATOM_FEED, query="carbon footprint")
     calls: list[tuple[str, int]] = []
 
-    async def fake_search(query: str, *, max_results: int) -> ArxivSearchResponse:
+    async def fake_search(query: str, *, max_results: int, **kwargs) -> ArxivSearchResponse:
         calls.append((query, max_results))
         return expected
 
+    async def fake_owned_dataset(db, dataset_id: int, user_id: int):
+        return SimpleNamespace(chat_config_id=None)
+
+    monkeypatch.setattr(crawler_api, "_owned_dataset", fake_owned_dataset)
     monkeypatch.setattr(crawler_api.arxiv_crawler, "search", fake_search)
 
     result = await crawler_api.search_arxiv_papers(
         query="carbon footprint",
+        dataset_id=7,
         max_results=5,
-        _=1,
+        ai_optimize=False,
+        user_id=1,
+        db=SimpleNamespace(),
     )
 
     assert result == expected
     assert calls == [("carbon footprint", 5)]
+
+
+@pytest.mark.asyncio
+async def test_arxiv_api_uses_selected_dataset_chat_model_for_chinese_query(monkeypatch) -> None:
+    captured: dict[str, object] = {}
+    expected = parse_arxiv_feed(ATOM_FEED, query="动力电池碳排")
+    resolved = SimpleNamespace(provider=object(), model_name="chat-model")
+
+    async def fake_owned_dataset(db, dataset_id: int, user_id: int):
+        captured["ownership"] = (dataset_id, user_id)
+        return SimpleNamespace(chat_config_id=23)
+
+    async def fake_resolve_model(**kwargs):
+        captured["resolve"] = kwargs
+        return resolved
+
+    async def fake_optimize(query: str, *, provider, model_name: str):
+        captured["optimize"] = (query, provider, model_name)
+        return ArxivQueryOptimization(
+            original_query=query,
+            terms=("lithium-ion battery", "carbon emissions"),
+            search_query='all:"lithium-ion battery" AND all:"carbon emissions"',
+            mode="AI",
+            model_name=model_name,
+        )
+
+    async def fake_search(query: str, **kwargs):
+        captured["search"] = (query, kwargs)
+        return expected
+
+    async def fake_close(models):
+        captured["closed"] = models
+
+    monkeypatch.setattr(crawler_api, "_owned_dataset", fake_owned_dataset)
+    monkeypatch.setattr(crawler_api, "aresolve_model", fake_resolve_model)
+    monkeypatch.setattr(crawler_api, "optimize_arxiv_query_with_ai", fake_optimize)
+    monkeypatch.setattr(crawler_api.arxiv_crawler, "search", fake_search)
+    monkeypatch.setattr(crawler_api, "aclose_resolved_models", fake_close)
+
+    result = await crawler_api.search_arxiv_papers(
+        query="动力电池碳排",
+        dataset_id=7,
+        max_results=10,
+        ai_optimize=True,
+        user_id=3,
+        db=SimpleNamespace(),
+    )
+
+    assert result == expected
+    assert captured["ownership"] == (7, 3)
+    assert captured["resolve"]["config_id"] == 23
+    assert captured["resolve"]["user_id"] == 3
+    assert captured["optimize"] == ("动力电池碳排", resolved.provider, "chat-model")
+    _, search_kwargs = captured["search"]
+    assert search_kwargs["search_query"] == (
+        'all:"lithium-ion battery" AND all:"carbon emissions"'
+    )
+    assert search_kwargs["optimization_mode"] == "AI"
+    assert captured["closed"] == [resolved]
 
 
 @pytest.mark.asyncio

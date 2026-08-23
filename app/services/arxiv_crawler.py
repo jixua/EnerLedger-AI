@@ -47,7 +47,16 @@ def _parse_datetime(value: str) -> datetime:
     return parsed if parsed.tzinfo else parsed.replace(tzinfo=UTC)
 
 
-def parse_arxiv_feed(payload: bytes, *, query: str) -> ArxivSearchResponse:
+def parse_arxiv_feed(
+    payload: bytes,
+    *,
+    query: str,
+    optimized_query: str | None = None,
+    search_query: str | None = None,
+    optimization_mode: str = "RULES",
+    optimization_model: str | None = None,
+    optimization_warning: str | None = None,
+) -> ArxivSearchResponse:
     """把 arXiv Atom XML 转为前端所需的安全、稳定契约。"""
 
     try:
@@ -99,6 +108,11 @@ def parse_arxiv_feed(payload: bytes, *, query: str) -> ArxivSearchResponse:
 
     return ArxivSearchResponse(
         query=query,
+        optimized_query=optimized_query or query,
+        search_query=search_query or f'all:"{query}"',
+        optimization_mode=optimization_mode,
+        optimization_model=optimization_model,
+        optimization_warning=optimization_warning,
         total_results=total_results,
         fetched_at=datetime.now(UTC),
         items=items,
@@ -155,7 +169,17 @@ class ArxivCrawler:
         if self._client is not None and not self._client.is_closed:
             await self._client.aclose()
 
-    async def search(self, query: str, *, max_results: int) -> ArxivSearchResponse:
+    async def search(
+        self,
+        query: str,
+        *,
+        max_results: int,
+        search_query: str | None = None,
+        optimized_query: str | None = None,
+        optimization_mode: str = "RULES",
+        optimization_model: str | None = None,
+        optimization_warning: str | None = None,
+    ) -> ArxivSearchResponse:
         normalized_query = _compact_text(query.replace('"', " "))
         if not normalized_query:
             raise ValueError("检索关键词不能为空")
@@ -165,7 +189,7 @@ class ArxivCrawler:
                 response = await self._get_client().get(
                     ARXIV_API_URL,
                     params={
-                        "search_query": f'all:"{normalized_query}"',
+                        "search_query": search_query or f'all:"{normalized_query}"',
                         "start": 0,
                         "max_results": max_results,
                         "sortBy": "submittedDate",
@@ -176,7 +200,15 @@ class ArxivCrawler:
             except httpx.HTTPError as exc:
                 raise ArxivCrawlerError("暂时无法从 arXiv 获取论文，请稍后重试") from exc
 
-        return parse_arxiv_feed(response.content, query=normalized_query)
+        return parse_arxiv_feed(
+            response.content,
+            query=normalized_query,
+            optimized_query=optimized_query,
+            search_query=search_query,
+            optimization_mode=optimization_mode,
+            optimization_model=optimization_model,
+            optimization_warning=optimization_warning,
+        )
 
     async def download_pdf(
         self,

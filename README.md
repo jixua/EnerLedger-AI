@@ -225,6 +225,21 @@ curl -N http://127.0.0.1:8000/api/v1/rag/stream \
 
 可能返回的事件包括 `stream_started`、`recall_done`、`answer_delta`、`answer_done` 和 `error`；没有可用检索上下文时仍会依次返回 `recall_done`、固定说明文本和 `answer_done`，不会调用 Chat 模型。
 
+### arXiv AI 检索词优化
+
+资料采集页支持直接输入中文主题或两三个自然语言描述词。用户必须先选择目标数据集，搜索按钮才会启用；保持“AI 优化”开启后，服务使用该数据集绑定的 Chat 模型把主题翻译、收敛为 2-5 个英文科研术语，再将术语分别包装为 arXiv 全字段条件并用 `AND` 组合，避免把整段输入误作一个固定短语。响应同时返回原始输入、优化后的可读检索词、实际 arXiv 查询表达式、模型名和优化方式，页面会显式展示这些信息。搜索结果的导入目标固定为本次选择的数据集；切换数据集会清空旧结果，避免检索模型与导入目标不一致。
+
+数据集未绑定 Chat 模型或模型调用失败时，搜索不会被阻断：英文输入按单词拆分为多个 `AND` 条件，中文输入保留原文交给 arXiv 尝试匹配，并在响应和页面中明确标记规则回退原因。接口示例：
+
+```bash
+curl -G http://127.0.0.1:8000/api/v1/crawler/arxiv \
+  -H 'Authorization: Bearer <登录接口返回的 access_token>' \
+  --data-urlencode 'query=动力电池碳排' \
+  --data-urlencode 'dataset_id=7' \
+  --data-urlencode 'ai_optimize=true' \
+  --data-urlencode 'max_results=10'
+```
+
 ### 企业文档分析
 
 只有当前租户的 `READY` 文档可以发起分析。默认使用数据集绑定的 Chat 模型，也可以在请求体中用 `llm_config_id` 指定当前租户可用的 Chat 配置：

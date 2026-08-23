@@ -55,6 +55,11 @@ class ArxivPaper(BaseModel):
 class ArxivSearchResponse(BaseModel):
     source: Literal["arXiv"] = "arXiv"
     query: str
+    optimized_query: str
+    search_query: str
+    optimization_mode: Literal["AI", "RULES"]
+    optimization_model: str | None = None
+    optimization_warning: str | None = None
     total_results: int
     fetched_at: datetime
     items: list[ArxivPaper]

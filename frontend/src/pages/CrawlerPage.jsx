@@ -39,6 +39,8 @@ function markdownFor(result) {
   return [
     `# arXiv 论文采集：${result.query}`,
     "",
+    `检索优化：${result.optimized_query || result.query}`,
+    `优化方式：${result.optimization_mode === "AI" ? `AI（${result.optimization_model || "对话模型"}）` : "规则"}`,
     `采集时间：${new Date(result.fetched_at).toLocaleString("zh-CN")}`,
     `匹配总数：${result.total_results}`,
     "",
@@ -67,6 +69,10 @@ export function CrawlerPage() {
   const [datasetId, setDatasetId] = useState("");
   const [importing, setImporting] = useState(false);
   const [importResult, setImportResult] = useState(null);
+  const selectedDataset = useMemo(
+    () => datasets.find((dataset) => String(dataset.id) === String(datasetId)),
+    [datasetId, datasets],
+  );
   const visibleSelectionIds = useMemo(
     () => (result?.items || []).slice(0, 10).map((paper) => paper.arxiv_id),
     [result],
@@ -81,20 +87,32 @@ export function CrawlerPage() {
   async function handleSubmit(event) {
     event.preventDefault();
     const normalized = query.trim();
-    if (normalized.length < 2 || loading) return;
+    if (!datasetId || normalized.length < 2 || loading) return;
     setLoading(true);
     setError("");
     setImportResult(null);
     try {
-      const nextResult = await searchArxivPapers({ query: normalized, maxResults });
+      const nextResult = await searchArxivPapers({
+        query: normalized,
+        maxResults,
+        datasetId,
+        aiOptimize: true,
+      });
       setResult(nextResult);
       setSelectedIds([]);
-      setDatasetId("");
     } catch (requestError) {
       setError(requestError?.message || "论文采集失败，请稍后重试");
     } finally {
       setLoading(false);
     }
+  }
+
+  function handleDatasetChange(nextDatasetId) {
+    setDatasetId(nextDatasetId);
+    setResult(null);
+    setSelectedIds([]);
+    setImportResult(null);
+    setError("");
   }
 
   function togglePaper(arxivId) {
@@ -125,7 +143,6 @@ export function CrawlerPage() {
         response.items.filter((item) => item.status === "QUEUED").map((item) => item.arxiv_id),
       );
       setSelectedIds((current) => current.filter((id) => !queuedIds.has(id)));
-      setDatasetId("");
       setImporting(false);
       void Promise.resolve(actions.loadDocuments?.(targetDatasetId)).catch(() => {});
     } catch (requestError) {
@@ -147,18 +164,26 @@ export function CrawlerPage() {
       </header>
 
       <form className="panel crawler-search" onSubmit={handleSubmit}>
-        <label htmlFor="crawler-query">检索关键词</label>
+        <p className="crawler-search__title">选择目标数据集后检索</p>
         <div className="crawler-search__controls">
           <div className="crawler-search__input">
             <Search size={17} />
             <input
               id="crawler-query"
+              aria-label="检索关键词"
               value={query}
               onChange={(event) => setQuery(event.target.value)}
               maxLength={120}
               placeholder="例如：carbon accounting"
             />
           </div>
+          <label className="crawler-search__dataset">
+            <span>目标数据集</span>
+            <select value={datasetId} onChange={(event) => handleDatasetChange(event.target.value)}>
+              <option value="">请选择数据集</option>
+              {datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name}</option>)}
+            </select>
+          </label>
           <label className="crawler-search__limit">
             <span>采集数量</span>
             <select value={maxResults} onChange={(event) => setMaxResults(Number(event.target.value))}>
@@ -167,12 +192,11 @@ export function CrawlerPage() {
               <option value={20}>20 篇</option>
             </select>
           </label>
-          <button className="button button--primary" type="submit" disabled={loading || query.trim().length < 2}>
+          <button className="button button--primary" type="submit" disabled={!datasetId || loading || query.trim().length < 2}>
             {loading ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}
             {loading ? "正在采集" : "开始采集"}
           </button>
         </div>
-        <p className="crawler-search__note">搜索和 PDF 下载共用单连接队列，相邻 arXiv 请求至少间隔 3 秒；单次最多导入 10 篇。</p>
       </form>
 
       {error ? <div className="crawler-error" role="alert"><AlertCircle size={17} /><span>{error}</span></div> : null}
@@ -192,6 +216,13 @@ export function CrawlerPage() {
           ) : null}
         </div>
 
+        {result?.optimization_warning ? (
+          <div className="crawler-query-warning" role="status">
+            <AlertCircle size={16} />
+            <span>{result.optimization_warning}</span>
+          </div>
+        ) : null}
+
         {result?.items.length ? (
           <div className="panel crawler-import">
             <div className="crawler-import__copy">
@@ -199,12 +230,7 @@ export function CrawlerPage() {
               <div><strong>导入知识库并解析</strong><p>已选择 {selectedIds.length}/10 篇；下载完成后将进入现有文档解析队列。</p></div>
             </div>
             <div className="crawler-import__controls">
-              {datasets.length ? (
-                <select aria-label="目标数据集" value={datasetId} onChange={(event) => setDatasetId(event.target.value)} disabled={importing}>
-                  <option value="">选择目标数据集</option>
-                  {datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name}</option>)}
-                </select>
-              ) : <Link className="button button--secondary" to="/datasets?create=1">先创建数据集</Link>}
+              <span className="crawler-import__target">导入到：{selectedDataset?.name || "当前数据集"}</span>
               <button className="button button--primary" type="button" onClick={handleImport} disabled={!datasetId || !selectedIds.length || importing}>
                 {importing ? <LoaderCircle className="spin" size={16} /> : <UploadCloud size={16} />}
                 {importing ? "逐篇下载并入队" : "导入并解析"}
@@ -222,7 +248,7 @@ export function CrawlerPage() {
         ) : null}
 
         {!result && !loading ? (
-          <div className="empty-state crawler-empty"><BookOpenText size={25} /><h3>等待采集</h3><p>默认关键词已填入，可直接运行演示。</p></div>
+          <div className="empty-state crawler-empty"><BookOpenText size={25} /><h3>等待采集</h3><p>{datasets.length ? "请先选择目标数据集，再输入主题开始检索。" : <><Link to="/datasets?create=1">先创建数据集</Link>，再开始论文采集。</>}</p></div>
         ) : null}
 
         {result?.items.map((paper) => {
