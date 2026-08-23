@@ -8,7 +8,6 @@ import {
   Globe2,
   LoaderCircle,
   Search,
-  Sparkles,
   UploadCloud,
 } from "lucide-react";
 import { importArxivPapers, searchArxivPapers } from "../lib/api";
@@ -63,7 +62,6 @@ export function CrawlerPage() {
   const { datasets = [], actions = {} } = useApp();
   const [query, setQuery] = useState(DEFAULT_QUERY);
   const [maxResults, setMaxResults] = useState(10);
-  const [aiOptimize, setAiOptimize] = useState(true);
   const [result, setResult] = useState(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState("");
@@ -98,7 +96,7 @@ export function CrawlerPage() {
         query: normalized,
         maxResults,
         datasetId,
-        aiOptimize,
+        aiOptimize: true,
       });
       setResult(nextResult);
       setSelectedIds([]);
@@ -170,6 +168,14 @@ export function CrawlerPage() {
               {datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name}</option>)}
             </select>
           </label>
+          <label className="crawler-search__limit">
+            <span>采集数量</span>
+            <select value={maxResults} onChange={(event) => setMaxResults(Number(event.target.value))}>
+              <option value={5}>5 篇</option>
+              <option value={10}>10 篇</option>
+              <option value={20}>20 篇</option>
+            </select>
+          </label>
           <div className="crawler-search__input">
             <Search size={17} />
             <input
@@ -181,29 +187,11 @@ export function CrawlerPage() {
               placeholder="例如：carbon accounting"
             />
           </div>
-          <label className="crawler-search__limit">
-            <span>采集数量</span>
-            <select value={maxResults} onChange={(event) => setMaxResults(Number(event.target.value))}>
-              <option value={5}>5 篇</option>
-              <option value={10}>10 篇</option>
-              <option value={20}>20 篇</option>
-            </select>
-          </label>
           <button className="button button--primary" type="submit" disabled={!datasetId || loading || query.trim().length < 2}>
             {loading ? <LoaderCircle className="spin" size={16} /> : <Search size={16} />}
             {loading ? "正在采集" : "开始采集"}
           </button>
         </div>
-        <label className="crawler-search__ai">
-          <input type="checkbox" checked={aiOptimize} onChange={(event) => setAiOptimize(event.target.checked)} />
-          <Sparkles size={15} />
-          <span>使用目标数据集绑定的对话模型，将中文主题翻译并优化成 arXiv 英文检索词</span>
-        </label>
-        <p className="crawler-search__note">
-          {!datasetId ? "必须先选择目标数据集，搜索和导入都会使用该数据集。" : null}
-          {datasetId && aiOptimize && !selectedDataset?.chat_config_id ? "当前数据集未绑定对话模型，将使用规则检索。" : null}
-          {datasetId && (!aiOptimize || selectedDataset?.chat_config_id) ? "搜索将使用当前数据集绑定的对话模型；相邻 arXiv 请求至少间隔 3 秒。" : null}
-        </p>
       </form>
 
       {error ? <div className="crawler-error" role="alert"><AlertCircle size={17} /><span>{error}</span></div> : null}
@@ -223,16 +211,10 @@ export function CrawlerPage() {
           ) : null}
         </div>
 
-        {result ? (
-          <div className={`crawler-query-result ${result.optimization_warning ? "crawler-query-result--warning" : ""}`}>
-            <Sparkles size={16} />
-            <div>
-              <strong>{result.optimization_mode === "AI" ? "AI 优化检索" : "规则优化检索"}</strong>
-              <p><span>原始输入：</span>{result.query}</p>
-              <p><span>实际检索：</span>{result.optimized_query || result.query}</p>
-              {result.optimization_model ? <p><span>使用模型：</span>{result.optimization_model}</p> : null}
-              {result.optimization_warning ? <p className="crawler-query-result__warning">{result.optimization_warning}</p> : null}
-            </div>
+        {result?.optimization_warning ? (
+          <div className="crawler-query-warning" role="status">
+            <AlertCircle size={16} />
+            <span>{result.optimization_warning}</span>
           </div>
         ) : null}
 
