@@ -9,7 +9,12 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 import app.api.datasets as datasets_api
-from app.api.datasets import delete_dataset, delete_document_folder, update_dataset
+from app.api.datasets import (
+    _validate_folder_parent,
+    delete_dataset,
+    delete_document_folder,
+    update_dataset,
+)
 from app.api.llm import delete_config, update_config
 from app.domain.models import Dataset, Document, DocumentFolder
 from app.domain.schemas import DatasetUpdate, LLMConfigUpdate
@@ -411,7 +416,7 @@ async def test_dataset_delete_requires_an_empty_owned_dataset(monkeypatch) -> No
 
 
 @pytest.mark.asyncio
-async def test_folder_delete_moves_documents_to_unfiled_without_deleting_them() -> None:
+async def test_folder_delete_reparents_documents_and_children_without_deleting_them() -> None:
     folder = DocumentFolder(
         id=8,
         dataset_id=7,
@@ -425,11 +430,33 @@ async def test_folder_delete_moves_documents_to_unfiled_without_deleting_them() 
     assert await delete_document_folder(7, 8, 11, db) is None
     assert db.deleted == [folder]
     assert db.commits == 1
-    assert len(db.executed) == 1
-    statement = str(db.executed[0])
-    assert "UPDATE document SET folder_id" in statement
-    assert "document.dataset_id" in statement
-    assert "document.user_id" in statement
+    assert len(db.executed) == 2
+    document_statement = str(db.executed[0])
+    child_statement = str(db.executed[1])
+    assert "UPDATE document SET folder_id" in document_statement
+    assert "document.dataset_id" in document_statement
+    assert "document.user_id" in document_statement
+    assert "UPDATE document_folder SET parent_id" in child_statement
+    assert "document_folder.parent_id" in child_statement
+
+
+@pytest.mark.asyncio
+async def test_folder_parent_validation_rejects_descendant_cycle() -> None:
+    root = DocumentFolder(id=8, dataset_id=7, user_id=11, parent_id=None, name="政策文件")
+    child = DocumentFolder(id=9, dataset_id=7, user_id=11, parent_id=8, name="国家政策")
+    db = _FakeSession(scalar_lists=[[root, child]])
+
+    with pytest.raises(HTTPException) as exc_info:
+        await _validate_folder_parent(
+            db,
+            dataset_id=7,
+            user_id=11,
+            parent_id=9,
+            folder_id=8,
+        )
+
+    assert exc_info.value.status_code == 409
+    assert "循环" in str(exc_info.value.detail)
 
 
 @pytest.mark.asyncio

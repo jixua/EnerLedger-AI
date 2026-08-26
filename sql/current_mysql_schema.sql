@@ -58,12 +58,14 @@ CREATE TABLE IF NOT EXISTS `document_folder` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `dataset_id` bigint unsigned NOT NULL,
   `user_id` bigint unsigned NOT NULL,
+  `parent_id` bigint unsigned DEFAULT NULL,
   `name` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
   `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
   PRIMARY KEY (`id`),
   UNIQUE KEY `uk_document_folder_user_dataset_name` (`user_id`,`dataset_id`,`name`),
-  KEY `idx_document_folder_dataset` (`user_id`,`dataset_id`,`created_at`)
+  KEY `idx_document_folder_dataset` (`user_id`,`dataset_id`,`created_at`),
+  KEY `idx_document_folder_parent` (`dataset_id`,`parent_id`,`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `document` (

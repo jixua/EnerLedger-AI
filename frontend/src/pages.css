@@ -588,9 +588,11 @@
 .notice > button { margin-left: auto; padding: 0; border: 0; background: transparent; color: currentColor; font-size: 16px; }
 .dataset-tabs { position: sticky; top: -1px; z-index: 12; overflow-x: auto; box-shadow: 0 8px 18px rgba(36, 54, 50, .035); }
 .document-panel { padding: 0; overflow: hidden; }
-.document-folder-bar { min-width: 0; display: flex; align-items: center; gap: 12px; padding: 11px 12px; border-bottom: 1px solid var(--hairline); background: var(--surface); }
-.document-folder-tabs { min-width: 0; flex: 1; display: flex; align-items: center; gap: 6px; overflow-x: auto; scrollbar-width: thin; }
+.document-folder-bar { min-width: 0; display: flex; align-items: flex-start; gap: 12px; padding: 11px 12px; border-bottom: 1px solid var(--hairline); background: var(--surface); }
+.document-folder-tabs { min-width: 0; flex: 1; display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
 .document-folder-tab { min-height: 34px; max-width: 190px; flex: 0 0 auto; display: inline-flex; align-items: center; gap: 7px; padding: 0 10px; border: 1px solid var(--hairline); border-radius: var(--radius-pill); background: var(--surface-soft); color: var(--muted); font-size: 10px; cursor: pointer; }
+.document-folder-tab.is-nested { margin-left: calc(var(--folder-depth) * 8px); border-style: dashed; }
+.document-folder-tab.is-nested::before { content: "↳"; color: var(--muted-soft); font-size: 11px; }
 .document-folder-tab span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .document-folder-tab em { min-width: 18px; padding: 3px 5px; border-radius: var(--radius-pill); background: var(--surface); color: var(--muted); font: 650 8px/1 var(--font-mono); font-style: normal; text-align: center; }
 .document-folder-tab:hover { border-color: var(--hairline-strong); color: var(--ink); }
