@@ -1,4 +1,4 @@
--- 能碳会计 AI 智能体：最小 RAG 基线（四张业务表）
+-- 能碳会计 AI 智能体：当前 RAG 业务表快照
 CREATE TABLE llm_config (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     scope VARCHAR(16) NOT NULL DEFAULT 'USER',
@@ -38,10 +38,23 @@ CREATE TABLE dataset (
     KEY idx_dataset_user_updated (user_id, updated_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE document_folder (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    dataset_id BIGINT UNSIGNED NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    name VARCHAR(64) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_document_folder_user_dataset_name (user_id, dataset_id, name),
+    KEY idx_document_folder_dataset (user_id, dataset_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE document (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     dataset_id BIGINT UNSIGNED NOT NULL,
     user_id BIGINT UNSIGNED NOT NULL,
+    folder_id BIGINT UNSIGNED NULL,
     filename VARCHAR(255) NOT NULL,
     file_type VARCHAR(32) NOT NULL,
     file_size BIGINT UNSIGNED NOT NULL,
@@ -91,7 +104,8 @@ CREATE TABLE document (
     KEY idx_document_queue_available (status, available_at, id),
     KEY idx_document_lease_expiry (status, lease_expires_at, id),
     KEY idx_document_dispatch_available (dispatch_status, dispatch_available_at, id),
-    KEY idx_document_review_status (user_id, review_status, created_at)
+    KEY idx_document_review_status (user_id, review_status, created_at),
+    KEY idx_document_folder (folder_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE document_chunk (

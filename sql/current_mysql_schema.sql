@@ -54,10 +54,23 @@ CREATE TABLE IF NOT EXISTS `dataset` (
   KEY `idx_dataset_user_updated` (`user_id`,`updated_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `document_folder` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `dataset_id` bigint unsigned NOT NULL,
+  `user_id` bigint unsigned NOT NULL,
+  `name` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_document_folder_user_dataset_name` (`user_id`,`dataset_id`,`name`),
+  KEY `idx_document_folder_dataset` (`user_id`,`dataset_id`,`created_at`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `document` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `dataset_id` bigint unsigned NOT NULL,
   `user_id` bigint unsigned NOT NULL,
+  `folder_id` bigint unsigned DEFAULT NULL,
   `filename` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
   `file_type` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,
   `file_size` bigint unsigned NOT NULL,
@@ -108,7 +121,8 @@ CREATE TABLE IF NOT EXISTS `document` (
   KEY `idx_document_lease_expiry` (`status`,`lease_expires_at`,`id`),
   KEY `idx_document_dispatch_available`
     (`dispatch_status`,`dispatch_available_at`,`id`),
-  KEY `idx_document_review_status` (`user_id`,`review_status`,`created_at`)
+  KEY `idx_document_review_status` (`user_id`,`review_status`,`created_at`),
+  KEY `idx_document_folder` (`folder_id`,`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `document_chunk` (

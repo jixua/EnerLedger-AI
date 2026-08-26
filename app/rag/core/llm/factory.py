@@ -4,7 +4,7 @@ ModelFactory —— 协议分发中台。
 按 ``protocol`` 注册 / 查找 / 创建 Provider（adapter）。所有要用 LLM 的路径
 （用户配置链 / 系统 env 链）最终都经 ``create_client`` 这一个口子拿 adapter。
 
-分发依据为 ``protocol``（openai/anthropic/google/jina/dashscope），**不依据
+分发依据为 ``protocol``（openai/anthropic/google/jina/dashscope/codex_cli），**不依据
 ``provider_type``**——后者仅作厂商身份 / 展示 / 日志透传。按用户配置解析 Provider
 的逻辑在 ``app.rag.core.llm.user_model_resolver``，本工厂只负责「注册表 + 由参数造 adapter」。
 """
@@ -30,6 +30,7 @@ class ModelFactory:
         "dashscope",
         "bge_m3",
         "doubao_vision",
+        "codex_cli",
     }
 
     def __new__(cls) -> "ModelFactory":
@@ -43,6 +44,7 @@ class ModelFactory:
         """按 protocol 注册默认 adapter（幂等）。"""
         from app.rag.core.llm.providers.anthropic import AnthropicProvider
         from app.rag.core.llm.providers.bge_m3 import BgeM3ServiceProvider
+        from app.rag.core.llm.providers.codex_cli import CodexCliProvider
         from app.rag.core.llm.providers.dashscope import DashScopeProvider
         from app.rag.core.llm.providers.doubao_vision import DoubaoVisionProvider
         from app.rag.core.llm.providers.google import GoogleProvider
@@ -57,6 +59,7 @@ class ModelFactory:
             "dashscope": DashScopeProvider,
             "bge_m3": BgeM3ServiceProvider,
             "doubao_vision": DoubaoVisionProvider,
+            "codex_cli": CodexCliProvider,
         }
         for protocol, provider_cls in defaults.items():
             self._providers.setdefault(protocol, provider_cls)
