@@ -17,7 +17,7 @@ from app.api.documents import (
     update_document,
     upload_and_queue_document,
 )
-from app.domain.models import Dataset, Document
+from app.domain.models import Dataset, Document, DocumentFolder
 from app.domain.schemas import DocumentUpdate
 from app.services.document_queue import utc_now
 
@@ -321,6 +321,27 @@ async def test_document_filename_update_is_tenant_scoped_and_keeps_file_contract
     with pytest.raises(HTTPException) as exc_info:
         await update_document(7, DocumentUpdate(filename="hidden.pdf"), 12, foreign_db)
     assert exc_info.value.status_code == 404
+
+
+@pytest.mark.asyncio
+async def test_document_folder_update_is_virtual_and_tenant_scoped() -> None:
+    document = _document(status="READY")
+    folder = DocumentFolder(id=5, dataset_id=9, user_id=11, name="排放因子")
+    raw_object_key = document.raw_object_key
+    db = _FakeSession([document, folder])
+
+    result = await update_document(7, DocumentUpdate(folder_id=5), 11, db)
+
+    assert result["folder_id"] == 5
+    assert document.raw_object_key == raw_object_key
+    assert document.version == 1
+    assert db.commits == 1
+
+    unfiled = await update_document(7, DocumentUpdate(folder_id=None), 11, _FakeSession([document]))
+    assert unfiled["folder_id"] is None
+
+    with pytest.raises(ValidationError):
+        DocumentUpdate.model_validate({})
 
 
 @pytest.mark.asyncio

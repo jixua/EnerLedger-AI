@@ -3,13 +3,21 @@
 from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
-from app.domain.models import Dataset, Document
-from app.domain.schemas import DatasetCreate, DatasetRead, DatasetUpdate
+from app.domain.models import Dataset, Document, DocumentFolder
+from app.domain.schemas import (
+    DatasetCreate,
+    DatasetRead,
+    DatasetUpdate,
+    DocumentFolderCreate,
+    DocumentFolderRead,
+    DocumentFolderUpdate,
+)
 from app.rag.core.storage.manticore_bm25 import ManticoreBm25IndexingPipeline
 from app.rag.database import get_db
 from app.rag.models.db_models import LLMModelConfigDB
@@ -113,6 +121,138 @@ async def _owned_dataset(
     if dataset is None:
         raise HTTPException(status_code=404, detail="数据集不存在或无权访问")
     return dataset
+
+
+async def _owned_folder(
+    db: AsyncSession,
+    *,
+    dataset_id: int,
+    folder_id: int,
+    user_id: int,
+    for_update: bool = False,
+) -> DocumentFolder:
+    statement = select(DocumentFolder).where(
+        DocumentFolder.id == folder_id,
+        DocumentFolder.dataset_id == dataset_id,
+        DocumentFolder.user_id == user_id,
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    folder = await db.scalar(statement)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="文件夹不存在或无权访问")
+    return folder
+
+
+def _folder_response(folder: DocumentFolder) -> DocumentFolderRead:
+    return DocumentFolderRead(
+        id=folder.id,
+        dataset_id=folder.dataset_id,
+        name=folder.name,
+        created_at=folder.created_at,
+        updated_at=folder.updated_at,
+    )
+
+
+@router.get("/{dataset_id}/folders", response_model=list[DocumentFolderRead])
+async def list_document_folders(
+    dataset_id: int,
+    user_id: Annotated[int, Depends(get_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> list[DocumentFolderRead]:
+    await _owned_dataset(db, dataset_id=dataset_id, user_id=user_id)
+    folders = (
+        await db.scalars(
+            select(DocumentFolder)
+            .where(
+                DocumentFolder.dataset_id == dataset_id,
+                DocumentFolder.user_id == user_id,
+            )
+            .order_by(DocumentFolder.created_at.asc(), DocumentFolder.id.asc())
+        )
+    ).all()
+    return [_folder_response(folder) for folder in folders]
+
+
+@router.post(
+    "/{dataset_id}/folders",
+    response_model=DocumentFolderRead,
+    status_code=status.HTTP_201_CREATED,
+)
+async def create_document_folder(
+    dataset_id: int,
+    payload: DocumentFolderCreate,
+    user_id: Annotated[int, Depends(get_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> DocumentFolderRead:
+    await _owned_dataset(db, dataset_id=dataset_id, user_id=user_id)
+    folder = DocumentFolder(dataset_id=dataset_id, user_id=user_id, name=payload.name)
+    try:
+        db.add(folder)
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="当前数据集下已存在同名文件夹") from exc
+    await db.refresh(folder)
+    return _folder_response(folder)
+
+
+@router.patch("/{dataset_id}/folders/{folder_id}", response_model=DocumentFolderRead)
+async def update_document_folder(
+    dataset_id: int,
+    folder_id: int,
+    payload: DocumentFolderUpdate,
+    user_id: Annotated[int, Depends(get_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> DocumentFolderRead:
+    folder = await _owned_folder(
+        db,
+        dataset_id=dataset_id,
+        folder_id=folder_id,
+        user_id=user_id,
+        for_update=True,
+    )
+    folder.name = payload.name
+    try:
+        await db.commit()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=409, detail="当前数据集下已存在同名文件夹") from exc
+    await db.refresh(folder)
+    return _folder_response(folder)
+
+
+@router.delete("/{dataset_id}/folders/{folder_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document_folder(
+    dataset_id: int,
+    folder_id: int,
+    user_id: Annotated[int, Depends(get_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """删除分类文件夹；其中文档保留并回到“未分类”。"""
+
+    folder = await _owned_folder(
+        db,
+        dataset_id=dataset_id,
+        folder_id=folder_id,
+        user_id=user_id,
+        for_update=True,
+    )
+    await db.execute(
+        update(Document)
+        .where(
+            Document.folder_id == folder.id,
+            Document.dataset_id == dataset_id,
+            Document.user_id == user_id,
+        )
+        .values(folder_id=None)
+    )
+    await db.delete(folder)
+    try:
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        raise
 
 
 @router.post("", response_model=DatasetRead, status_code=status.HTTP_201_CREATED)
@@ -308,6 +448,12 @@ async def delete_dataset(
             },
         ) from exc
 
+    await db.execute(
+        sa_delete(DocumentFolder).where(
+            DocumentFolder.dataset_id == dataset.id,
+            DocumentFolder.user_id == user_id,
+        )
+    )
     await db.delete(dataset)
     try:
         await db.commit()

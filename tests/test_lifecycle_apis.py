@@ -9,9 +9,9 @@ from pydantic import ValidationError
 from sqlalchemy.exc import IntegrityError
 
 import app.api.datasets as datasets_api
-from app.api.datasets import delete_dataset, update_dataset
+from app.api.datasets import delete_dataset, delete_document_folder, update_dataset
 from app.api.llm import delete_config, update_config
-from app.domain.models import Dataset, Document
+from app.domain.models import Dataset, Document, DocumentFolder
 from app.domain.schemas import DatasetUpdate, LLMConfigUpdate
 from app.rag.core.llm.encryption import decrypt_api_key, encrypt_api_key
 from app.rag.models.db_models import LLMModelConfigDB
@@ -55,6 +55,7 @@ class _FakeSession:
         self.commits = 0
         self.rollbacks = 0
         self.refreshes = 0
+        self.executed = []
 
     async def scalar(self, statement):
         self.statements.append(statement)
@@ -80,6 +81,9 @@ class _FakeSession:
 
     async def delete(self, model):
         self.deleted.append(model)
+
+    async def execute(self, statement):
+        self.executed.append(statement)
 
 
 def _now() -> datetime:
@@ -404,6 +408,28 @@ async def test_dataset_delete_requires_an_empty_owned_dataset(monkeypatch) -> No
     assert dropped == [(11, 7)]
     assert empty_db.deleted == [dataset]
     assert empty_db.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_folder_delete_moves_documents_to_unfiled_without_deleting_them() -> None:
+    folder = DocumentFolder(
+        id=8,
+        dataset_id=7,
+        user_id=11,
+        name="供应链资料",
+        created_at=_now(),
+        updated_at=_now(),
+    )
+    db = _FakeSession(scalar_values=[folder])
+
+    assert await delete_document_folder(7, 8, 11, db) is None
+    assert db.deleted == [folder]
+    assert db.commits == 1
+    assert len(db.executed) == 1
+    statement = str(db.executed[0])
+    assert "UPDATE document SET folder_id" in statement
+    assert "document.dataset_id" in statement
+    assert "document.user_id" in statement
 
 
 @pytest.mark.asyncio
