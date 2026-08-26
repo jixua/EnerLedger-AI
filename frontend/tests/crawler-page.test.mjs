@@ -6,6 +6,22 @@ const crawlerPageSource = await readFile(
   new URL("../src/pages/CrawlerPage.jsx", import.meta.url),
   "utf8",
 );
+const crawlerReviewPageSource = await readFile(
+  new URL("../src/pages/CrawlerReviewPage.jsx", import.meta.url),
+  "utf8",
+);
+const appShellSource = await readFile(
+  new URL("../src/components/AppShell.jsx", import.meta.url),
+  "utf8",
+);
+const appSource = await readFile(
+  new URL("../src/App.jsx", import.meta.url),
+  "utf8",
+);
+const pageStyles = await readFile(
+  new URL("../src/pages.css", import.meta.url),
+  "utf8",
+);
 
 test("crawler requires a dataset and places the query before compact selectors", () => {
   const datasetSelector = crawlerPageSource.indexOf('className="crawler-search__dataset"');
@@ -52,4 +68,26 @@ test("crawler unlocks import before background document refresh", () => {
 
   assert.ok(unlockIndex >= 0);
   assert.ok(refreshIndex > unlockIndex);
+});
+
+test("crawler review gates parsing behind an explicit approval action", () => {
+  assert.match(crawlerReviewPageSource, /listCrawlerSubmissions/);
+  assert.match(crawlerReviewPageSource, /reviewCrawlerSubmission/);
+  assert.match(crawlerReviewPageSource, /decision === "APPROVED"/);
+  assert.match(crawlerReviewPageSource, /通过并解析/);
+  assert.match(crawlerReviewPageSource, /查看原文件/);
+});
+
+test("arXiv collection and crawler review have independent routes and navigation", () => {
+  assert.doesNotMatch(crawlerPageSource, /listCrawlerSubmissions/);
+  assert.doesNotMatch(crawlerReviewPageSource, /searchArxivPapers/);
+  assert.match(appShellSource, /to: "\/crawler\/review", label: "资料审核"/);
+  assert.match(appShellSource, /to: "\/crawler", label: "arXiv 采集"[^\n]*end: true/);
+  assert.match(appSource, /path="crawler\/review"/);
+});
+
+test("crawler review filter and refresh action stay in one row", () => {
+  assert.match(crawlerReviewPageSource, /crawler-results__actions crawler-review__actions/);
+  assert.match(pageStyles, /\.crawler-review__actions \{[^}]*flex-wrap: nowrap;/);
+  assert.match(pageStyles, /\.crawler-review__actions \.button \{[^}]*white-space: nowrap;/);
 });

@@ -4,6 +4,7 @@ import { afterEach, test } from "node:test";
 import {
   configureApi,
   createDataset,
+  getCrawlerSubmissionFile,
   getDocumentPreviewAsset,
   getDocumentPreviewContent,
   getDocumentPreviewMap,
@@ -12,6 +13,8 @@ import {
   getSystemStatus,
   importArxivPapers,
   listAllDocuments,
+  listCrawlerSubmissions,
+  reviewCrawlerSubmission,
   searchArxivPapers,
   updateDocument,
   updateDataset,
@@ -244,6 +247,45 @@ test("arXiv import sends selected paper titles to the target dataset", async () 
       { arxiv_id: "2608.12346v1", title: "Lifecycle Emissions Analysis" },
     ],
   });
+});
+
+test("crawler review list and decision use the authenticated review contract", async () => {
+  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse({ items: [], total: 0, offset: 0, limit: 50 });
+  };
+
+  await listCrawlerSubmissions({ reviewStatus: "PENDING" });
+  await reviewCrawlerSubmission(51, { decision: "APPROVED", note: null });
+
+  assert.equal(
+    requests[0].url,
+    "http://api.local/api/v1/crawler/submissions?review_status=PENDING&offset=0&limit=50",
+  );
+  assert.equal(requests[0].init.headers.get("Authorization"), "Bearer token-7");
+  assert.equal(requests[1].url, "http://api.local/api/v1/crawler/submissions/51/review");
+  assert.equal(requests[1].init.method, "POST");
+  assert.deepEqual(JSON.parse(requests[1].init.body), { decision: "APPROVED", note: null });
+});
+
+test("crawler original file is fetched as a protected blob", async () => {
+  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(new Uint8Array([37, 80, 68, 70]), {
+      status: 200,
+      headers: { "Content-Type": "application/pdf" },
+    });
+  };
+
+  const blob = await getCrawlerSubmissionFile(51);
+
+  assert.equal(captured.url, "http://api.local/api/v1/crawler/submissions/51/file");
+  assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
+  assert.equal(blob.type, "application/pdf");
 });
 
 test("RAG stream sends snake_case payload and consumes terminal SSE event", async () => {

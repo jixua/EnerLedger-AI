@@ -12,6 +12,7 @@ import app.api.documents as documents_api
 from app.api.documents import (
     _document_payload,
     delete_document,
+    queue_document_from_path,
     reparse_document,
     retry_document,
     update_document,
@@ -257,6 +258,42 @@ async def test_upload_streams_to_storage_and_returns_queued_location(
     assert storage.uploads[0][2] == b"pdf-binary"
     assert db.commits == 1
     assert _active_dispatch_stub == [(88, 1)]
+
+
+@pytest.mark.asyncio
+async def test_crawler_upload_is_saved_for_review_without_dispatch(
+    tmp_path,
+    _active_dispatch_stub,
+) -> None:
+    storage = _FakeStorage()
+    source_path = tmp_path / "crawler.pdf"
+    source_path.write_bytes(b"%PDF-1.7\n")
+    dataset = _dataset()
+    db = _FakeSession([dataset])
+
+    document = await queue_document_from_path(
+        dataset_id=9,
+        user_id=11,
+        filename="crawler.pdf",
+        source_path=source_path,
+        content_type="application/pdf",
+        db=db,
+        storage=storage,
+        ownership_checked=True,
+        review_required=True,
+        source_type="EXTERNAL_CRAWLER",
+        source_url="https://example.com/article",
+        source_title="待审核文章",
+        source_metadata={"crawler_name": "example"},
+    )
+
+    assert document.status == "PENDING_REVIEW"
+    assert document.review_status == "PENDING"
+    assert document.dispatch_status == "IDLE"
+    assert document.available_at is None
+    assert document.queued_at is None
+    assert storage.uploads[0][2] == b"%PDF-1.7\n"
+    assert _active_dispatch_stub == []
 
 
 @pytest.mark.asyncio

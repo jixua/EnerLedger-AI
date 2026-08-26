@@ -13,6 +13,7 @@ const PlaygroundPage = lazy(() => import("./pages/PlaygroundPage").then((module)
 const ModelsPage = lazy(() => import("./pages/ModelsPage").then((module) => ({ default: module.ModelsPage })));
 const SystemPage = lazy(() => import("./pages/SystemPage").then((module) => ({ default: module.SystemPage })));
 const CrawlerPage = lazy(() => import("./pages/CrawlerPage").then((module) => ({ default: module.CrawlerPage })));
+const CrawlerReviewPage = lazy(() => import("./pages/CrawlerReviewPage").then((module) => ({ default: module.CrawlerReviewPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage").then((module) => ({ default: module.LoginPage })));
 
 function PageLoader() {
@@ -44,6 +45,7 @@ export function App() {
             <Route path="models" element={<Suspense fallback={<PageLoader />}><ModelsPage /></Suspense>} />
             <Route path="system" element={<Suspense fallback={<PageLoader />}><SystemPage /></Suspense>} />
             <Route path="crawler" element={<Suspense fallback={<PageLoader />}><CrawlerPage /></Suspense>} />
+            <Route path="crawler/review" element={<Suspense fallback={<PageLoader />}><CrawlerReviewPage /></Suspense>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>
         </Routes>

@@ -66,7 +66,13 @@ app.add_middleware(
     allow_origins=settings.cors_allow_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Accept", "Authorization", "Content-Type", "X-Request-Id"],
+    allow_headers=[
+        "Accept",
+        "Authorization",
+        "Content-Type",
+        "X-Crawler-Api-Key",
+        "X-Request-Id",
+    ],
     expose_headers=["Location", "X-Request-Id", "X-Document-Version"],
 )
 app.include_router(auth_router)
