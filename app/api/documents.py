@@ -38,9 +38,11 @@ from app.services.document_dispatch import DocumentParseDispatcher, mark_documen
 from app.services.document_ingestion import SimpleDocumentIngestionService
 from app.services.document_queue import (
     DOCUMENT_STATUS_FAILED,
+    DOCUMENT_STATUS_PENDING_REVIEW,
     DOCUMENT_STATUS_PROCESSING,
     DOCUMENT_STATUS_QUEUED,
     DOCUMENT_STATUS_READY,
+    DOCUMENT_STATUS_REJECTED,
     reset_document_for_queue,
     utc_now,
 )
@@ -55,6 +57,8 @@ DOCUMENT_STATUSES = {
     DOCUMENT_STATUS_PROCESSING,
     DOCUMENT_STATUS_READY,
     DOCUMENT_STATUS_FAILED,
+    DOCUMENT_STATUS_PENDING_REVIEW,
+    DOCUMENT_STATUS_REJECTED,
 }
 
 _MARKDOWN_IMAGE_PATTERN = re.compile(
@@ -326,6 +330,13 @@ def _document_payload(document: Document, *, quality_detail: bool = True) -> dic
         "parse_time_ms": _document_parse_time_ms(document),
         "parse_quality_status": document.parse_quality_status,
         "parse_quality": parse_quality,
+        "source_type": document.source_type or "MANUAL_UPLOAD",
+        "source_url": document.source_url,
+        "source_title": document.source_title,
+        "source_metadata": document.source_metadata,
+        "review_status": document.review_status or "NOT_REQUIRED",
+        "review_note": document.review_note,
+        "reviewed_at": document.reviewed_at,
         "retrieval_ready": _document_retrieval_ready(document),
         "created_at": document.created_at,
         "updated_at": document.updated_at,
@@ -716,8 +727,13 @@ async def queue_document_from_path(
     storage: Any | None = None,
     object_key: str | None = None,
     ownership_checked: bool = False,
+    review_required: bool = False,
+    source_type: str = "MANUAL_UPLOAD",
+    source_url: str | None = None,
+    source_title: str | None = None,
+    source_metadata: dict[str, Any] | None = None,
 ) -> Document:
-    """把已经落盘的受支持文件放入与普通上传相同的解析队列。"""
+    """保存受支持文件；普通上传立即入队，外部采集文件等待人工审核。"""
 
     if not ownership_checked:
         await _owned_dataset(db, dataset_id, user_id)
@@ -767,6 +783,9 @@ async def queue_document_from_path(
         raise
 
     now = utc_now()
+    document_status = (
+        DOCUMENT_STATUS_PENDING_REVIEW if review_required else DOCUMENT_STATUS_QUEUED
+    )
     document = Document(
         dataset_id=dataset_id,
         user_id=user_id,
@@ -777,13 +796,21 @@ async def queue_document_from_path(
         raw_bucket=settings.MINIO_RAW_BUCKET,
         raw_object_key=object_key,
         parser_backend="opendataloader" if file_type == "pdf" else "builtin",
-        status=DOCUMENT_STATUS_QUEUED,
+        status=document_status,
         version=1,
         attempt_count=0,
-        available_at=now,
-        queued_at=now,
+        available_at=None if review_required else now,
+        queued_at=None if review_required else now,
+        dispatch_status="IDLE" if review_required else "PENDING",
+        dispatch_available_at=None if review_required else now,
+        source_type=source_type,
+        source_url=source_url,
+        source_title=source_title,
+        source_metadata=source_metadata,
+        review_status="PENDING" if review_required else "NOT_REQUIRED",
     )
-    mark_document_dispatch_pending(document, now=now)
+    if not review_required:
+        mark_document_dispatch_pending(document, now=now)
     try:
         db.add(document)
         await db.commit()
@@ -800,7 +827,8 @@ async def queue_document_from_path(
             ).warning("数据库写入失败后清理原文件对象失败")
         raise
 
-    await _dispatch_document(db, document)
+    if not review_required:
+        await _dispatch_document(db, document)
     return document
 
 
@@ -844,6 +872,7 @@ async def list_documents(
         db,
         Document.dataset_id == dataset_id,
         Document.user_id == user_id,
+        Document.review_status.in_(("NOT_REQUIRED", "APPROVED")),
     )
     return [_document_payload(document, quality_detail=False) for document in documents]
 
@@ -867,7 +896,10 @@ async def list_all_documents(
             },
         )
 
-    filters = [Document.user_id == user_id]
+    filters = [
+        Document.user_id == user_id,
+        Document.review_status.in_(("NOT_REQUIRED", "APPROVED")),
+    ]
     if dataset_id is not None:
         filters.append(Document.dataset_id == dataset_id)
     if normalized_status is not None:
@@ -1257,12 +1289,17 @@ async def delete_document(
     """删除非活跃文档及原文件、解析产物和三路索引。"""
 
     document = await _owned_document(db, document_id, user_id, for_update=True)
-    if document.status not in {DOCUMENT_STATUS_READY, DOCUMENT_STATUS_FAILED}:
+    if document.status not in {
+        DOCUMENT_STATUS_READY,
+        DOCUMENT_STATUS_FAILED,
+        DOCUMENT_STATUS_PENDING_REVIEW,
+        DOCUMENT_STATUS_REJECTED,
+    }:
         raise HTTPException(
             status_code=409,
             detail={
                 "code": "DOCUMENT_NOT_DELETABLE",
-                "message": "只有解析完成或最终失败的文档可以删除",
+                "message": "只有待审核、已拒绝、解析完成或最终失败的文档可以删除",
             },
         )
 

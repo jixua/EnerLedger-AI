@@ -69,6 +69,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0004_document_parse_quality.py",
         "0005_dataset_vision_config.py",
         "0006_document_dispatch_outbox.py",
+        "0007_crawler_document_review.py",
     ]
 
     root_revision = runpy.run_path(str(version_files[0]))
@@ -77,6 +78,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     parse_quality_revision = runpy.run_path(str(version_files[3]))
     vision_config_revision = runpy.run_path(str(version_files[4]))
     dispatch_outbox_revision = runpy.run_path(str(version_files[5]))
+    crawler_review_revision = runpy.run_path(str(version_files[6]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
@@ -89,6 +91,8 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     assert vision_config_revision["down_revision"] == "0004_document_parse_quality"
     assert dispatch_outbox_revision["revision"] == "0006_document_dispatch_outbox"
     assert dispatch_outbox_revision["down_revision"] == "0005_dataset_vision_config"
+    assert crawler_review_revision["revision"] == "0007_crawler_document_review"
+    assert crawler_review_revision["down_revision"] == "0006_document_dispatch_outbox"
 
 
 def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
@@ -115,6 +119,9 @@ def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
     assert "not_applicable" in sql
     assert "alter table dataset add column vision_config_id bigint unsigned" in sql
     assert "alter table document add column dispatch_status varchar(16)" in sql
+    assert "alter table document add column review_status varchar(16)" in sql
+    assert "alter table document add column source_metadata json" in sql
+    assert "idx_document_review_status" in sql
 
     legacy_tables = {
         "dataset_parse_config",
@@ -144,3 +151,6 @@ def test_readable_sql_snapshot_contains_current_chunk_structure_column() -> None
     assert "vision_config_id bigint unsigned null" in sql
     assert "dispatch_status varchar(16) not null" in sql
     assert "idx_document_dispatch_available" in sql
+    assert "review_status varchar(16) not null" in sql
+    assert "source_metadata json null" in sql
+    assert "idx_document_review_status" in sql

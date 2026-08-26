@@ -18,7 +18,9 @@ Alembic 自己创建的 `alembic_version` 是版本记录表，不属于业务�
   -> 0002_document_parse_queue
   -> 0003_chunk_structure_metadata
   -> 0004_document_parse_quality
-  -> 0005_dataset_vision_config (head)
+  -> 0005_dataset_vision_config
+  -> 0006_document_dispatch_outbox
+  -> 0007_crawler_document_review (head)
 ```
 
 `0001_minimal_rag` 直接创建四张业务表，不依赖历史 LinkRag schema；后续迁移仍只修改这四张表。`migrations/db.sql` 是当前 head 的可读 SQL 快照；正常部署应以 `alembic upgrade head` 为准，不要同时手工执行 SQL 文件。
@@ -26,6 +28,8 @@ Alembic 自己创建的 `alembic_version` 是版本记录表，不属于业务�
 `0004_document_parse_quality` 只在 `document` 表增加可空的质量状态与 JSON 摘要字段。升级时将已有 PDF 标记为 `LEGACY_UNCHECKED`，已有非 PDF 标记为 `NOT_APPLICABLE`；不会改变文档解析、队列或召回就绪状态。
 
 `0005_dataset_vision_config` 在 `dataset` 表增加可空的 `vision_config_id`，用于绑定 PDF 页级 OCR/视觉兜底模型；不新增配置表，也不修改已有数据集的绑定。
+
+`0007_crawler_document_review` 在 `document` 表保存第三方采集来源与人工审核状态。外部上传文件在审核通过前保持 `PENDING_REVIEW`，不会进入 RabbitMQ 解析队列。
 
 ## 与旧 39 版迁移链不兼容
 

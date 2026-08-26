@@ -204,6 +204,10 @@ async def test_arxiv_import_downloads_and_queues_selected_papers(monkeypatch) ->
     queue_call = next(value for name, value in calls if name == "queue")
     assert queue_call["dataset_id"] == 7
     assert queue_call["content_type"] == "application/pdf"
+    assert queue_call["source_type"] == "ARXIV"
+    assert queue_call["source_url"] == "https://arxiv.org/abs/2608.12345v1"
+    assert queue_call["source_title"] == "Carbon Accounting with AI"
+    assert queue_call["source_metadata"] == {"arxiv_id": "2608.12345v1"}
     assert any(name == "download" for name, _ in calls)
 
 

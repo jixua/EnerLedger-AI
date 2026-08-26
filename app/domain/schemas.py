@@ -241,9 +241,55 @@ class DocumentRead(BaseModel):
     parse_time_ms: int | None
     parse_quality_status: str | None
     parse_quality: dict[str, Any] | None
+    source_type: str
+    source_url: str | None
+    source_title: str | None
+    source_metadata: dict[str, Any] | None
+    review_status: str
+    review_note: str | None
+    reviewed_at: datetime | None
     retrieval_ready: bool
     created_at: datetime
     updated_at: datetime
+
+
+class CrawlerSubmissionRead(BaseModel):
+    document_id: int
+    dataset_id: int
+    dataset_name: str
+    filename: str
+    file_type: str
+    file_size: int
+    content_type: str | None
+    document_status: str
+    source_type: str
+    source_url: str | None
+    source_title: str | None
+    source_metadata: dict[str, Any] | None
+    review_status: Literal["PENDING", "APPROVED", "REJECTED"]
+    review_note: str | None
+    reviewed_at: datetime | None
+    created_at: datetime
+
+
+class CrawlerSubmissionPage(BaseModel):
+    items: list[CrawlerSubmissionRead]
+    total: int
+    offset: int
+    limit: int
+
+
+class CrawlerReviewRequest(BaseModel):
+    decision: Literal["APPROVED", "REJECTED"]
+    note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 class DocumentChunkRead(BaseModel):

@@ -10,7 +10,10 @@ import {
   Search,
   UploadCloud,
 } from "lucide-react";
-import { importArxivPapers, searchArxivPapers } from "../lib/api";
+import {
+  importArxivPapers,
+  searchArxivPapers,
+} from "../lib/api";
 import { useApp } from "../state/AppContext";
 
 const DEFAULT_QUERY = "carbon footprint";
@@ -80,7 +83,7 @@ export function CrawlerPage() {
   const allVisibleSelected = visibleSelectionIds.length > 0
     && visibleSelectionIds.every((id) => selectedIds.includes(id));
   const resultSummary = useMemo(() => {
-    if (!result) return "输入关键词后，从 arXiv 官方接口采集论文元数据。";
+    if (!result) return "";
     return `找到约 ${result.total_results.toLocaleString("zh-CN")} 篇，当前展示 ${result.items.length} 篇。`;
   }, [result]);
 
@@ -157,9 +160,9 @@ export function CrawlerPage() {
       <header className="crawler-hero">
         <span className="crawler-hero__icon"><Globe2 size={22} /></span>
         <div>
-          <p className="eyebrow">在线资料采集演示</p>
+          <p className="eyebrow">论文采集</p>
           <h1>arXiv 论文采集</h1>
-          <p>按关键词采集预印本论文的题目、作者、摘要、分类与原文链接。</p>
+          <p>按关键词检索 arXiv 论文，选择后导入指定知识库并进入解析队列。</p>
         </div>
       </header>
 
@@ -203,7 +206,10 @@ export function CrawlerPage() {
 
       <section className="crawler-results" aria-live="polite">
         <div className="crawler-results__header">
-          <div><p className="eyebrow">采集结果</p><h2>{resultSummary}</h2></div>
+          <div>
+            <p className="eyebrow">采集结果</p>
+            {resultSummary ? <h2>{resultSummary}</h2> : null}
+          </div>
           {result?.items.length ? (
             <div className="crawler-results__actions">
               <button className="button button--secondary" type="button" onClick={toggleVisiblePapers}>

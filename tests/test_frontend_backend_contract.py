@@ -10,6 +10,10 @@ def test_openapi_contains_every_frontend_runtime_endpoint() -> None:
         ("get", "/api/v1/system/status"),
         ("get", "/api/v1/crawler/arxiv"),
         ("post", "/api/v1/crawler/arxiv/import"),
+        ("post", "/api/v1/crawler/uploads"),
+        ("get", "/api/v1/crawler/submissions"),
+        ("get", "/api/v1/crawler/submissions/{document_id}/file"),
+        ("post", "/api/v1/crawler/submissions/{document_id}/review"),
         ("get", "/api/v1/llm/configs"),
         ("post", "/api/v1/llm/configs"),
         ("patch", "/api/v1/llm/configs/{config_id}"),
@@ -72,6 +76,8 @@ def test_document_and_model_responses_do_not_expose_secrets_or_queue_tokens() ->
         "parse_quality_status",
         "parse_quality",
         "retrieval_ready",
+        "source_type",
+        "review_status",
     } <= document_fields.keys()
     assert {
         "user_id",
