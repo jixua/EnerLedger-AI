@@ -52,6 +52,63 @@ function documentsForDataset(documents, datasetId) {
   return documents?.[datasetId] || documents?.[String(datasetId)] || [];
 }
 
+function flattenFolderTree(folders) {
+  const children = new Map();
+  const knownIds = new Set(folders.map((folder) => Number(folder.id)));
+  folders.forEach((folder) => {
+    const parentId = folder.parent_id == null || !knownIds.has(Number(folder.parent_id))
+      ? null
+      : Number(folder.parent_id);
+    const siblings = children.get(parentId) || [];
+    siblings.push(folder);
+    children.set(parentId, siblings);
+  });
+  children.forEach((items) => items.sort((left, right) => String(left.name || "").localeCompare(String(right.name || ""), "zh-CN", { numeric: true })));
+
+  const rows = [];
+  const walk = (parentId, depth, ancestors) => {
+    (children.get(parentId) || []).forEach((folder) => {
+      const id = Number(folder.id);
+      if (ancestors.has(id)) return;
+      rows.push({ ...folder, depth });
+      walk(id, depth + 1, new Set([...ancestors, id]));
+    });
+  };
+  walk(null, 0, new Set());
+  return rows;
+}
+
+function folderDescendantIds(folders, folderId) {
+  const children = new Map();
+  folders.forEach((folder) => {
+    const key = folder.parent_id == null ? null : Number(folder.parent_id);
+    children.set(key, [...(children.get(key) || []), Number(folder.id)]);
+  });
+  const result = new Set();
+  const pending = [Number(folderId)];
+  while (pending.length) {
+    const current = pending.pop();
+    if (!Number.isFinite(current) || result.has(current)) continue;
+    result.add(current);
+    pending.push(...(children.get(current) || []));
+  }
+  return result;
+}
+
+function folderPath(folder, folders) {
+  if (!folder) return "未分类";
+  const byId = new Map(folders.map((item) => [Number(item.id), item]));
+  const names = [];
+  const visited = new Set();
+  let current = folder;
+  while (current && !visited.has(Number(current.id))) {
+    visited.add(Number(current.id));
+    names.unshift(current.name);
+    current = current.parent_id == null ? null : byId.get(Number(current.parent_id));
+  }
+  return names.join(" / ");
+}
+
 function modelId(model) {
   return model?.id ?? model?.config_id ?? model?.configId;
 }
@@ -157,6 +214,7 @@ export function DatasetDetailPage() {
   const [activeFolder, setActiveFolder] = useState("ALL");
   const [folderDialog, setFolderDialog] = useState(null);
   const [folderName, setFolderName] = useState("");
+  const [folderParentId, setFolderParentId] = useState("");
   const [folderSaving, setFolderSaving] = useState(false);
   const [query, setQuery] = useState("");
   const [recallRunning, setRecallRunning] = useState(false);
@@ -180,17 +238,24 @@ export function DatasetDetailPage() {
     counts[key] = (counts[key] || 0) + 1;
     return counts;
   }, {}), [datasetDocuments]);
+  const folderRows = useMemo(() => flattenFolderTree(folders), [folders]);
   const selectedFolder = folders.find((folder) => String(folder.id) === String(activeFolder));
+  const activeFolderIds = useMemo(
+    () => selectedFolder ? folderDescendantIds(folders, selectedFolder.id) : new Set(),
+    [folders, selectedFolder],
+  );
+  const folderTotal = (folder) => [...folderDescendantIds(folders, folder.id)]
+    .reduce((total, id) => total + (folderCounts[String(id)] || 0), 0);
   const filteredDocuments = useMemo(() => {
     const normalizedQuery = documentQuery.trim().toLocaleLowerCase("zh-CN");
     return datasetDocuments.filter((document) => {
       const matchesStatus = documentStatus === "ALL" || normalizedStatus(document) === documentStatus;
       const matchesQuery = !normalizedQuery || String(document.filename || documentId(document) || "").toLocaleLowerCase("zh-CN").includes(normalizedQuery);
       const matchesFolder = activeFolder === "ALL"
-        || (activeFolder === "UNFILED" ? document.folder_id == null : String(document.folder_id) === String(activeFolder));
+        || (activeFolder === "UNFILED" ? document.folder_id == null : activeFolderIds.has(Number(document.folder_id)));
       return matchesStatus && matchesQuery && matchesFolder;
     });
-  }, [activeFolder, datasetDocuments, documentQuery, documentStatus]);
+  }, [activeFolder, activeFolderIds, datasetDocuments, documentQuery, documentStatus]);
   const loadDocuments = actions.loadDocuments;
   const denseModels = models.filter((model) => model.capability === "EMBEDDING" && (model.is_active !== false || Number(modelId(model)) === Number(dataset?.dense_embedding_config_id)));
   const sparseModels = models.filter((model) => model.capability === "SPARSE_EMBEDDING" && (model.is_active !== false || Number(modelId(model)) === Number(dataset?.sparse_embedding_config_id)));
@@ -283,12 +348,14 @@ export function DatasetDetailPage() {
   function openCreateFolder() {
     setFolderDialog({ mode: "create" });
     setFolderName("");
+    setFolderParentId(selectedFolder ? String(selectedFolder.id) : "");
     setPageError("");
   }
 
   function openRenameFolder(folder) {
     setFolderDialog({ mode: "rename", folder });
     setFolderName(folder.name || "");
+    setFolderParentId(folder.parent_id == null ? "" : String(folder.parent_id));
     setPageError("");
   }
 
@@ -300,11 +367,11 @@ export function DatasetDetailPage() {
     setPageError("");
     try {
       if (folderDialog?.mode === "rename") {
-        const updated = await updateDocumentFolder(datasetId, folderDialog.folder.id, { name });
+        const updated = await updateDocumentFolder(datasetId, folderDialog.folder.id, { name, parent_id: folderParentId ? Number(folderParentId) : null });
         setFolders((current) => current.map((folder) => Number(folder.id) === Number(updated.id) ? updated : folder));
         setPageNotice("文件夹名称已更新。");
       } else {
-        const created = await createDocumentFolder(datasetId, { name });
+        const created = await createDocumentFolder(datasetId, { name, parent_id: folderParentId ? Number(folderParentId) : null });
         setFolders((current) => [...current, created]);
         setActiveFolder(String(created.id));
         setPageNotice("文件夹已创建。");
@@ -319,16 +386,18 @@ export function DatasetDetailPage() {
 
   async function handleDeleteFolder(folder) {
     const count = folderCounts[String(folder.id)] || 0;
-    const suffix = count ? `，其中 ${count} 个文档将移到“未分类”` : "";
+    const suffix = count ? `，其中 ${count} 个直属文档将上移一级` : "";
     if (!window.confirm(`确认删除文件夹“${folder.name}”${suffix}吗？`)) return;
     setFolderSaving(true);
     setPageError("");
     try {
       await deleteDocumentFolder(datasetId, folder.id);
-      setFolders((current) => current.filter((item) => Number(item.id) !== Number(folder.id)));
-      setActiveFolder("UNFILED");
+      setFolders((current) => current
+        .filter((item) => Number(item.id) !== Number(folder.id))
+        .map((item) => Number(item.parent_id) === Number(folder.id) ? { ...item, parent_id: folder.parent_id ?? null } : item));
+      setActiveFolder(folder.parent_id == null ? "UNFILED" : String(folder.parent_id));
       await actions.loadDocuments?.(datasetId);
-      setPageNotice(count ? "文件夹已删除，文档已移到未分类。" : "文件夹已删除。");
+      setPageNotice(count ? "文件夹已删除，文档已上移一级。" : "文件夹已删除。");
     } catch (error) {
       setPageError(error instanceof Error ? error.message : "文件夹删除失败");
     } finally {
@@ -338,7 +407,7 @@ export function DatasetDetailPage() {
 
   async function handleMoveDocument(document, value) {
     const folderId = value ? Number(value) : null;
-    const targetName = folders.find((folder) => Number(folder.id) === folderId)?.name || "未分类";
+    const targetName = folderPath(folders.find((folder) => Number(folder.id) === folderId), folders);
     await runDocumentAction(
       document,
       (_datasetId, id) => actions.updateDocument?.(_datasetId, id, { folder_id: folderId }),
@@ -506,12 +575,12 @@ export function DatasetDetailPage() {
             <div className="document-folder-tabs" role="navigation" aria-label="文档文件夹">
               <button type="button" className={`document-folder-tab${activeFolder === "ALL" ? " is-active" : ""}`} onClick={() => setActiveFolder("ALL")}><FolderOpen size={15} /><span>全部文档</span><em>{datasetDocuments.length}</em></button>
               <button type="button" className={`document-folder-tab${activeFolder === "UNFILED" ? " is-active" : ""}`} onClick={() => setActiveFolder("UNFILED")}><Folder size={15} /><span>未分类</span><em>{folderCounts.UNFILED || 0}</em></button>
-              {folders.map((folder) => <button type="button" key={folder.id} className={`document-folder-tab${String(activeFolder) === String(folder.id) ? " is-active" : ""}`} onClick={() => setActiveFolder(String(folder.id))}><Folder size={15} /><span>{folder.name}</span><em>{folderCounts[String(folder.id)] || 0}</em></button>)}
+              {folderRows.map((folder) => <button type="button" key={folder.id} style={{ "--folder-depth": folder.depth }} className={`document-folder-tab${folder.depth ? " is-nested" : ""}${String(activeFolder) === String(folder.id) ? " is-active" : ""}`} onClick={() => setActiveFolder(String(folder.id))} title={folderPath(folder, folders)}><Folder size={15} /><span>{folder.name}</span><em>{folderTotal(folder)}</em></button>)}
               {foldersLoading ? <span className="document-folder-loading"><Loader2 className="spin" size={14} />读取文件夹…</span> : null}
             </div>
             <div className="document-folder-actions">
               {selectedFolder ? <><button type="button" className="icon-button icon-button--quiet" onClick={() => openRenameFolder(selectedFolder)} disabled={folderSaving} aria-label={`重命名文件夹 ${selectedFolder.name}`} title="重命名当前文件夹"><Pencil size={14} /></button><button type="button" className="icon-button icon-button--quiet icon-button--danger" onClick={() => handleDeleteFolder(selectedFolder)} disabled={folderSaving} aria-label={`删除文件夹 ${selectedFolder.name}`} title="删除当前文件夹"><Trash2 size={14} /></button></> : null}
-              <button type="button" className="button button--secondary" onClick={openCreateFolder}><FolderPlus size={15} />新建文件夹</button>
+              <button type="button" className="button button--secondary" onClick={openCreateFolder}><FolderPlus size={15} />{selectedFolder ? "新建子文件夹" : "新建文件夹"}</button>
             </div>
           </div>
           {loadingDocuments && datasetDocuments.length === 0 ? (
@@ -543,14 +612,14 @@ export function DatasetDetailPage() {
                     const retryable = canRetryDocument(document, status);
                     return (
                       <article className="document-row" role="row" key={id}>
-                        <div className="document-row__identity" role="cell"><span className="file-icon"><FileText size={16} /></span><span><Link className="document-name-link" to={`/datasets/${datasetId}/documents/${id}`}>{document.filename || `文档 #${id}`}</Link><small>{String(document.file_type || "").toUpperCase()} · {formatBytes(document.file_size)} · {folders.find((folder) => Number(folder.id) === Number(document.folder_id))?.name || "未分类"}</small></span></div>
+                        <div className="document-row__identity" role="cell"><span className="file-icon"><FileText size={16} /></span><span><Link className="document-name-link" to={`/datasets/${datasetId}/documents/${id}`}>{document.filename || `文档 #${id}`}</Link><small>{String(document.file_type || "").toUpperCase()} · {formatBytes(document.file_size)} · {folderPath(folders.find((folder) => Number(folder.id) === Number(document.folder_id)), folders)}</small></span></div>
                         <div className="document-row__status" role="cell" data-label="状态"><StatusPill document={document} />{Number(document.attempt_count) > 0 ? <small>尝试 {document.attempt_count} 次</small> : null}</div>
                         <div className="document-row__result" role="cell" data-label="解析结果">
                           {status === "FAILED" ? <p className="document-error">{documentErrorMessage(document)}</p> : <><strong>{document.chunk_count ?? 0} 个分片 · {document.page_count ?? "—"} 页</strong><small>{status === "READY" ? `耗时 ${formatDuration(document.parse_time_ms)}` : status === "QUEUED" ? `可用时间 ${formatTime(document.available_at || document.queued_at)}` : `开始于 ${formatTime(document.processing_started_at)}`}</small></>}
                         </div>
                         <time className="document-row__time" role="cell" data-label="更新时间">{formatTime(document.updated_at)}</time>
                         <div className="document-row__actions" role="cell" data-label="操作">
-                          <select className="document-folder-select" aria-label={`移动 ${document.filename || id} 到文件夹`} title="移动到文件夹" value={document.folder_id ?? ""} onChange={(event) => handleMoveDocument(document, event.target.value)} disabled={busy}><option value="">未分类</option>{folders.map((folder) => <option key={folder.id} value={folder.id}>{folder.name}</option>)}</select>
+                          <select className="document-folder-select" aria-label={`移动 ${document.filename || id} 到文件夹`} title="移动到文件夹" value={document.folder_id ?? ""} onChange={(event) => handleMoveDocument(document, event.target.value)} disabled={busy}><option value="">未分类</option>{folderRows.map((folder) => <option key={folder.id} value={folder.id}>{`${"　".repeat(folder.depth)}${folder.name}`}</option>)}</select>
                           <Link className="button button--tiny document-view-link" to={`/datasets/${datasetId}/documents/${id}`} aria-label={`查看 ${document.filename || id} 的分片详情`}><Eye size={13} />详情</Link>
                           <button type="button" className="icon-button icon-button--quiet" onClick={() => openRenameDocument(document)} disabled={busy || renaming} aria-label={`重命名 ${document.filename || id}`} title="修改展示名称"><Pencil size={14} /></button>
                           {retryable ? <button type="button" className="button button--tiny" onClick={() => runDocumentAction(document, actions.retryDocument, "文档已重新加入队列。")} disabled={busy}><RefreshCw className={busy ? "spin" : ""} size={13} />重试</button> : null}
@@ -630,6 +699,7 @@ export function DatasetDetailPage() {
             </header>
             <form className="form-stack" onSubmit={saveFolder}>
               <label className="form-field"><span>文件夹名称</span><input autoFocus required maxLength={64} value={folderName} onChange={(event) => setFolderName(event.target.value)} placeholder="例如：排放因子" /></label>
+              <label className="form-field"><span>上级文件夹</span><select value={folderParentId} onChange={(event) => setFolderParentId(event.target.value)}><option value="">顶层</option>{folderRows.filter((folder) => folderDialog.mode !== "rename" || !folderDescendantIds(folders, folderDialog.folder.id).has(Number(folder.id))).map((folder) => <option key={folder.id} value={folder.id}>{`${"　".repeat(folder.depth)}${folder.name}`}</option>)}</select></label>
               <footer className="dialog__footer">
                 <button type="button" className="button button--ghost" onClick={() => setFolderDialog(null)} disabled={folderSaving}>取消</button>
                 <button type="submit" className="button button--primary" disabled={folderSaving || !folderName.trim()}>{folderSaving ? <Loader2 className="spin" size={15} /> : <FolderPlus size={15} />}{folderSaving ? "正在保存" : "保存文件夹"}</button>

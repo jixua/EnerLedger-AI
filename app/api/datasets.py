@@ -148,10 +148,52 @@ def _folder_response(folder: DocumentFolder) -> DocumentFolderRead:
     return DocumentFolderRead(
         id=folder.id,
         dataset_id=folder.dataset_id,
+        parent_id=folder.parent_id,
         name=folder.name,
         created_at=folder.created_at,
         updated_at=folder.updated_at,
     )
+
+
+async def _validate_folder_parent(
+    db: AsyncSession,
+    *,
+    dataset_id: int,
+    user_id: int,
+    parent_id: int | None,
+    folder_id: int | None = None,
+) -> None:
+    """校验父文件夹归属并防止形成循环层级。"""
+
+    if parent_id is None:
+        return
+    if folder_id is not None and parent_id == folder_id:
+        raise HTTPException(status_code=409, detail="文件夹不能作为自己的父级")
+
+    folders = (
+        await db.scalars(
+            select(DocumentFolder)
+            .where(
+                DocumentFolder.dataset_id == dataset_id,
+                DocumentFolder.user_id == user_id,
+            )
+            .with_for_update()
+        )
+    ).all()
+    by_id = {item.id: item for item in folders}
+    if parent_id not in by_id:
+        raise HTTPException(status_code=404, detail="父文件夹不存在或无权访问")
+
+    visited: set[int] = set()
+    current_id: int | None = parent_id
+    while current_id is not None:
+        if current_id == folder_id or current_id in visited:
+            raise HTTPException(status_code=409, detail="文件夹层级不能形成循环")
+        visited.add(current_id)
+        current = by_id.get(current_id)
+        if current is None:
+            raise HTTPException(status_code=409, detail="文件夹层级存在无效父级")
+        current_id = current.parent_id
 
 
 @router.get("/{dataset_id}/folders", response_model=list[DocumentFolderRead])
@@ -186,7 +228,18 @@ async def create_document_folder(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> DocumentFolderRead:
     await _owned_dataset(db, dataset_id=dataset_id, user_id=user_id)
-    folder = DocumentFolder(dataset_id=dataset_id, user_id=user_id, name=payload.name)
+    await _validate_folder_parent(
+        db,
+        dataset_id=dataset_id,
+        user_id=user_id,
+        parent_id=payload.parent_id,
+    )
+    folder = DocumentFolder(
+        dataset_id=dataset_id,
+        user_id=user_id,
+        parent_id=payload.parent_id,
+        name=payload.name,
+    )
     try:
         db.add(folder)
         await db.commit()
@@ -212,7 +265,17 @@ async def update_document_folder(
         user_id=user_id,
         for_update=True,
     )
-    folder.name = payload.name
+    updates = payload.model_dump(exclude_unset=True)
+    if "parent_id" in updates:
+        await _validate_folder_parent(
+            db,
+            dataset_id=dataset_id,
+            user_id=user_id,
+            parent_id=updates["parent_id"],
+            folder_id=folder.id,
+        )
+    for field_name, value in updates.items():
+        setattr(folder, field_name, value)
     try:
         await db.commit()
     except IntegrityError as exc:
@@ -229,7 +292,7 @@ async def delete_document_folder(
     user_id: Annotated[int, Depends(get_user_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> None:
-    """删除分类文件夹；其中文档保留并回到“未分类”。"""
+    """删除文件夹；直接子项和文档上移到被删文件夹的父级。"""
 
     folder = await _owned_folder(
         db,
@@ -245,7 +308,16 @@ async def delete_document_folder(
             Document.dataset_id == dataset_id,
             Document.user_id == user_id,
         )
-        .values(folder_id=None)
+        .values(folder_id=folder.parent_id)
+    )
+    await db.execute(
+        update(DocumentFolder)
+        .where(
+            DocumentFolder.parent_id == folder.id,
+            DocumentFolder.dataset_id == dataset_id,
+            DocumentFolder.user_id == user_id,
+        )
+        .values(parent_id=folder.parent_id)
     )
     await db.delete(folder)
     try:
