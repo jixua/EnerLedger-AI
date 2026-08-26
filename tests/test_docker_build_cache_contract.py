@@ -55,3 +55,10 @@ def test_frontend_dockerfile_reuses_npm_download_cache() -> None:
     assert dockerfile.startswith("# syntax=docker/dockerfile:1.7\n")
     assert "id=enerledger-npm,target=/root/.npm,sharing=locked" in dockerfile
     assert "npm ci --no-audit --no-fund" in dockerfile
+
+
+def test_api_entrypoint_applies_every_candidate_migration_head() -> None:
+    entrypoint = (ROOT / "docker" / "entrypoint.sh").read_text()
+
+    assert "alembic upgrade heads" in entrypoint
+    assert "alembic upgrade head\n" not in entrypoint

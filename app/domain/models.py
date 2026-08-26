@@ -57,6 +57,36 @@ class Dataset(Base):
     )
 
 
+class DocumentFolder(Base):
+    """数据集内的虚拟文件夹，仅用于对文档进行展示分类。"""
+
+    __tablename__ = "document_folder"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "dataset_id",
+            "name",
+            name="uk_document_folder_user_dataset_name",
+        ),
+        Index("idx_document_folder_dataset", "user_id", "dataset_id", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    dataset_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+
+
 class Document(Base):
     """上传文件、解析结果与最终状态的单表记录。
 
@@ -71,11 +101,13 @@ class Document(Base):
         Index("idx_document_queue_available", "status", "available_at", "id"),
         Index("idx_document_lease_expiry", "status", "lease_expires_at", "id"),
         Index("idx_document_dispatch_available", "dispatch_status", "dispatch_available_at", "id"),
+        Index("idx_document_folder", "folder_id", "id"),
     )
 
     id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
     dataset_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
     user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    folder_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_type: Mapped[str] = mapped_column(String(32), nullable=False)
     file_size: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)

@@ -16,7 +16,7 @@
 - Word 解析会将 OMML 公式转为 LaTeX，并传播文档中已保存的显式分页信息；分页和
   表格协议 marker 只承担定位/结构边界职责，不进入最终检索文本。
 - 文档上传后立即向 RabbitMQ 发布只携带文档 ID 的持久消息，独立 `parse-worker` 通过 `basic_consume` 主动接收并完成解析、切分和三路索引；MySQL 仅保存状态、租约与幂等真值。
-- MySQL 只保留 `dataset`、`document`、`document_chunk`、`llm_config` 四张业务表；单管理员身份由部署配置提供，不新增用户表，也不提供注册接口。
+- MySQL 保留 `dataset`、`document_folder`、`document`、`document_chunk`、`llm_config` 五张业务表；单管理员身份由部署配置提供，不新增用户表，也不提供注册接口。
 - 不建立解析日志、阶段流水线、会话、消息、用量日志、厂商目录或模型目录表。
 - `document.status` 使用 `QUEUED`、`PROCESSING`、`READY`、`FAILED`。只有 `READY` 文档可以参与检索。
 - `POST /api/v1/documents/{document_id}/analysis` 读取文档当前版本的全部主体分片，分批调用 Chat 模型提取证据，生成 Markdown 分析报告并保存到 MinIO；`GET` 同路径读取当前版本最近一次成功报告。
@@ -54,7 +54,7 @@ Alembic 会额外创建自己的版本记录表 `alembic_version`，它不属于
 | --- | --- |
 | Python | 3.11，FastAPI、SQLAlchemy 与 RAG 实现 |
 | OpenJDK | 21 JRE，只作为 OpenDataLoader 的运行时，不承载业务服务 |
-| MySQL | 8.0，四张业务表的事实源；不能用 SQLite 替代 |
+| MySQL | 8.0，五张业务表的事实源；不能用 SQLite 替代 |
 | MinIO | S3 兼容对象存储 |
 | Qdrant | 1.17.1，Dense/Sparse 向量索引 |
 | Manticore | 27.1.5，BM25 关键词索引 |
@@ -93,7 +93,7 @@ docker compose ps
 docker compose logs -f api parse-worker
 ```
 
-Compose 会等待 MySQL、MinIO 和 Manticore 就绪，并创建两个 MinIO 桶。API 容器随后执行 `alembic upgrade head`，成功后才启动 Uvicorn。
+Compose 会等待 MySQL、MinIO 和 Manticore 就绪，并创建两个 MinIO 桶。API 容器随后执行 `alembic upgrade heads`，成功后才启动 Uvicorn。`dev` 可同时存在多个从 `master` 派生的独立候选迁移，因此启动阶段必须应用所有 head；后续在发布基线中再用 Alembic merge revision 收敛分支头。
 
 常用入口：
 
@@ -124,7 +124,7 @@ docker compose exec api alembic current
 docker compose exec api alembic heads
 ```
 
-正常结果应指向 `0006_document_dispatch_outbox`。
+正常结果应包含当前代码的所有 head；单独的文件夹候选分支为 `0007_document_folders`。
 
 ## 本机开发启动
 
@@ -134,7 +134,7 @@ docker compose exec api alembic heads
 cp .env.example .env
 uv sync --dev
 uv run python -m nltk.downloader -d ./nltk_data punkt punkt_tab stopwords wordnet omw-1.4
-uv run alembic upgrade head
+uv run alembic upgrade heads
 uv run uvicorn app.main:app --reload
 ```
 
@@ -190,6 +190,15 @@ Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。
 - `SPARSE_EMBEDDING` 可使用 `bge_m3` 或 `doubao_vision` 等已迁入协议。
 - API Key 经 AES-256-GCM 加密后写入 `llm_config`，接口只返回掩码。
 - `provider_type`、`protocol` 和端点直接保存在 `llm_config`；当前没有 Provider catalog API 或相关表。
+- 本机开发可创建 `codex_cli` 协议的 `CHAT` 配置。该配置固定调用本机
+  `codex exec` 的 `gpt-5.4-mini` 与 `medium`（中等）推理档位，不填写 API 地址或 API Key，
+  复用启动 API 服务的操作系统账号所持有的 Codex 登录态。
+
+Codex CLI 模式中的“本机”指子进程在 API 服务所在主机执行，模型推理仍请求 OpenAI
+服务。使用前先运行 `codex login status` 确认登录态，并确认该登录主体有
+`gpt-5.4-mini` 权限；登录成功本身不代表指定模型可用。Docker Compose 默认镜像不包含
+Codex CLI，因此该模式默认面向本机直接启动的 API，不能把宿主机登录目录或凭据直接打包
+进镜像。
 
 最小调用顺序：
 
@@ -198,18 +207,19 @@ Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。
 | 1 | `POST /api/v1/auth/login` | 使用部署配置中的管理员账号换取 Bearer JWT |
 | 2 | `POST /api/v1/llm/configs` | 分别创建 Dense、Sparse、Chat，以及按需创建 Vision 配置 |
 | 3 | `POST /api/v1/datasets` | 绑定模型配置并创建数据集 |
-| 4 | `POST /api/v1/datasets/{dataset_id}/documents` | 流式上传原文件，返回 `202 + QUEUED` |
-| 5 | `GET /api/v1/documents/{document_id}` | 查询排队、处理、成功或失败状态 |
-| 6 | `GET /api/v1/documents/{document_id}/preview/content` | 流式读取当前版本的完整解析 Markdown |
-| 7 | `GET /api/v1/documents/{document_id}/preview/map` | 一次读取当前版本的主体分片边界图 |
-| 8 | `GET /api/v1/documents/{document_id}/preview/versions/{version}/assets/{asset_ref}` | 租户校验后流式读取 Markdown 内的私有图片 |
-| 9 | `GET /api/v1/documents/{document_id}/chunks` | 按当前文档版本分页查看分片正文、顺序、类型与来源信息 |
-| 10 | `GET /api/v1/documents/{document_id}/analysis` | 从 MinIO 读取当前版本最近一次成功的分析报告 |
-| 11 | `POST /api/v1/documents/{document_id}/analysis` | 分析当前版本全文，持久化并返回 Markdown 报告与引用映射 |
-| 12 | `GET /api/v1/documents` | 按用户查询全局解析队列，可按数据集和状态筛选 |
-| 13 | `POST /api/v1/recall` | 仅执行三路召回与融合 |
-| 14 | `POST /api/v1/rag/stream` | 混合检索后用 Chat 模型流式生成回复 |
-| 15 | `GET /api/v1/system/status` | 查询中间件、持久队列和可观测 worker 状态 |
+| 4 | `POST /api/v1/datasets/{dataset_id}/folders` | 按需创建仅用于分类的虚拟文件夹 |
+| 5 | `POST /api/v1/datasets/{dataset_id}/documents` | 流式上传原文件，可选传入 `folder_id`，返回 `202 + QUEUED` |
+| 6 | `GET /api/v1/documents/{document_id}` | 查询排队、处理、成功或失败状态 |
+| 7 | `GET /api/v1/documents/{document_id}/preview/content` | 流式读取当前版本的完整解析 Markdown |
+| 8 | `GET /api/v1/documents/{document_id}/preview/map` | 一次读取当前版本的主体分片边界图 |
+| 9 | `GET /api/v1/documents/{document_id}/preview/versions/{version}/assets/{asset_ref}` | 租户校验后流式读取 Markdown 内的私有图片 |
+| 10 | `GET /api/v1/documents/{document_id}/chunks` | 按当前文档版本分页查看分片正文、顺序、类型与来源信息 |
+| 11 | `GET /api/v1/documents/{document_id}/analysis` | 从 MinIO 读取当前版本最近一次成功的分析报告 |
+| 12 | `POST /api/v1/documents/{document_id}/analysis` | 分析当前版本全文，持久化并返回 Markdown 报告与引用映射 |
+| 13 | `GET /api/v1/documents` | 按用户查询全局解析队列，可按数据集和状态筛选 |
+| 14 | `POST /api/v1/recall` | 仅执行三路召回与融合 |
+| 15 | `POST /api/v1/rag/stream` | 混合检索后用 Chat 模型流式生成回复 |
+| 16 | `GET /api/v1/system/status` | 查询中间件、持久队列和可观测 worker 状态 |
 
 除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。当前产品只配置一个管理员，不提供注册入口；管理员密码只以 scrypt 哈希保存在部署环境中。接口字段以运行中的 OpenAPI `/docs` 为准。
 
@@ -268,11 +278,11 @@ RabbitMQ 负责主动投递，MySQL `document` 行同时保存解析 lease 和 o
 文档状态与待投递标记在一次事务内提交；API 随后尝试发布，后台补偿器会用
 `FOR UPDATE SKIP LOCKED` 领取未投递或投递 lease 已过期的记录。因此进程在数据库提交后、
 RabbitMQ 确认前后崩溃都能恢复；极端窗口可能重复投递，但文档版本和 lease fencing 会拒绝
-重复处理。该方案不增加第五张业务表。失败任务按
+重复处理。outbox 仍直接内聚在 `document` 表，不增加独立任务表。失败任务按
 `DOCUMENT_QUEUE_RETRY_DELAYS_SECONDS` 退避，达到 `DOCUMENT_QUEUE_MAX_ATTEMPTS` 后收敛为
 `FAILED`。可使用 `POST /api/v1/documents/{id}/retry` 重试失败/过期任务，或使用
 `POST /api/v1/documents/{id}/reparse` 基于同一原文件创建新版本；重新解析版本递增，普通
-重试不递增。`PATCH /api/v1/documents/{id}` 可修改展示文件名，`DELETE` 会同步清理原文件、
+重试不递增。`PATCH /api/v1/documents/{id}` 可修改展示文件名或 `folder_id`；文件夹仅是数据集内的虚拟分类，移动文档不会重命名 MinIO 对象、重新解析或重建索引。删除文件夹时，其中文档保留并回到“未分类”。文档 `DELETE` 会同步清理原文件、
 解析产物、三路索引与 chunk（仍在有效 lease 内的 `PROCESSING` 文档拒绝删除）。
 每个版本和 lease 尝试都写入独立的解析产物目录；只有 chunk 真值集与三路索引
 已完成时，才会在同一次数据库提交中把 `parsed_object_key` 切换到新版本。失败或

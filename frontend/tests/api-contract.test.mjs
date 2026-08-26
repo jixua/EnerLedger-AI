@@ -4,6 +4,8 @@ import { afterEach, test } from "node:test";
 import {
   configureApi,
   createDataset,
+  createDocumentFolder,
+  deleteDocumentFolder,
   getDocumentPreviewAsset,
   getDocumentPreviewContent,
   getDocumentPreviewMap,
@@ -12,9 +14,12 @@ import {
   getSystemStatus,
   importArxivPapers,
   listAllDocuments,
+  listDocumentFolders,
   searchArxivPapers,
   updateDocument,
+  updateDocumentFolder,
   updateDataset,
+  uploadDocument,
 } from "../src/lib/api.js";
 import { streamRag } from "../src/lib/sse.js";
 
@@ -60,6 +65,52 @@ test("document rename sends the backend PATCH contract", async () => {
   assert.equal(captured.url, "/api/v1/documents/31");
   assert.equal(captured.init.method, "PATCH");
   assert.deepEqual(JSON.parse(captured.init.body), { filename: "核算报告.pdf" });
+});
+
+test("dataset folder lifecycle uses tenant-scoped dataset routes", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    if (init.method === "DELETE") return new Response(null, { status: 204 });
+    return jsonResponse(init.method === "GET" ? [] : { id: 4, dataset_id: 2, name: "排放因子" });
+  };
+
+  await listDocumentFolders(2);
+  await createDocumentFolder(2, { name: "排放因子" });
+  await updateDocumentFolder(2, 4, { name: "采购排放因子" });
+  await deleteDocumentFolder(2, 4);
+
+  assert.deepEqual(requests.map(({ url, init }) => [url, init.method]), [
+    ["/api/v1/datasets/2/folders", "GET"],
+    ["/api/v1/datasets/2/folders", "POST"],
+    ["/api/v1/datasets/2/folders/4", "PATCH"],
+    ["/api/v1/datasets/2/folders/4", "DELETE"],
+  ]);
+  assert.deepEqual(JSON.parse(requests[2].init.body), { name: "采购排放因子" });
+});
+
+test("document upload can assign a virtual folder without changing the file", async () => {
+  const originalFile = globalThis.File;
+  globalThis.File = class File extends Blob {
+    constructor(parts, name, options) {
+      super(parts, options);
+      this.name = name;
+    }
+  };
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return jsonResponse({ document_id: 31, dataset_id: 2, folder_id: 4, status: "QUEUED" }, 202);
+  };
+  try {
+    await uploadDocument(2, new File(["pdf"], "report.pdf", { type: "application/pdf" }), { folderId: 4 });
+  } finally {
+    globalThis.File = originalFile;
+  }
+
+  assert.equal(captured.url, "/api/v1/datasets/2/documents");
+  assert.equal(captured.init.body.get("folder_id"), "4");
+  assert.equal(captured.init.body.get("file").name, "report.pdf");
 });
 
 test("dataset create and update keep the optional vision model binding", async () => {
