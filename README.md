@@ -289,7 +289,7 @@ RabbitMQ 确认前后崩溃都能恢复；极端窗口可能重复投递，但�
 失租只清理当次尝试目录，不覆盖、也不删除上一个 READY 产物；新版成功后
 会清理被替代的旧版本，删除文档时再按文档级根目录全量收敛。
 
-文档上传默认上限为 100 MiB，可通过 `DOCUMENT_UPLOAD_MAX_BYTES` 调整；上传和 worker 下载
+文档上传默认上限为 128 MiB，可通过 `DOCUMENT_UPLOAD_MAX_BYTES` 调整；上传和 worker 下载
 均分块落盘，不会把 100 MiB 文件整体读入内存。PDF 仍以 OpenDataLoader 结构解析为主，
 随后强制核对原页数与 `ODL_PAGE` 页序，统计正文/图片覆盖、旋转和 OCR 置信度。
 对可靠文本层同时使用顺序敏感的 source recall 和 output precision 门禁，

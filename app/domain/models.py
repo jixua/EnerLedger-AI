@@ -58,7 +58,7 @@ class Dataset(Base):
 
 
 class DocumentFolder(Base):
-    """数据集内的虚拟文件夹，仅用于对文档进行展示分类。"""
+    """数据集内的虚拟文件夹，支持用 ``parent_id`` 表示层级。"""
 
     __tablename__ = "document_folder"
     __table_args__ = (
@@ -69,11 +69,13 @@ class DocumentFolder(Base):
             name="uk_document_folder_user_dataset_name",
         ),
         Index("idx_document_folder_dataset", "user_id", "dataset_id", "created_at"),
+        Index("idx_document_folder_parent", "dataset_id", "parent_id", "id"),
     )
 
     id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
     dataset_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
     user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    parent_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
     name: Mapped[str] = mapped_column(String(64), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()

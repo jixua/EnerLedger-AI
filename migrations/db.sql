@@ -42,12 +42,14 @@ CREATE TABLE document_folder (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     dataset_id BIGINT UNSIGNED NOT NULL,
     user_id BIGINT UNSIGNED NOT NULL,
+    parent_id BIGINT UNSIGNED NULL,
     name VARCHAR(64) NOT NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
     UNIQUE KEY uk_document_folder_user_dataset_name (user_id, dataset_id, name),
-    KEY idx_document_folder_dataset (user_id, dataset_id, created_at)
+    KEY idx_document_folder_dataset (user_id, dataset_id, created_at),
+    KEY idx_document_folder_parent (dataset_id, parent_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE document (

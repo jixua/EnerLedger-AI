@@ -629,7 +629,7 @@ class Settings(BaseSettings):
     PARSE_TEMP_DIR: str = "/tmp/tolink-rag-parse"
 
     STORAGE_TYPE: str = "minio"  # minio / local
-    DOCUMENT_UPLOAD_MAX_BYTES: int = Field(default=100 * 1024 * 1024, gt=0)
+    DOCUMENT_UPLOAD_MAX_BYTES: int = Field(default=128 * 1024 * 1024, gt=0)
     # RabbitMQ 主动投递；MySQL document 表保留 lease 与重试状态。
     DOCUMENT_QUEUE_LEASE_SECONDS: int = Field(default=300, gt=0)
     DOCUMENT_QUEUE_HEARTBEAT_SECONDS: int = Field(default=30, gt=0)

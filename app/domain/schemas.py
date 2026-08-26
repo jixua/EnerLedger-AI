@@ -181,6 +181,7 @@ class DatasetRead(BaseModel):
 
 class DocumentFolderCreate(BaseModel):
     name: str = Field(min_length=1, max_length=64)
+    parent_id: int | None = Field(default=None, gt=0)
 
     @field_validator("name")
     @classmethod
@@ -193,13 +194,33 @@ class DocumentFolderCreate(BaseModel):
         return normalized
 
 
-class DocumentFolderUpdate(DocumentFolderCreate):
-    pass
+class DocumentFolderUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    parent_id: int | None = Field(default=None, gt=0)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("文件夹名称不能为空")
+        if "/" in normalized or "\\" in normalized:
+            raise ValueError("文件夹名称不能包含路径分隔符")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_patch_fields(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("至少需要更新一个字段")
+        return self
 
 
 class DocumentFolderRead(BaseModel):
     id: int
     dataset_id: int
+    parent_id: int | None
     name: str
     created_at: datetime
     updated_at: datetime

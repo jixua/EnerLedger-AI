@@ -70,6 +70,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0005_dataset_vision_config.py",
         "0006_document_dispatch_outbox.py",
         "0007_document_folders.py",
+        "0008_document_folder_hierarchy.py",
     ]
 
     root_revision = runpy.run_path(str(version_files[0]))
@@ -79,6 +80,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     vision_config_revision = runpy.run_path(str(version_files[4]))
     dispatch_outbox_revision = runpy.run_path(str(version_files[5]))
     folders_revision = runpy.run_path(str(version_files[6]))
+    folder_hierarchy_revision = runpy.run_path(str(version_files[7]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
@@ -93,6 +95,8 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     assert dispatch_outbox_revision["down_revision"] == "0005_dataset_vision_config"
     assert folders_revision["revision"] == "0007_document_folders"
     assert folders_revision["down_revision"] == "0006_document_dispatch_outbox"
+    assert folder_hierarchy_revision["revision"] == "0008_document_folder_hierarchy"
+    assert folder_hierarchy_revision["down_revision"] == "0007_document_folders"
 
 
 def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
@@ -121,6 +125,8 @@ def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
     assert "alter table document add column dispatch_status varchar(16)" in sql
     assert "create table document_folder" in sql
     assert "alter table document add column folder_id bigint unsigned" in sql
+    assert "alter table document_folder add column parent_id bigint unsigned" in sql
+    assert "idx_document_folder_parent" in sql
 
     legacy_tables = {
         "dataset_parse_config",
@@ -153,3 +159,5 @@ def test_readable_sql_snapshot_contains_current_chunk_structure_column() -> None
     assert "create table document_folder" in sql
     assert "folder_id bigint unsigned null" in sql
     assert "idx_document_folder" in sql
+    assert "parent_id bigint unsigned null" in sql
+    assert "idx_document_folder_parent" in sql
