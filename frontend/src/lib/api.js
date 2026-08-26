@@ -332,6 +332,32 @@ export function deleteDataset(datasetId, { signal } = {}) {
   });
 }
 
+export function listDocumentFolders(datasetId, { signal } = {}) {
+  return apiRequest(`/api/v1/datasets/${encodeURIComponent(datasetId)}/folders`, { signal });
+}
+
+export function createDocumentFolder(datasetId, payload, { signal } = {}) {
+  return apiRequest(`/api/v1/datasets/${encodeURIComponent(datasetId)}/folders`, {
+    method: "POST",
+    body: payload,
+    signal,
+  });
+}
+
+export function updateDocumentFolder(datasetId, folderId, payload, { signal } = {}) {
+  return apiRequest(
+    `/api/v1/datasets/${encodeURIComponent(datasetId)}/folders/${encodeURIComponent(folderId)}`,
+    { method: "PATCH", body: payload, signal },
+  );
+}
+
+export function deleteDocumentFolder(datasetId, folderId, { signal } = {}) {
+  return apiRequest(
+    `/api/v1/datasets/${encodeURIComponent(datasetId)}/folders/${encodeURIComponent(folderId)}`,
+    { method: "DELETE", signal },
+  );
+}
+
 export function listDocuments(datasetId, { signal } = {}) {
   return apiRequest(
     `/api/v1/datasets/${encodeURIComponent(datasetId)}/documents`,
@@ -517,7 +543,7 @@ export function updateDocument(documentId, payload, { signal } = {}) {
   });
 }
 
-export function uploadDocument(datasetId, file, { signal } = {}) {
+export function uploadDocument(datasetId, file, { signal, folderId } = {}) {
   const isFile = typeof File !== "undefined" && file instanceof File;
   const isBlob = typeof Blob !== "undefined" && file instanceof Blob;
   if (!isFile && !isBlob) {
@@ -526,6 +552,9 @@ export function uploadDocument(datasetId, file, { signal } = {}) {
   const form = new FormData();
   const filename = file.name || "document";
   form.append("file", file, filename);
+  if (folderId !== undefined && folderId !== null && folderId !== "") {
+    form.append("folder_id", String(folderId));
+  }
   return apiRequest(
     `/api/v1/datasets/${encodeURIComponent(datasetId)}/documents`,
     { method: "POST", body: form, signal },

@@ -203,23 +203,61 @@ class DatasetRead(BaseModel):
     updated_at: datetime
 
 
+class DocumentFolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("文件夹名称不能为空")
+        if "/" in normalized or "\\" in normalized:
+            raise ValueError("文件夹名称不能包含路径分隔符")
+        return normalized
+
+
+class DocumentFolderUpdate(DocumentFolderCreate):
+    pass
+
+
+class DocumentFolderRead(BaseModel):
+    id: int
+    dataset_id: int
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class DocumentUpdate(BaseModel):
     """文档展示属性的部分更新；不改变原文件对象与解析格式。"""
 
-    filename: str = Field(min_length=1, max_length=255)
+    filename: str | None = Field(default=None, min_length=1, max_length=255)
+    folder_id: int | None = Field(default=None, gt=0)
 
     @field_validator("filename")
     @classmethod
-    def normalize_filename(cls, value: str) -> str:
+    def normalize_filename(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         value = PurePath(value.strip()).name
         if not value:
             raise ValueError("文件名不能为空")
         return value
 
+    @model_validator(mode="after")
+    def validate_patch_fields(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("至少需要更新一个字段")
+        if "filename" in self.model_fields_set and self.filename is None:
+            raise ValueError("filename 不能为 null")
+        return self
+
 
 class DocumentRead(BaseModel):
     document_id: int
     dataset_id: int
+    folder_id: int | None
     filename: str
     file_type: str
     file_size: int
@@ -368,8 +406,8 @@ class LLMConfigCreate(BaseModel):
     display_name: str | None = Field(default=None, max_length=128)
     capability: Capability
     protocol: ProtocolName
-    api_base_url: AnyHttpUrl
-    api_key: SecretStr
+    api_base_url: AnyHttpUrl | None = None
+    api_key: SecretStr | None = None
     is_active: bool = True
 
     @field_validator("provider_type")
@@ -398,10 +436,26 @@ class LLMConfigCreate(BaseModel):
 
     @field_validator("api_key")
     @classmethod
-    def reject_empty_api_key(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
+    def reject_empty_api_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not value.get_secret_value().strip():
             raise ValueError("API Key 不能为空")
         return value
+
+    @model_validator(mode="after")
+    def validate_connection_fields(self) -> Self:
+        if self.protocol == "codex_cli":
+            if self.capability != "CHAT":
+                raise ValueError("Codex CLI 本地模式仅支持 CHAT 能力")
+            if self.model_name != "gpt-5.4-mini":
+                raise ValueError("Codex CLI 本地模式固定使用 gpt-5.4-mini")
+            if self.api_base_url is not None or self.api_key is not None:
+                raise ValueError("Codex CLI 本地模式不接受 API 地址或 API Key")
+            return self
+        if self.api_base_url is None:
+            raise ValueError("远程模型必须提供 API 地址")
+        if self.api_key is None:
+            raise ValueError("远程模型必须提供 API Key")
+        return self
 
 
 class LLMConfigUpdate(BaseModel):

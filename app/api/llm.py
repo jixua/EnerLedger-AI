@@ -20,6 +20,9 @@ router = APIRouter(prefix="/api/v1/llm", tags=["模型配置"])
 # ``LLMModelConfigDB`` 保留 provider_id 作为 LinkRag runtime snapshot 兼容字段，
 # 当前单表控制面不再维护 provider catalog，因此统一写入占位值 1。
 _COMPAT_PROVIDER_ID = 1
+_CODEX_CLI_PROTOCOL = "codex_cli"
+_CODEX_CLI_ENDPOINT = "local://codex-cli"
+_CODEX_CLI_API_KEY_SENTINEL = "local-no-api-key"
 
 _CAPABILITY_VALUES = {
     "CHAT": "text",
@@ -56,6 +59,8 @@ def _validate_protocol_capability(protocol: str, capability: str) -> None:
 def _safe_mask_ciphertext(ciphertext: str) -> str:
     """只返回明文掩码；历史坏密文也绝不回显密文。"""
 
+    if not ciphertext:
+        return "无需密钥"
     try:
         return mask_api_key(decrypt_api_key(ciphertext))
     except Exception:  # noqa: BLE001 - 列表不应以密文作为错误信息泄露
@@ -74,7 +79,11 @@ def _config_response(config: LLMModelConfigDB) -> LLMConfigRead:
         capability=config.capability,
         protocol=config.protocol,
         api_base_url=config.api_base_url,
-        api_key_masked=_safe_mask_ciphertext(config.api_key),
+        api_key_masked=(
+            "无需密钥"
+            if config.protocol == _CODEX_CLI_PROTOCOL
+            else _safe_mask_ciphertext(config.api_key)
+        ),
         is_active=config.is_active,
         snapshot_version=config.snapshot_version,
         created_at=config.created_at,
@@ -139,8 +148,16 @@ async def create_config(
         display_name=payload.display_name,
         capability=payload.capability,
         protocol=payload.protocol,
-        api_base_url=str(payload.api_base_url),
-        api_key=encrypt_api_key(payload.api_key.get_secret_value().strip()),
+        api_base_url=(
+            _CODEX_CLI_ENDPOINT
+            if payload.protocol == _CODEX_CLI_PROTOCOL
+            else str(payload.api_base_url)
+        ),
+        api_key=(
+            _CODEX_CLI_API_KEY_SENTINEL
+            if payload.protocol == _CODEX_CLI_PROTOCOL
+            else encrypt_api_key(payload.api_key.get_secret_value().strip())
+        ),
         is_active=payload.is_active,
         snapshot_version=1,
     )
@@ -208,6 +225,18 @@ async def update_config(
         for_update=True,
     )
     updates = payload.model_dump(exclude_unset=True)
+
+    if config.protocol == _CODEX_CLI_PROTOCOL:
+        if "api_base_url" in updates or "api_key" in updates:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Codex CLI 本地模式不接受 API 地址或 API Key",
+            )
+        if updates.get("model_name", config.model_name) != "gpt-5.4-mini":
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Codex CLI 本地模式固定使用 gpt-5.4-mini",
+            )
 
     binding_filter = or_(
         Dataset.dense_embedding_config_id == config.id,

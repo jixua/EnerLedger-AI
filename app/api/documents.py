@@ -11,17 +11,27 @@ import tempfile
 from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path, PurePath, PurePosixPath
-from typing import Any, Literal
+from typing import Annotated, Any, Literal
 from urllib.parse import unquote, urlsplit
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Response, UploadFile, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Response,
+    UploadFile,
+    status,
+)
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
-from app.domain.models import Dataset, Document
+from app.domain.models import Dataset, Document, DocumentFolder
 from app.domain.schemas import (
     DocumentChunkPage,
     DocumentPreviewMap,
@@ -121,6 +131,27 @@ async def _owned_document(
     if document is None:
         raise HTTPException(status_code=404, detail="文档不存在")
     return document
+
+
+async def _owned_folder(
+    db: AsyncSession,
+    folder_id: int,
+    dataset_id: int,
+    user_id: int,
+    *,
+    for_update: bool = False,
+) -> DocumentFolder:
+    statement = select(DocumentFolder).where(
+        DocumentFolder.id == folder_id,
+        DocumentFolder.dataset_id == dataset_id,
+        DocumentFolder.user_id == user_id,
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    folder = await db.scalar(statement)
+    if folder is None:
+        raise HTTPException(status_code=404, detail="文件夹不存在或不属于当前数据集")
+    return folder
 
 
 async def _save_upload_to_path(file: UploadFile, destination: Path) -> int:
@@ -309,6 +340,7 @@ def _document_payload(document: Document, *, quality_detail: bool = True) -> dic
     return {
         "document_id": document.id,
         "dataset_id": document.dataset_id,
+        "folder_id": document.folder_id,
         "filename": document.filename,
         "file_type": document.file_type,
         "file_size": document.file_size,
@@ -674,10 +706,13 @@ async def upload_and_queue_document(
     file: UploadFile = File(...),
     user_id: int = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
+    folder_id: Annotated[int | None, Form(gt=0)] = None,
 ) -> dict:
     """流式保存原文件，提交状态后立即向 RabbitMQ 发布解析任务。"""
 
     await _owned_dataset(db, dataset_id, user_id)
+    if folder_id is not None:
+        await _owned_folder(db, folder_id, dataset_id, user_id)
 
     filename = PurePath(file.filename or "").name
     file_type = PurePath(filename).suffix.lower().lstrip(".")
@@ -710,6 +745,7 @@ async def upload_and_queue_document(
             storage=storage,
             object_key=object_key,
             ownership_checked=True,
+            folder_id=folder_id,
         )
 
     response.headers["Location"] = f"/api/v1/documents/{document.id}"
@@ -732,6 +768,7 @@ async def queue_document_from_path(
     source_url: str | None = None,
     source_title: str | None = None,
     source_metadata: dict[str, Any] | None = None,
+    folder_id: int | None = None,
 ) -> Document:
     """保存受支持文件；普通上传立即入队，外部采集文件等待人工审核。"""
 
@@ -772,6 +809,14 @@ async def queue_document_from_path(
     # 对象上传期间数据集可能被并发删除；提交 Document 前重新加锁校验，使删除与插入串行。
     try:
         await _owned_dataset(db, dataset_id, user_id, for_update=True)
+        if folder_id is not None:
+            await _owned_folder(
+                db,
+                folder_id,
+                dataset_id,
+                user_id,
+                for_update=True,
+            )
     except HTTPException:
         try:
             await asyncio.to_thread(storage.remove_prefix, settings.MINIO_RAW_BUCKET, object_key)
@@ -789,6 +834,7 @@ async def queue_document_from_path(
     document = Document(
         dataset_id=dataset_id,
         user_id=user_id,
+        folder_id=folder_id,
         filename=safe_filename,
         file_type=file_type,
         file_size=file_size,
@@ -1207,10 +1253,20 @@ async def update_document(
     user_id: int = Depends(get_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """修改用户可见文件名；文件类型和对象存储键保持不变。"""
+    """修改用户可见文件名或虚拟分类；解析与存储对象保持不变。"""
 
     document = await _owned_document(db, document_id, user_id, for_update=True)
-    document.filename = payload.filename
+    updates = payload.model_dump(exclude_unset=True)
+    if "folder_id" in updates and updates["folder_id"] is not None:
+        await _owned_folder(
+            db,
+            updates["folder_id"],
+            document.dataset_id,
+            user_id,
+            for_update=True,
+        )
+    for field_name, value in updates.items():
+        setattr(document, field_name, value)
     await db.commit()
     await db.refresh(document)
     return _document_payload(document)
