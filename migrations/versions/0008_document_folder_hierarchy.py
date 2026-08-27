@@ -1,7 +1,7 @@
 """add parent hierarchy to document folders
 
 Revision ID: 0008_document_folder_hierarchy
-Revises: 0007_document_folders
+Revises: 0007_crawler_document_review, 0007_document_folders
 Create Date: 2026-08-26
 """
 
@@ -12,7 +12,10 @@ from alembic import op
 from sqlalchemy.dialects import mysql
 
 revision: str = "0008_document_folder_hierarchy"
-down_revision: str = "0007_document_folders"
+down_revision: tuple[str, str] = (
+    "0007_crawler_document_review",
+    "0007_document_folders",
+)
 branch_labels: str | Sequence[str] | None = None
 depends_on: str | Sequence[str] | None = None
 

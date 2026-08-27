@@ -108,6 +108,14 @@ CREATE TABLE IF NOT EXISTS `document` (
   `dispatch_lease_token` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `dispatch_lease_expires_at` datetime DEFAULT NULL,
   `dispatch_error` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `source_type` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'MANUAL_UPLOAD',
+  `source_url` varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `source_title` varchar(512) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `source_metadata` json DEFAULT NULL,
+  `review_status` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'NOT_REQUIRED',
+  `review_note` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `reviewed_by_user_id` bigint unsigned DEFAULT NULL,
+  `reviewed_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_document_dataset_created` (`dataset_id`,`created_at`),
   KEY `idx_document_user_status` (`user_id`,`status`),
@@ -115,6 +123,7 @@ CREATE TABLE IF NOT EXISTS `document` (
   KEY `idx_document_lease_expiry` (`status`,`lease_expires_at`,`id`),
   KEY `idx_document_dispatch_available`
     (`dispatch_status`,`dispatch_available_at`,`id`),
+  KEY `idx_document_review_status` (`user_id`,`review_status`,`created_at`),
   KEY `idx_document_folder` (`folder_id`,`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 

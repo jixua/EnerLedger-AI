@@ -55,31 +55,55 @@ class ArxivPaper(BaseModel):
 class ArxivSearchResponse(BaseModel):
     source: Literal["arXiv"] = "arXiv"
     query: str
+    optimized_query: str
+    search_query: str
+    optimization_mode: Literal["AI", "RULES"]
+    optimization_model: str | None = None
+    optimization_warning: str | None = None
     total_results: int
     fetched_at: datetime
     items: list[ArxivPaper]
 
 
-class ArxivImportRequest(BaseModel):
-    dataset_id: int = Field(gt=0)
-    arxiv_ids: list[str] = Field(min_length=1, max_length=10)
+class ArxivImportPaper(BaseModel):
+    arxiv_id: str
+    title: str = Field(min_length=1, max_length=500)
 
-    @field_validator("arxiv_ids")
+    @field_validator("arxiv_id")
     @classmethod
-    def validate_arxiv_ids(cls, values: list[str]) -> list[str]:
+    def validate_arxiv_id(cls, value: str) -> str:
         pattern = re.compile(
             r"^(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z]{2})?/\d{7})(?:v\d+)?$",
             re.IGNORECASE,
         )
-        normalized: list[str] = []
-        for value in values:
-            arxiv_id = value.strip()
-            if not pattern.fullmatch(arxiv_id):
-                raise ValueError(f"无效的 arXiv ID：{value}")
-            if arxiv_id not in normalized:
-                normalized.append(arxiv_id)
-        if not normalized:
-            raise ValueError("至少选择一篇论文")
+        arxiv_id = value.strip()
+        if not pattern.fullmatch(arxiv_id):
+            raise ValueError(f"无效的 arXiv ID：{value}")
+        return arxiv_id
+
+    @field_validator("title")
+    @classmethod
+    def strip_title(cls, value: str) -> str:
+        title = value.strip()
+        if not title:
+            raise ValueError("论文标题不能为空")
+        return title
+
+
+class ArxivImportRequest(BaseModel):
+    dataset_id: int = Field(gt=0)
+    papers: list[ArxivImportPaper] = Field(min_length=1, max_length=10)
+
+    @field_validator("papers")
+    @classmethod
+    def deduplicate_papers(cls, values: list[ArxivImportPaper]) -> list[ArxivImportPaper]:
+        normalized: list[ArxivImportPaper] = []
+        seen_ids: set[str] = set()
+        for paper in values:
+            if paper.arxiv_id in seen_ids:
+                continue
+            seen_ids.add(paper.arxiv_id)
+            normalized.append(paper)
         return normalized
 
 
@@ -276,9 +300,55 @@ class DocumentRead(BaseModel):
     parse_time_ms: int | None
     parse_quality_status: str | None
     parse_quality: dict[str, Any] | None
+    source_type: str
+    source_url: str | None
+    source_title: str | None
+    source_metadata: dict[str, Any] | None
+    review_status: str
+    review_note: str | None
+    reviewed_at: datetime | None
     retrieval_ready: bool
     created_at: datetime
     updated_at: datetime
+
+
+class CrawlerSubmissionRead(BaseModel):
+    document_id: int
+    dataset_id: int
+    dataset_name: str
+    filename: str
+    file_type: str
+    file_size: int
+    content_type: str | None
+    document_status: str
+    source_type: str
+    source_url: str | None
+    source_title: str | None
+    source_metadata: dict[str, Any] | None
+    review_status: Literal["PENDING", "APPROVED", "REJECTED"]
+    review_note: str | None
+    reviewed_at: datetime | None
+    created_at: datetime
+
+
+class CrawlerSubmissionPage(BaseModel):
+    items: list[CrawlerSubmissionRead]
+    total: int
+    offset: int
+    limit: int
+
+
+class CrawlerReviewRequest(BaseModel):
+    decision: Literal["APPROVED", "REJECTED"]
+    note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 class DocumentChunkRead(BaseModel):

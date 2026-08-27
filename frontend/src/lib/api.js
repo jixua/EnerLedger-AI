@@ -199,28 +199,72 @@ export function getSystemStatus({ signal } = {}) {
 }
 
 export function searchArxivPapers(
-  { query, maxResults = 10 },
+  { query, maxResults = 10, datasetId, aiOptimize = true },
   { signal } = {},
 ) {
   const path = appendQuery("/api/v1/crawler/arxiv", {
     query: String(query || "").trim(),
     max_results: maxResults,
+    dataset_id: Number(datasetId),
+    ai_optimize: aiOptimize,
   });
   return apiRequest(path, { signal });
 }
 
 export function importArxivPapers(
-  { datasetId, arxivIds },
+  { datasetId, papers },
   { signal } = {},
 ) {
   return apiRequest("/api/v1/crawler/arxiv/import", {
     method: "POST",
     body: {
       dataset_id: Number(datasetId),
-      arxiv_ids: arxivIds,
+      papers,
     },
     signal,
   });
+}
+
+export function listCrawlerSubmissions(
+  { reviewStatus = "PENDING", offset = 0, limit = 50 } = {},
+  { signal } = {},
+) {
+  const path = appendQuery("/api/v1/crawler/submissions", {
+    review_status: reviewStatus,
+    offset,
+    limit,
+  });
+  return apiRequest(path, { signal });
+}
+
+export function reviewCrawlerSubmission(
+  documentId,
+  { decision, note = null },
+  { signal } = {},
+) {
+  return apiRequest(
+    `/api/v1/crawler/submissions/${encodeURIComponent(documentId)}/review`,
+    { method: "POST", body: { decision, note }, signal },
+  );
+}
+
+export async function getCrawlerSubmissionFile(documentId, { signal } = {}) {
+  let response;
+  try {
+    response = await fetch(
+      buildApiUrl(`/api/v1/crawler/submissions/${encodeURIComponent(documentId)}/file`),
+      { method: "GET", headers: createApiHeaders({ Accept: "*/*" }), signal },
+    );
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    throw new ApiError("无法连接后端服务", {
+      status: 0,
+      code: "NETWORK_ERROR",
+      cause: error,
+    });
+  }
+  if (!response.ok) throw await readApiError(response);
+  return response.blob();
 }
 
 export function listModelConfigs(

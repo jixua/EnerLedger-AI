@@ -90,6 +90,14 @@ CREATE TABLE document (
     parse_time_ms INT NULL,
     parse_quality_status VARCHAR(32) NULL,
     parse_quality JSON NULL,
+    source_type VARCHAR(32) NOT NULL DEFAULT 'MANUAL_UPLOAD',
+    source_url VARCHAR(1024) NULL,
+    source_title VARCHAR(512) NULL,
+    source_metadata JSON NULL,
+    review_status VARCHAR(16) NOT NULL DEFAULT 'NOT_REQUIRED',
+    review_note VARCHAR(1000) NULL,
+    reviewed_by_user_id BIGINT UNSIGNED NULL,
+    reviewed_at DATETIME NULL,
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
@@ -98,6 +106,7 @@ CREATE TABLE document (
     KEY idx_document_queue_available (status, available_at, id),
     KEY idx_document_lease_expiry (status, lease_expires_at, id),
     KEY idx_document_dispatch_available (dispatch_status, dispatch_available_at, id),
+    KEY idx_document_review_status (user_id, review_status, created_at),
     KEY idx_document_folder (folder_id, id)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
