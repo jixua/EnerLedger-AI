@@ -28,7 +28,7 @@ import {
   updateModelConfig,
   uploadDocument,
 } from "../lib/api";
-import { streamRag as streamRagRequest } from "../lib/sse";
+import { streamAgent as streamAgentRequest, streamRag as streamRagRequest } from "../lib/sse";
 import {
   PREVIEW_DATA_NOTICE,
   getMockDocumentAnalysis,
@@ -788,6 +788,21 @@ export function AppProvider({ children }) {
     return { requestId, answer: partial, hits, failedSources: [], usage: done.usage, elapsedMs: done.elapsed_ms, emptyRecall: false, terminalEvent: "answer_done" };
   }, [isDemo]);
 
+  const streamAgent = useCallback(async ({ query, datasetIds, llmConfigId, docIds, history, signal, onEvent }) => {
+    if (isDemo) {
+      return streamRag({ query, datasetIds, llmConfigId, docIds, signal, onEvent });
+    }
+    try {
+      return await streamAgentRequest({ query, datasetIds, llmConfigId, docIds, history }, {
+        signal,
+        onEvent: ({ event, data }) => onEvent?.(event, data),
+      });
+    } catch (error) {
+      setLastError(normalizeMessage(error));
+      throw error;
+    }
+  }, [isDemo, streamRag]);
+
   const connectionMode = isDemo ? "PREVIEW" : apiReachable ? "LIVE API" : "OFFLINE";
   const actions = useMemo(() => ({
     createDataset,
@@ -848,9 +863,10 @@ export function AppProvider({ children }) {
     reparseDocument,
     deleteDocument: removeDocument,
     recall,
+    streamAgent,
     streamRag,
     actions,
-  }), [actions, allDocuments, analyzeDocument, apiReachable, connectionMode, createDataset, createModel, datasets, documents, downloadDocumentAnalysisDocx, health, healthLoading, isDemo, lastError, loadAllDocuments, loadDocument, loadDocumentAnalysis, loadDocumentAnalysisStatus, loadDocumentChunks, loadDocumentPreview, loadDocuments, loading, models, recall, refreshAll, refreshHealth, refreshing, removeDataset, removeDocument, removeModel, reparseDocument, retryDocument, streamRag, updateDataset, updateDocument, updateModel, uploadDocuments, userId]);
+  }), [actions, allDocuments, analyzeDocument, apiReachable, connectionMode, createDataset, createModel, datasets, documents, downloadDocumentAnalysisDocx, health, healthLoading, isDemo, lastError, loadAllDocuments, loadDocument, loadDocumentAnalysis, loadDocumentAnalysisStatus, loadDocumentChunks, loadDocumentPreview, loadDocuments, loading, models, recall, refreshAll, refreshHealth, refreshing, removeDataset, removeDocument, removeModel, reparseDocument, retryDocument, streamAgent, streamRag, updateDataset, updateDocument, updateModel, uploadDocuments, userId]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

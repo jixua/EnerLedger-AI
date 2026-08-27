@@ -1,6 +1,6 @@
 # 能碳会计 AI 智能体
 
-这是一个面向企业能碳管理场景、可独立运行的智能应用项目。后端使用 Python，当前范围包括数据集管理、文档异步解析、企业文档大模型分析、BM25/Sparse/Dense 三路索引与混合检索，以及基于来源片段的 LLM 流式对话；`frontend/` 提供不区分用户端与管理端的一体化 Web 界面。
+这是一个面向企业能碳管理场景、可独立运行的智能应用项目。后端使用 Python，当前范围包括数据集管理、文档异步解析、企业文档大模型分析、BM25/Sparse/Dense 三路索引与混合检索、基于来源片段的 LLM 流式对话，以及通过独立 Node 服务运行的 Pi Agent；`frontend/` 提供不区分用户端与管理端的一体化 Web 界面。
 
 本项目不是把 LinkRag 作为 SDK、wheel、Git 依赖或本地路径依赖安装后调用，也不会把请求转发给另一套 LinkRag 服务。解析、索引、召回、融合和模型适配源码均维护在当前仓库的 `app/rag` 中。
 
@@ -21,6 +21,7 @@
 - `document.status` 使用 `QUEUED`、`PROCESSING`、`READY`、`FAILED`。只有 `READY` 文档可以参与检索。
 - `POST /api/v1/documents/{document_id}/analysis` 读取文档当前版本的全部主体分片，分批调用 Chat 模型提取证据，生成 Markdown 分析报告并保存到 MinIO；`GET` 同路径读取当前版本最近一次成功报告。
 - `POST /api/v1/rag/stream` 在一次请求中完成三路召回、上下文拼装和 LLM SSE 输出；当前不持久化会话或回答历史。
+- `POST /api/v1/agent/stream` 由 FastAPI 鉴权并代理独立 Pi Agent；Pi 只能调用当前运行范围内的受控知识库检索工具。前端历史仍仅存在当前页面，不冒充服务端会话。
 
 Alembic 会额外创建自己的版本记录表 `alembic_version`，它不属于业务表。
 
@@ -58,6 +59,7 @@ Alembic 会额外创建自己的版本记录表 `alembic_version`，它不属于
 | MinIO | S3 兼容对象存储 |
 | Qdrant | 1.17.1，Dense/Sparse 向量索引 |
 | Manticore | 27.1.5，BM25 关键词索引 |
+| Pi Agent | 0.84.2，独立 Node 22 无头 Agent 服务；源码固定在 `third_party/pi` |
 
 ## 重要：旧开发库必须重建
 
@@ -102,6 +104,7 @@ Compose 会等待 MySQL、MinIO 和 Manticore 就绪，并创建两个 MinIO 桶
 - MinIO 控制台：<http://127.0.0.1:9001>
 - Qdrant：<http://127.0.0.1:6333/dashboard>
 - Manticore HTTP：<http://127.0.0.1:9308>
+- Pi Agent 仅在 Compose 内网开放；通过 `<API>/api/v1/agent/readiness` 检查完整链路
 
 ### 前端联调
 
@@ -210,6 +213,11 @@ Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。
 | 13 | `POST /api/v1/recall` | 仅执行三路召回与融合 |
 | 14 | `POST /api/v1/rag/stream` | 混合检索后用 Chat 模型流式生成回复 |
 | 15 | `GET /api/v1/system/status` | 查询中间件、持久队列和可观测 worker 状态 |
+| 16 | `GET /api/v1/agent/readiness` | 检查 FastAPI 与 Pi Agent 的双向鉴权和网络链路 |
+| 17 | `POST /api/v1/agent/stream` | 使用当前授权数据集运行受控 Pi Agent 对话 |
+
+Pi Agent 的信任边界、模型兼容、离线构建和服务令牌要求见
+[`docs/pi-agent.md`](docs/pi-agent.md)。
 
 除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。当前产品只配置一个管理员，不提供注册入口；管理员密码只以 scrypt 哈希保存在部署环境中。接口字段以运行中的 OpenAPI `/docs` 为准。
 

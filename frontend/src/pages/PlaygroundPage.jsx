@@ -72,6 +72,15 @@ function updateMessage(messages, messageId, updater) {
   return messages.map((message) => message.id === messageId ? updater(message) : message);
 }
 
+function mergeRecallHits(current, incoming) {
+  const merged = new Map();
+  for (const hit of [...(current || []), ...(incoming || [])]) {
+    const key = hit.evidence_id || hit.chunk_id || `${hit.dataset_id}:${hit.doc_id}:${hit.result_rank}`;
+    merged.set(key, hit);
+  }
+  return [...merged.values()];
+}
+
 function modelLabel(model) {
   return model?.display_name || model?.model_name || `模型 #${model?.id}`;
 }
@@ -90,7 +99,8 @@ function flattenDocuments(documents) {
 
 export function PlaygroundPage() {
   const location = useLocation();
-  const { datasets = [], models = [], documents = {}, streamRag } = useApp();
+  const { datasets = [], models = [], documents = {}, streamAgent, streamRag } = useApp();
+  const [conversationMode, setConversationMode] = useState("agent");
   const [selectedDatasetIds, setSelectedDatasetIds] = useState([]);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [question, setQuestion] = useState("");
@@ -132,24 +142,32 @@ export function PlaygroundPage() {
     () => activeDatasets.filter((dataset) => selectedDatasetIds.includes(String(dataset.id))),
     [activeDatasets, selectedDatasetIds],
   );
+  const effectiveDatasets = conversationMode === "agent" && !selectedDatasetIds.length
+    ? activeDatasets
+    : selectedDatasets;
   const boundChatIds = useMemo(
-    () => new Set(selectedDatasets.map((dataset) => dataset.chat_config_id).filter(Boolean).map(String)),
-    [selectedDatasets],
+    () => new Set(effectiveDatasets.map((dataset) => dataset.chat_config_id).filter(Boolean).map(String)),
+    [effectiveDatasets],
   );
-  const needsExplicitModel = selectedDatasets.length > 1
-    || selectedDatasets.some((dataset) => !dataset.chat_config_id)
+  const needsExplicitModel = effectiveDatasets.length > 1
+    || effectiveDatasets.some((dataset) => !dataset.chat_config_id)
     || boundChatIds.size > 1;
   const selectedModel = useMemo(
     () => chatModels.find((model) => String(model.id) === String(selectedModelId)) || null,
     [chatModels, selectedModelId],
   );
-  const datasetTriggerLabel = selectedDatasets.length === 1
+  const datasetTriggerLabel = conversationMode === "agent" && !selectedDatasetIds.length
+    ? `全部知识库${activeDatasets.length ? `（${activeDatasets.length}）` : ""}`
+    : selectedDatasets.length === 1
     ? selectedDatasets[0].name
     : selectedDatasets.length
       ? `${selectedDatasets.length} 个数据集`
       : "选择数据集";
   const isRunning = messages.some((message) => message.role === "assistant" && ["recalling", "generating"].includes(message.status));
-  const canSubmit = Boolean(question.trim() && selectedDatasetIds.length && (!needsExplicitModel || selectedModelId) && !isRunning);
+  const hasRetrievalScope = conversationMode === "agent"
+    ? activeDatasets.length > 0
+    : selectedDatasetIds.length > 0;
+  const canSubmit = Boolean(question.trim() && hasRetrievalScope && (!needsExplicitModel || selectedModelId) && !isRunning);
   const sourceMessage = messages.find((message) => message.id === sourceMessageId);
   const sourceHits = sourceMessage?.hits ?? [];
   const citedSourceCount = sourceHits.filter(
@@ -160,9 +178,10 @@ export function PlaygroundPage() {
     setSelectedDatasetIds((current) => {
       const valid = current.filter((id) => activeDatasets.some((dataset) => String(dataset.id) === id));
       if (valid.length || !activeDatasets.length) return valid;
+      if (conversationMode === "agent") return [];
       return [String(activeDatasets[0].id)];
     });
-  }, [activeDatasets]);
+  }, [activeDatasets, conversationMode]);
 
   useEffect(() => {
     if (!new URLSearchParams(location.search).has("new")) return;
@@ -229,6 +248,15 @@ export function PlaygroundPage() {
       : [...current, normalized]);
   }
 
+  function selectConversationMode(mode) {
+    if (isRunning || mode === conversationMode) return;
+    setConversationMode(mode);
+    setOpenSelector(null);
+    if (mode === "rag" && !selectedDatasetIds.length && activeDatasets.length) {
+      setSelectedDatasetIds([String(activeDatasets[0].id)]);
+    }
+  }
+
   function closeSelectorAndRestoreFocus(selector = openSelector) {
     const trigger = selector === "datasets" ? datasetTriggerRef.current : modelTriggerRef.current;
     setOpenSelector(null);
@@ -252,8 +280,11 @@ export function PlaygroundPage() {
         const nextHits = data.hits ?? [];
         return {
           ...message,
-          hits: nextHits,
+          hits: message.conversationMode === "agent" ? mergeRecallHits(message.hits, nextHits) : nextHits,
           failedSources: data.failed_sources ?? [],
+          retrievalScope: data.scope ?? message.retrievalScope,
+          retrievalDetails: data.retrieval ?? message.retrievalDetails,
+          knowledgeBaseCounts: data.per_knowledge_base_counts ?? message.knowledgeBaseCounts,
           status: nextHits.length ? "recalling" : "empty",
         };
       }
@@ -266,6 +297,9 @@ export function PlaygroundPage() {
           content: data.answer ?? message.content,
           hits: data.hits ?? message.hits,
           failedSources: data.failed_sources ?? message.failedSources,
+          retrievalScope: data.scope ?? message.retrievalScope,
+          retrievalDetails: data.retrieval ?? message.retrievalDetails,
+          knowledgeBaseCounts: data.per_knowledge_base_counts ?? message.knowledgeBaseCounts,
           elapsedMs: data.elapsed_ms ?? null,
           requestId: data.request_id ?? message.requestId,
           status: "done",
@@ -280,7 +314,8 @@ export function PlaygroundPage() {
 
   async function submitQuestion(event) {
     event?.preventDefault();
-    if (!canSubmit || typeof streamRag !== "function") return;
+    const stream = conversationMode === "agent" ? streamAgent : streamRag;
+    if (!canSubmit || typeof stream !== "function") return;
 
     const prompt = question.trim();
     const idBase = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -293,6 +328,7 @@ export function PlaygroundPage() {
       status: "recalling",
       hits: [],
       failedSources: [],
+      conversationMode,
       datasetIds: [...selectedDatasetIds],
       modelId: selectedModelId || null,
     };
@@ -304,10 +340,15 @@ export function PlaygroundPage() {
     abortRef.current = controller;
 
     try {
-      await streamRag({
+      const history = messages
+        .filter((message) => message.content && ["user", "assistant"].includes(message.role))
+        .slice(-5)
+        .map((message) => ({ role: message.role, content: message.content }));
+      await stream({
         query: prompt,
         datasetIds: selectedDatasetIds.map(Number),
         llmConfigId: selectedModelId ? Number(selectedModelId) : undefined,
+        ...(conversationMode === "agent" ? { history } : {}),
         signal: controller.signal,
         onEvent: handleStreamEvent,
       });
@@ -377,6 +418,30 @@ export function PlaygroundPage() {
       />
       <div className="chat-composer__toolbar">
         <div className="chat-composer__controls" ref={controlsRef}>
+          <div className="chat-mode-switch" role="group" aria-label="对话模式">
+            <button
+              type="button"
+              className={conversationMode === "rag" ? "is-active" : ""}
+              aria-pressed={conversationMode === "rag"}
+              disabled={isRunning}
+              onClick={() => selectConversationMode("rag")}
+              title="使用原有固定 RAG 流程进行召回和回答"
+            >
+              <Search size={14} />
+              普通对话
+            </button>
+            <button
+              type="button"
+              className={conversationMode === "agent" ? "is-active" : ""}
+              aria-pressed={conversationMode === "agent"}
+              disabled={isRunning}
+              onClick={() => selectConversationMode("agent")}
+              title="由 Pi Agent 分析意图并按需调用知识库工具"
+            >
+              <Sparkles size={14} />
+              智能体
+            </button>
+          </div>
           <div className={`composer-selector composer-selector--datasets${openSelector === "datasets" ? " is-open" : ""}`}>
             <button
               ref={datasetTriggerRef}
@@ -405,6 +470,17 @@ export function PlaygroundPage() {
                   <span>{selectedDatasetIds.length} / {activeDatasets.length}</span>
                 </header>
                 <div className="composer-selector__options">
+                  {conversationMode === "agent" && activeDatasets.length ? (
+                    <button
+                      type="button"
+                      className={`composer-selector__option${!selectedDatasetIds.length ? " is-selected" : ""}`}
+                      onClick={() => setSelectedDatasetIds([])}
+                      aria-pressed={!selectedDatasetIds.length}
+                    >
+                      <span className="composer-selector__check">{!selectedDatasetIds.length ? <Check size={13} /> : null}</span>
+                      <span className="composer-selector__copy"><strong>全部知识库</strong><small>默认在全部 {activeDatasets.length} 个可用知识库中召回</small></span>
+                    </button>
+                  ) : null}
                   {activeDatasets.length ? activeDatasets.map((dataset) => {
                     const selected = selectedDatasetIds.includes(String(dataset.id));
                     return (
@@ -422,7 +498,7 @@ export function PlaygroundPage() {
                   }) : <p className="composer-selector__empty">暂无可用数据集</p>}
                 </div>
                 <footer className="composer-selector__footer">
-                  <span>已选择 {selectedDatasetIds.length} 个</span>
+                  <span>{conversationMode === "agent" && !selectedDatasetIds.length ? "已使用全部知识库" : `已选择 ${selectedDatasetIds.length} 个`}</span>
                   <button type="button" onClick={() => closeSelectorAndRestoreFocus("datasets")}>完成</button>
                 </footer>
               </div>
@@ -501,7 +577,7 @@ export function PlaygroundPage() {
       </div>
       {!activeDatasets.length ? (
         <p className="composer-warning composer-warning--action">开始对话前，请先<Link to="/datasets">创建数据集并上传文档</Link>。</p>
-      ) : !selectedDatasetIds.length ? (
+      ) : conversationMode === "rag" && !selectedDatasetIds.length ? (
         <p className="composer-warning">请至少选择一个数据集。</p>
       ) : needsExplicitModel && !chatModels.length ? (
         <p className="composer-warning composer-warning--action">开始对话前，请先<Link to="/models">配置可用的对话模型</Link>。</p>
@@ -534,7 +610,7 @@ export function PlaygroundPage() {
               </article>
             ) : (
               <article className="chat-message chat-message--assistant" key={message.id}>
-                <div className="chat-message__avatar"><Sparkles size={15} /></div>
+                <div className="chat-message__avatar">{message.conversationMode === "rag" ? <Search size={15} /> : <Sparkles size={15} />}</div>
                 <div className="chat-message__body">
                   {message.status !== "done" ? <div className="chat-message__status">
                     {["recalling", "generating"].includes(message.status) ? <LoaderCircle className="spin" size={14} /> : message.status === "error" ? <CircleAlert size={14} /> : <Check size={14} />}
@@ -575,7 +651,7 @@ export function PlaygroundPage() {
             <header className="source-drawer__header">
               <div>
                 <h2 id="source-drawer-title">召回片段</h2>
-                <p>本轮召回 {sourceHits.length} 个片段，其中 {citedSourceCount} 个进入回答上下文。</p>
+                <p>本轮召回 {sourceHits.length} 个片段，其中 {citedSourceCount} 个进入回答上下文{sourceMessage.retrievalScope?.knowledge_base_count ? `，覆盖 ${sourceMessage.retrievalScope.knowledge_base_count} 个知识库` : ""}。</p>
               </div>
               <button type="button" className="icon-button" onClick={closeSourceDrawer} aria-label="关闭"><X size={18} /></button>
             </header>
@@ -605,6 +681,7 @@ export function PlaygroundPage() {
                     </div>
                     <h3>{hit.filename || `文档 #${hit.doc_id}`}</h3>
                     <div className="source-detail-card__meta">
+                      {hit.knowledge_base_name ? <span>{hit.knowledge_base_name}</span> : null}
                       <span>{pageText(hit)}</span>
                       <span>版本 {hit.document_version ?? hit.version ?? "—"}</span>
                       <span>片段 {hit.chunk_index ?? hit.chunk_id ?? "—"}</span>
@@ -613,9 +690,9 @@ export function PlaygroundPage() {
                     <details className="source-detail-card__diagnostics">
                       <summary>检索详情</summary>
                       <div className="source-route-scores">
-                        <span><small>关键词</small><strong>{scoreText(hit.scores?.bm25)}</strong></span>
-                        <span><small>稀疏向量</small><strong>{scoreText(hit.scores?.sparse)}</strong></span>
-                        <span><small>稠密向量</small><strong>{scoreText(hit.scores?.dense)}</strong></span>
+                        <span><small>关键词</small><strong>{scoreText(hit.scores?.bm25)}</strong><small>贡献 {scoreText(hit.weighted_contributions?.bm25)}</small></span>
+                        <span><small>稀疏向量</small><strong>{scoreText(hit.scores?.sparse)}</strong><small>贡献 {scoreText(hit.weighted_contributions?.sparse)}</small></span>
+                        <span><small>稠密向量</small><strong>{scoreText(hit.scores?.dense)}</strong><small>贡献 {scoreText(hit.weighted_contributions?.dense)}</small></span>
                       </div>
                       <small>检索序号 {hit.result_rank ?? "—"}</small>
                     </details>

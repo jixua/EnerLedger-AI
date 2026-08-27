@@ -120,10 +120,9 @@ async def aresolve_recall_execution(
 ) -> tuple[RecallConfig, dict[int, DatasetExecutionContext]]:
     """在召回前一次加载每个 Dataset 的独立执行快照。
 
-    多数据集混合召回时取 **第一个** dataset_id 的配置（各数据集召回深度/阈值无法同时生效，
-    取首个是确定性且可解释的选择）；``dataset_ids`` 为空（全库召回）时返回系统默认
-    ``RecallConfig.from_settings()``——使 enabled_sources / strict / 融合候选池窗口 /
-    三路 top_k 等跟随运行期系统配置，而非被静态默认锁死。
+    单数据集召回使用该数据集自己的 RecallConfig；多数据集混合召回使用版本化的系统级
+    跨库策略（当前为 ``RecallConfig.from_settings()``），避免请求中 dataset_id 的排列顺序
+    改变三路深度、阈值与融合权重。``dataset_ids`` 为空时同样返回系统默认配置。
     配置读取经独立短生命周期 session 完成——召回入口可能在请求处理函数返回后才执行（SSE 流），
     不依赖请求级 session。
     """
@@ -138,7 +137,12 @@ async def aresolve_recall_execution(
             dataset_ids,
             DatasetExecutionPurpose.RECALL,
         )
-    return contexts[dataset_ids[0]].config.recall, contexts
+    recall_config = (
+        contexts[dataset_ids[0]].config.recall
+        if len(dataset_ids) == 1
+        else RecallConfig.from_settings()
+    )
+    return recall_config, contexts
 
 
 def build_recall_request_from_config(

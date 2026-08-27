@@ -56,6 +56,8 @@ class RerankedHit:
     dataset_id: int
     fused_score: float
     scores: dict[str, float | None]
+    normalized_scores: dict[str, float | None]
+    weighted_contributions: dict[str, float]
     rerank_score: float | None
     rerank_rank: int | None
 

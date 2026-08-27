@@ -410,6 +410,12 @@
 .chat-composer textarea:focus-visible { outline: none; border-color: transparent; box-shadow: none; }
 .chat-composer__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .chat-composer__controls { position: relative; min-width: 0; display: flex; align-items: center; gap: 8px; }
+.chat-mode-switch { display: inline-flex; align-items: center; gap: 2px; padding: 2px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface-soft); }
+.chat-mode-switch button { min-height: 30px; display: inline-flex; align-items: center; gap: 5px; padding: 0 9px; border: 0; border-radius: 7px; background: transparent; color: var(--muted); font-size: 10px; font-weight: 600; cursor: pointer; }
+.chat-mode-switch button:hover:not(:disabled) { color: var(--body); background: color-mix(in srgb, var(--surface) 72%, transparent); }
+.chat-mode-switch button.is-active { background: var(--surface); color: var(--action-active); box-shadow: 0 1px 4px rgba(31, 45, 42, 0.10); }
+.chat-mode-switch button:focus-visible { box-shadow: var(--action-focus); }
+.chat-mode-switch button:disabled { cursor: not-allowed; opacity: 0.6; }
 .composer-selector { min-width: 0; }
 .composer-selector__trigger {
   height: 36px;
@@ -721,6 +727,7 @@
   .chat-composer { padding: 11px 10px 9px; }
   .chat-composer__toolbar { align-items: flex-end; }
   .chat-composer__controls { min-width: 0; flex: 1; flex-wrap: wrap; }
+  .chat-mode-switch { flex: 0 0 auto; }
   .composer-selector--datasets { flex: 0 1 142px; }
   .composer-selector--model { flex: 1 1 150px; }
   .composer-selector__trigger { width: 100%; max-width: 100%; }

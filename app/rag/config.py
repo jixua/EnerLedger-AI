@@ -109,6 +109,14 @@ class Settings(BaseSettings):
     JWT_AUDIENCE: str = "energy-carbon-web"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=480, ge=5, le=10080)
 
+    # 独立 Pi Agent 服务。浏览器只访问 FastAPI；两枚令牌分别保护双向服务调用。
+    AGENT_ENABLED: bool = False
+    PI_SERVICE_BASE_URL: str = "http://127.0.0.1:8010"
+    PI_SERVICE_TOKEN: str = ""
+    ENERLEDGER_INTERNAL_AGENT_TOKEN: str = ""
+    AGENT_RUN_TIMEOUT_SECONDS: int = Field(default=120, ge=10, le=900)
+    AGENT_TOOL_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
+
     # ==========================================
     # 召回执行配置 (Recall Pipeline)
     # ==========================================
@@ -746,6 +754,19 @@ class Settings(BaseSettings):
             )
         if self.OPENDATALOADER_TABLE_METHOD not in {"default", "cluster"}:
             raise ValueError("OPENDATALOADER_TABLE_METHOD must be default or cluster")
+        if self.AGENT_ENABLED:
+            tokens = (self.PI_SERVICE_TOKEN, self.ENERLEDGER_INTERNAL_AGENT_TOKEN)
+            if any(len(token.strip()) < 32 for token in tokens):
+                raise ValueError("Agent service tokens must contain at least 32 characters")
+            if self.PI_SERVICE_TOKEN == self.ENERLEDGER_INTERNAL_AGENT_TOKEN:
+                raise ValueError("Agent service tokens must be different")
+            if self.APP_ENV.lower() == "production" and any(
+                "local-token" in token.lower() or "change-me" in token.lower()
+                for token in tokens
+            ):
+                raise ValueError("Production Agent service tokens must not use placeholders")
+            if not self.PI_SERVICE_BASE_URL.startswith(("http://", "https://")):
+                raise ValueError("PI_SERVICE_BASE_URL must use HTTP(S)")
         return self
 
     @field_validator("RAW_MARKDOWN_IMAGE_MAX_BYTES")
