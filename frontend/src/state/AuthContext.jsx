@@ -10,8 +10,9 @@ import {
 const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
-  const [admin, setAdmin] = useState(null);
-  const [checking, setChecking] = useState(true);
+  const forcedDemo = import.meta.env.VITE_DEMO_MODE === "true";
+  const [admin, setAdmin] = useState(forcedDemo ? { id: 1, username: "preview", preview: true } : null);
+  const [checking, setChecking] = useState(!forcedDemo);
 
   const logout = useCallback(() => {
     setApiAccessToken("");
@@ -33,6 +34,7 @@ export function AuthProvider({ children }) {
   }, []);
 
   useEffect(() => {
+    if (forcedDemo) return undefined;
     let active = true;
     const token = getApiConfig().accessToken;
     if (!token) {
@@ -44,7 +46,7 @@ export function AuthProvider({ children }) {
       .catch(() => { if (active) logout(); })
       .finally(() => { if (active) setChecking(false); });
     return () => { active = false; };
-  }, [logout]);
+  }, [forcedDemo, logout]);
 
   useEffect(() => {
     window.addEventListener("auth:expired", logout);

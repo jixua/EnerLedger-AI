@@ -146,6 +146,18 @@ export const mockDatasets = [
   },
 ];
 
+export const mockDocumentFoldersByDataset = {
+  2001: [
+    { id: 4101, dataset_id: 2001, parent_id: null, name: "A1_政策文件" },
+    { id: 4102, dataset_id: 2001, parent_id: 4101, name: "A1.2_国家顶层政策" },
+    { id: 4103, dataset_id: 2001, parent_id: null, name: "A4_组织碳足迹" },
+    { id: 4104, dataset_id: 2001, parent_id: 4103, name: "A4.1_量化方法" },
+    { id: 4105, dataset_id: 2001, parent_id: null, name: "A5_合规性文件" },
+  ],
+  2002: [],
+  2003: [],
+};
+
 const baseDocument = {
   preview: true,
   parser_backend: "opendataloader",
@@ -159,6 +171,7 @@ export const mockDocumentsByDataset = {
       ...baseDocument,
       document_id: 3001,
       dataset_id: 2001,
+      folder_id: 4102,
       filename: "温室气体排放核算指南（预览）.pdf",
       file_type: "pdf",
       file_size: 4832180,
@@ -201,6 +214,7 @@ export const mockDocumentsByDataset = {
       ...baseDocument,
       document_id: 3002,
       dataset_id: 2001,
+      folder_id: 4104,
       filename: "天然气排放因子表（预览）.docx",
       file_type: "docx",
       file_size: 684300,
@@ -219,6 +233,7 @@ export const mockDocumentsByDataset = {
       ...baseDocument,
       document_id: 3003,
       dataset_id: 2001,
+      folder_id: null,
       filename: "扫描件示例（预览）.pdf",
       file_type: "pdf",
       file_size: 9251300,

@@ -3,6 +3,8 @@ import {
   AlertCircle,
   ArrowLeft,
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Clock3,
   Database,
   Eye,
@@ -31,7 +33,14 @@ import {
   listDocumentFolders,
   updateDocumentFolder,
 } from "../lib/api";
+import {
+  expandedParentIds,
+  flattenFolderTree,
+  folderDescendantIds,
+  folderPath,
+} from "../lib/folder-tree";
 import { isDocumentRetrievalReady } from "../lib/parse-quality";
+import { mockDocumentFoldersByDataset } from "../lib/mock-data";
 import { documentErrorMessage } from "../lib/text";
 import { useApp } from "../state/AppContext";
 
@@ -50,63 +59,6 @@ function documentsForDataset(documents, datasetId) {
     return documents.filter((document) => Number(document.dataset_id ?? document.datasetId) === Number(datasetId));
   }
   return documents?.[datasetId] || documents?.[String(datasetId)] || [];
-}
-
-function flattenFolderTree(folders) {
-  const children = new Map();
-  const knownIds = new Set(folders.map((folder) => Number(folder.id)));
-  folders.forEach((folder) => {
-    const parentId = folder.parent_id == null || !knownIds.has(Number(folder.parent_id))
-      ? null
-      : Number(folder.parent_id);
-    const siblings = children.get(parentId) || [];
-    siblings.push(folder);
-    children.set(parentId, siblings);
-  });
-  children.forEach((items) => items.sort((left, right) => String(left.name || "").localeCompare(String(right.name || ""), "zh-CN", { numeric: true })));
-
-  const rows = [];
-  const walk = (parentId, depth, ancestors) => {
-    (children.get(parentId) || []).forEach((folder) => {
-      const id = Number(folder.id);
-      if (ancestors.has(id)) return;
-      rows.push({ ...folder, depth });
-      walk(id, depth + 1, new Set([...ancestors, id]));
-    });
-  };
-  walk(null, 0, new Set());
-  return rows;
-}
-
-function folderDescendantIds(folders, folderId) {
-  const children = new Map();
-  folders.forEach((folder) => {
-    const key = folder.parent_id == null ? null : Number(folder.parent_id);
-    children.set(key, [...(children.get(key) || []), Number(folder.id)]);
-  });
-  const result = new Set();
-  const pending = [Number(folderId)];
-  while (pending.length) {
-    const current = pending.pop();
-    if (!Number.isFinite(current) || result.has(current)) continue;
-    result.add(current);
-    pending.push(...(children.get(current) || []));
-  }
-  return result;
-}
-
-function folderPath(folder, folders) {
-  if (!folder) return "未分类";
-  const byId = new Map(folders.map((item) => [Number(item.id), item]));
-  const names = [];
-  const visited = new Set();
-  let current = folder;
-  while (current && !visited.has(Number(current.id))) {
-    visited.add(Number(current.id));
-    names.unshift(current.name);
-    current = current.parent_id == null ? null : byId.get(Number(current.parent_id));
-  }
-  return names.join(" / ");
 }
 
 function modelId(model) {
@@ -216,6 +168,7 @@ export function DatasetDetailPage() {
   const [folderName, setFolderName] = useState("");
   const [folderParentId, setFolderParentId] = useState("");
   const [folderSaving, setFolderSaving] = useState(false);
+  const [expandedFolders, setExpandedFolders] = useState(null);
   const [query, setQuery] = useState("");
   const [recallRunning, setRecallRunning] = useState(false);
   const [recallError, setRecallError] = useState("");
@@ -238,24 +191,32 @@ export function DatasetDetailPage() {
     counts[key] = (counts[key] || 0) + 1;
     return counts;
   }, {}), [datasetDocuments]);
-  const folderRows = useMemo(() => flattenFolderTree(folders), [folders]);
-  const selectedFolder = folders.find((folder) => String(folder.id) === String(activeFolder));
-  const activeFolderIds = useMemo(
-    () => selectedFolder ? folderDescendantIds(folders, selectedFolder.id) : new Set(),
-    [folders, selectedFolder],
+  const resolvedExpandedFolders = useMemo(
+    () => expandedFolders ?? expandedParentIds(folders),
+    [expandedFolders, folders],
   );
-  const folderTotal = (folder) => [...folderDescendantIds(folders, folder.id)]
-    .reduce((total, id) => total + (folderCounts[String(id)] || 0), 0);
+  const folderRows = useMemo(
+    () => flattenFolderTree(folders, { expandedIds: resolvedExpandedFolders }),
+    [folders, resolvedExpandedFolders],
+  );
+  const folderOptions = useMemo(() => flattenFolderTree(folders), [folders]);
+  const selectedFolder = folders.find((folder) => String(folder.id) === String(activeFolder));
+  const folderTotal = (folder) => folderCounts[String(folder.id)] || 0;
+  const folderDocuments = useMemo(() => datasetDocuments.filter((document) => (
+    activeFolder === "ALL"
+      || (activeFolder === "UNFILED" ? document.folder_id == null : String(document.folder_id) === String(activeFolder))
+  )), [activeFolder, datasetDocuments]);
   const filteredDocuments = useMemo(() => {
     const normalizedQuery = documentQuery.trim().toLocaleLowerCase("zh-CN");
-    return datasetDocuments.filter((document) => {
+    return folderDocuments.filter((document) => {
       const matchesStatus = documentStatus === "ALL" || normalizedStatus(document) === documentStatus;
       const matchesQuery = !normalizedQuery || String(document.filename || documentId(document) || "").toLocaleLowerCase("zh-CN").includes(normalizedQuery);
-      const matchesFolder = activeFolder === "ALL"
-        || (activeFolder === "UNFILED" ? document.folder_id == null : activeFolderIds.has(Number(document.folder_id)));
-      return matchesStatus && matchesQuery && matchesFolder;
+      return matchesStatus && matchesQuery;
     });
-  }, [activeFolder, activeFolderIds, datasetDocuments, documentQuery, documentStatus]);
+  }, [documentQuery, documentStatus, folderDocuments]);
+  const activeFolderLabel = activeFolder === "ALL"
+    ? "全部文档"
+    : activeFolder === "UNFILED" ? "未分类" : folderPath(selectedFolder, folders);
   const loadDocuments = actions.loadDocuments;
   const denseModels = models.filter((model) => model.capability === "EMBEDDING" && (model.is_active !== false || Number(modelId(model)) === Number(dataset?.dense_embedding_config_id)));
   const sparseModels = models.filter((model) => model.capability === "SPARSE_EMBEDDING" && (model.is_active !== false || Number(modelId(model)) === Number(dataset?.sparse_embedding_config_id)));
@@ -286,7 +247,7 @@ export function DatasetDetailPage() {
   useEffect(() => {
     if (!Number.isFinite(datasetId) || !dataset?.id) return;
     if (isDemo) {
-      setFolders([]);
+      setFolders(mockDocumentFoldersByDataset[datasetId] || []);
       setFoldersLoading(false);
       return;
     }
@@ -304,6 +265,11 @@ export function DatasetDetailPage() {
       });
     return () => { cancelled = true; };
   }, [dataset?.id, datasetId, isDemo]);
+
+  useEffect(() => {
+    setActiveFolder("ALL");
+    setExpandedFolders(null);
+  }, [datasetId]);
 
   useEffect(() => {
     if (!dataset) return;
@@ -352,6 +318,16 @@ export function DatasetDetailPage() {
     setPageError("");
   }
 
+  function toggleFolder(folderId) {
+    setExpandedFolders((current) => {
+      const next = new Set(current ?? expandedParentIds(folders));
+      const id = Number(folderId);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   function openRenameFolder(folder) {
     setFolderDialog({ mode: "rename", folder });
     setFolderName(folder.name || "");
@@ -373,6 +349,9 @@ export function DatasetDetailPage() {
       } else {
         const created = await createDocumentFolder(datasetId, { name, parent_id: folderParentId ? Number(folderParentId) : null });
         setFolders((current) => [...current, created]);
+        if (created.parent_id != null) {
+          setExpandedFolders((current) => new Set([...(current ?? expandedParentIds(folders)), Number(created.parent_id)]));
+        }
         setActiveFolder(String(created.id));
         setPageNotice("文件夹已创建。");
       }
@@ -571,19 +550,43 @@ export function DatasetDetailPage() {
 
       {activeTab === "documents" ? (
         <section className="panel document-panel" id="dataset-panel-documents" role="tabpanel" aria-labelledby="dataset-tab-documents" tabIndex={0}>
-          <div className="document-folder-bar">
-            <div className="document-folder-tabs" role="navigation" aria-label="文档文件夹">
-              <button type="button" className={`document-folder-tab${activeFolder === "ALL" ? " is-active" : ""}`} onClick={() => setActiveFolder("ALL")}><FolderOpen size={15} /><span>全部文档</span><em>{datasetDocuments.length}</em></button>
-              <button type="button" className={`document-folder-tab${activeFolder === "UNFILED" ? " is-active" : ""}`} onClick={() => setActiveFolder("UNFILED")}><Folder size={15} /><span>未分类</span><em>{folderCounts.UNFILED || 0}</em></button>
-              {folderRows.map((folder) => <button type="button" key={folder.id} style={{ "--folder-depth": folder.depth }} className={`document-folder-tab${folder.depth ? " is-nested" : ""}${String(activeFolder) === String(folder.id) ? " is-active" : ""}`} onClick={() => setActiveFolder(String(folder.id))} title={folderPath(folder, folders)}><Folder size={15} /><span>{folder.name}</span><em>{folderTotal(folder)}</em></button>)}
-              {foldersLoading ? <span className="document-folder-loading"><Loader2 className="spin" size={14} />读取文件夹…</span> : null}
-            </div>
-            <div className="document-folder-actions">
-              {selectedFolder ? <><button type="button" className="icon-button icon-button--quiet" onClick={() => openRenameFolder(selectedFolder)} disabled={folderSaving} aria-label={`重命名文件夹 ${selectedFolder.name}`} title="重命名当前文件夹"><Pencil size={14} /></button><button type="button" className="icon-button icon-button--quiet icon-button--danger" onClick={() => handleDeleteFolder(selectedFolder)} disabled={folderSaving} aria-label={`删除文件夹 ${selectedFolder.name}`} title="删除当前文件夹"><Trash2 size={14} /></button></> : null}
-              <button type="button" className="button button--secondary" onClick={openCreateFolder}><FolderPlus size={15} />{selectedFolder ? "新建子文件夹" : "新建文件夹"}</button>
-            </div>
-          </div>
-          {loadingDocuments && datasetDocuments.length === 0 ? (
+          <div className="document-browser">
+            <aside className="document-folder-tree" aria-label="文档文件夹">
+              <header className="document-folder-tree__header">
+                <div><span>文件夹</span><small>{folders.length}</small></div>
+                <button type="button" className="icon-button icon-button--quiet" onClick={openCreateFolder} aria-label={selectedFolder ? `在 ${selectedFolder.name} 中新建子文件夹` : "新建文件夹"} title={selectedFolder ? "新建子文件夹" : "新建文件夹"}><FolderPlus size={15} /></button>
+              </header>
+              <nav className="document-folder-tree__nav" aria-label="文件树">
+                <button type="button" className={`document-folder-tree__fixed${activeFolder === "ALL" ? " is-active" : ""}`} onClick={() => setActiveFolder("ALL")}><FolderOpen size={16} /><span>全部文档</span><em>{datasetDocuments.length}</em></button>
+                <button type="button" className={`document-folder-tree__fixed${activeFolder === "UNFILED" ? " is-active" : ""}`} onClick={() => setActiveFolder("UNFILED")}><Folder size={16} /><span>未分类</span><em>{folderCounts.UNFILED || 0}</em></button>
+                <div className="document-folder-tree__divider"><span>数据集目录</span></div>
+                <div role="tree" aria-label="数据集文件夹层级">
+                  {folderRows.map((folder) => {
+                    const isActive = String(activeFolder) === String(folder.id);
+                    const isExpanded = resolvedExpandedFolders.has(Number(folder.id));
+                    const FolderIcon = isActive || isExpanded ? FolderOpen : Folder;
+                    return (
+                      <div key={folder.id} className="document-folder-tree__row" style={{ "--folder-depth": folder.depth }} role="treeitem" aria-level={folder.depth + 1} aria-selected={isActive} aria-expanded={folder.hasChildren ? isExpanded : undefined}>
+                        {folder.hasChildren ? <button type="button" className="document-folder-tree__toggle" onClick={() => toggleFolder(folder.id)} aria-label={`${isExpanded ? "收起" : "展开"} ${folder.name}`}>{isExpanded ? <ChevronDown size={13} /> : <ChevronRight size={13} />}</button> : <span className="document-folder-tree__spacer" aria-hidden="true" />}
+                        <button type="button" className={`document-folder-tree__item${isActive ? " is-active" : ""}`} onClick={() => setActiveFolder(String(folder.id))} title={folderPath(folder, folders)}><FolderIcon size={16} /><span>{folder.name}</span><em>{folderTotal(folder)}</em></button>
+                      </div>
+                    );
+                  })}
+                </div>
+                {foldersLoading ? <span className="document-folder-loading"><Loader2 className="spin" size={14} />读取文件夹…</span> : null}
+                {!foldersLoading && !folders.length ? <p className="document-folder-tree__empty">还没有文件夹</p> : null}
+              </nav>
+              <footer className="document-folder-tree__footer">
+                <button type="button" className="button button--secondary" onClick={openCreateFolder}><FolderPlus size={15} />{selectedFolder ? "新建子文件夹" : "新建文件夹"}</button>
+              </footer>
+            </aside>
+
+            <div className="document-browser__content">
+              <div className="document-location-bar">
+                <div className="document-location-bar__path"><FolderOpen size={17} /><span>{activeFolderLabel}</span><em>{folderDocuments.length} 个文档</em></div>
+                {selectedFolder ? <div className="document-location-bar__actions"><button type="button" className="icon-button icon-button--quiet" onClick={() => openRenameFolder(selectedFolder)} disabled={folderSaving} aria-label={`重命名文件夹 ${selectedFolder.name}`} title="重命名当前文件夹"><Pencil size={14} /></button><button type="button" className="icon-button icon-button--quiet icon-button--danger" onClick={() => handleDeleteFolder(selectedFolder)} disabled={folderSaving} aria-label={`删除文件夹 ${selectedFolder.name}`} title="删除当前文件夹"><Trash2 size={14} /></button></div> : null}
+              </div>
+              {loadingDocuments && datasetDocuments.length === 0 ? (
             <div className="empty-state empty-state--loading"><Loader2 className="spin" size={20} /><p>正在读取文档…</p></div>
           ) : datasetDocuments.length === 0 ? (
             <div className="empty-state"><FileText size={24} /><h3>还没有文档</h3><p>支持 PDF、DOCX、HTML 和 HTM；PDF 使用 OpenDataLoader 解析。</p><button type="button" className="button button--primary" onClick={() => setUploadOpen(true)}><Upload size={16} />上传文档</button></div>
@@ -598,7 +601,7 @@ export function DatasetDetailPage() {
                   <option value="READY">处理完成</option>
                   <option value="FAILED">失败</option>
                 </select>
-                <span className="document-toolbar__count">显示 {filteredDocuments.length} / {datasetDocuments.length}</span>
+                <span className="document-toolbar__count">显示 {filteredDocuments.length} / {folderDocuments.length}</span>
                 <button type="button" className="button button--secondary" onClick={refreshDocuments} disabled={loadingDocuments || refreshingDocuments}><RefreshCw className={loadingDocuments || refreshingDocuments ? "spin" : ""} size={15} />刷新</button>
               </div>
 
@@ -619,7 +622,7 @@ export function DatasetDetailPage() {
                         </div>
                         <time className="document-row__time" role="cell" data-label="更新时间">{formatTime(document.updated_at)}</time>
                         <div className="document-row__actions" role="cell" data-label="操作">
-                          <select className="document-folder-select" aria-label={`移动 ${document.filename || id} 到文件夹`} title="移动到文件夹" value={document.folder_id ?? ""} onChange={(event) => handleMoveDocument(document, event.target.value)} disabled={busy}><option value="">未分类</option>{folderRows.map((folder) => <option key={folder.id} value={folder.id}>{`${"　".repeat(folder.depth)}${folder.name}`}</option>)}</select>
+                          <select className="document-folder-select" aria-label={`移动 ${document.filename || id} 到文件夹`} title="移动到文件夹" value={document.folder_id ?? ""} onChange={(event) => handleMoveDocument(document, event.target.value)} disabled={busy}><option value="">未分类</option>{folderOptions.map((folder) => <option key={folder.id} value={folder.id}>{`${"　".repeat(folder.depth)}${folder.name}`}</option>)}</select>
                           <Link className="button button--tiny document-view-link" to={`/datasets/${datasetId}/documents/${id}`} aria-label={`查看 ${document.filename || id} 的分片详情`}><Eye size={13} />详情</Link>
                           <button type="button" className="icon-button icon-button--quiet" onClick={() => openRenameDocument(document)} disabled={busy || renaming} aria-label={`重命名 ${document.filename || id}`} title="修改展示名称"><Pencil size={14} /></button>
                           {retryable ? <button type="button" className="button button--tiny" onClick={() => runDocumentAction(document, actions.retryDocument, "文档已重新加入队列。")} disabled={busy}><RefreshCw className={busy ? "spin" : ""} size={13} />重试</button> : null}
@@ -630,9 +633,11 @@ export function DatasetDetailPage() {
                     );
                   })}
                 </div>
-              ) : <div className="empty-state empty-state--compact"><Search size={20} /><h3>没有匹配的文档</h3><p>请调整文件夹、文件名或状态筛选条件。</p></div>}
+              ) : <div className="empty-state empty-state--compact"><Search size={20} /><h3>{folderDocuments.length ? "没有匹配的文档" : "当前文件夹是空的"}</h3><p>{folderDocuments.length ? "请调整文件名或状态筛选条件。" : "可以上传文档，或把现有文档移入这个文件夹。"}</p></div>}
             </>
           )}
+            </div>
+          </div>
         </section>
       ) : null}
 
@@ -699,7 +704,7 @@ export function DatasetDetailPage() {
             </header>
             <form className="form-stack" onSubmit={saveFolder}>
               <label className="form-field"><span>文件夹名称</span><input autoFocus required maxLength={64} value={folderName} onChange={(event) => setFolderName(event.target.value)} placeholder="例如：排放因子" /></label>
-              <label className="form-field"><span>上级文件夹</span><select value={folderParentId} onChange={(event) => setFolderParentId(event.target.value)}><option value="">顶层</option>{folderRows.filter((folder) => folderDialog.mode !== "rename" || !folderDescendantIds(folders, folderDialog.folder.id).has(Number(folder.id))).map((folder) => <option key={folder.id} value={folder.id}>{`${"　".repeat(folder.depth)}${folder.name}`}</option>)}</select></label>
+              <label className="form-field"><span>上级文件夹</span><select value={folderParentId} onChange={(event) => setFolderParentId(event.target.value)}><option value="">顶层</option>{folderOptions.filter((folder) => folderDialog.mode !== "rename" || !folderDescendantIds(folders, folderDialog.folder.id).has(Number(folder.id))).map((folder) => <option key={folder.id} value={folder.id}>{`${"　".repeat(folder.depth)}${folder.name}`}</option>)}</select></label>
               <footer className="dialog__footer">
                 <button type="button" className="button button--ghost" onClick={() => setFolderDialog(null)} disabled={folderSaving}>取消</button>
                 <button type="submit" className="button button--primary" disabled={folderSaving || !folderName.trim()}>{folderSaving ? <Loader2 className="spin" size={15} /> : <FolderPlus size={15} />}{folderSaving ? "正在保存" : "保存文件夹"}</button>
