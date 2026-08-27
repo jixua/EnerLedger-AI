@@ -1,4 +1,4 @@
-"""Alembic 环境：只管理当前项目的四张核心业务表。"""
+"""Alembic 环境：只管理当前项目的核心业务表。"""
 
 from __future__ import annotations
 

@@ -6,6 +6,7 @@ export default defineConfig(({ mode }) => {
   const backendTarget = env.VITE_BACKEND_PROXY_TARGET || "http://127.0.0.1:8000";
 
   return {
+  cacheDir: env.VITE_CACHE_DIR || "node_modules/.vite",
   build: {
     outDir: "dist/client",
   },

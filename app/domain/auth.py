@@ -10,7 +10,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Annotated
 
 import jwt
-from fastapi import Depends, HTTPException, status
+from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import InvalidTokenError
 
@@ -145,3 +145,24 @@ def get_user_id(
     """Map the authenticated administrator to the existing data ownership boundary."""
 
     return int(admin["sub"])
+
+
+def require_crawler_api_key(
+    api_key: Annotated[str | None, Header(alias="X-Crawler-Api-Key")] = None,
+) -> None:
+    """Authenticate the machine-to-machine crawler upload boundary."""
+
+    configured = settings.CRAWLER_UPLOAD_API_KEY.strip()
+    if not configured:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail={
+                "code": "CRAWLER_UPLOAD_DISABLED",
+                "message": "第三方爬虫上传入口尚未配置",
+            },
+        )
+    if api_key is None or not hmac.compare_digest(api_key, configured):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "INVALID_CRAWLER_API_KEY", "message": "爬虫上传凭证无效"},
+        )

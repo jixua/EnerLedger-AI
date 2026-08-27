@@ -4,6 +4,9 @@ import { afterEach, test } from "node:test";
 import {
   configureApi,
   createDataset,
+  createDocumentFolder,
+  deleteDocumentFolder,
+  getCrawlerSubmissionFile,
   getDocumentPreviewAsset,
   getDocumentPreviewContent,
   getDocumentPreviewMap,
@@ -12,9 +15,14 @@ import {
   getSystemStatus,
   importArxivPapers,
   listAllDocuments,
+  listDocumentFolders,
+  listCrawlerSubmissions,
+  reviewCrawlerSubmission,
   searchArxivPapers,
   updateDocument,
+  updateDocumentFolder,
   updateDataset,
+  uploadDocument,
 } from "../src/lib/api.js";
 import { streamRag } from "../src/lib/sse.js";
 
@@ -60,6 +68,52 @@ test("document rename sends the backend PATCH contract", async () => {
   assert.equal(captured.url, "/api/v1/documents/31");
   assert.equal(captured.init.method, "PATCH");
   assert.deepEqual(JSON.parse(captured.init.body), { filename: "核算报告.pdf" });
+});
+
+test("dataset folder lifecycle uses tenant-scoped dataset routes", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    if (init.method === "DELETE") return new Response(null, { status: 204 });
+    return jsonResponse(init.method === "GET" ? [] : { id: 4, dataset_id: 2, name: "排放因子" });
+  };
+
+  await listDocumentFolders(2);
+  await createDocumentFolder(2, { name: "排放因子" });
+  await updateDocumentFolder(2, 4, { name: "采购排放因子" });
+  await deleteDocumentFolder(2, 4);
+
+  assert.deepEqual(requests.map(({ url, init }) => [url, init.method]), [
+    ["/api/v1/datasets/2/folders", "GET"],
+    ["/api/v1/datasets/2/folders", "POST"],
+    ["/api/v1/datasets/2/folders/4", "PATCH"],
+    ["/api/v1/datasets/2/folders/4", "DELETE"],
+  ]);
+  assert.deepEqual(JSON.parse(requests[2].init.body), { name: "采购排放因子" });
+});
+
+test("document upload can assign a virtual folder without changing the file", async () => {
+  const originalFile = globalThis.File;
+  globalThis.File = class File extends Blob {
+    constructor(parts, name, options) {
+      super(parts, options);
+      this.name = name;
+    }
+  };
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return jsonResponse({ document_id: 31, dataset_id: 2, folder_id: 4, status: "QUEUED" }, 202);
+  };
+  try {
+    await uploadDocument(2, new File(["pdf"], "report.pdf", { type: "application/pdf" }), { folderId: 4 });
+  } finally {
+    globalThis.File = originalFile;
+  }
+
+  assert.equal(captured.url, "/api/v1/datasets/2/documents");
+  assert.equal(captured.init.body.get("folder_id"), "4");
+  assert.equal(captured.init.body.get("file").name, "report.pdf");
 });
 
 test("dataset create and update keep the optional vision model binding", async () => {
@@ -198,7 +252,7 @@ test("system page reads the detailed backend status endpoint", async () => {
   assert.equal(result.components.mysql.status, "ready");
 });
 
-test("arXiv crawler encodes keyword and bounded result count", async () => {
+test("arXiv crawler requires the target dataset before AI-optimized search", async () => {
   configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
   let captured;
   globalThis.fetch = async (url, init) => {
@@ -206,30 +260,83 @@ test("arXiv crawler encodes keyword and bounded result count", async () => {
     return jsonResponse({ source: "arXiv", query: "carbon footprint", total_results: 0, items: [] });
   };
 
-  await searchArxivPapers({ query: " carbon footprint ", maxResults: 5 });
+  await searchArxivPapers({
+    query: " 动力电池碳排 ",
+    maxResults: 5,
+    datasetId: 7,
+    aiOptimize: true,
+  });
 
   assert.equal(
     captured.url,
-    "http://api.local/api/v1/crawler/arxiv?query=carbon+footprint&max_results=5",
+    "http://api.local/api/v1/crawler/arxiv?query=%E5%8A%A8%E5%8A%9B%E7%94%B5%E6%B1%A0%E7%A2%B3%E6%8E%92&max_results=5&dataset_id=7&ai_optimize=true",
   );
   assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
 });
 
-test("arXiv import sends selected paper ids to the target dataset", async () => {
+test("arXiv import sends selected paper titles to the target dataset", async () => {
   let captured;
   globalThis.fetch = async (url, init) => {
     captured = { url, init };
     return jsonResponse({ dataset_id: 7, queued_count: 2, failed_count: 0, items: [] }, 202);
   };
 
-  await importArxivPapers({ datasetId: "7", arxivIds: ["2608.12345v1", "2608.12346v1"] });
+  await importArxivPapers({
+    datasetId: "7",
+    papers: [
+      { arxiv_id: "2608.12345v1", title: "Carbon Accounting with AI" },
+      { arxiv_id: "2608.12346v1", title: "Lifecycle Emissions Analysis" },
+    ],
+  });
 
   assert.equal(captured.url, "/api/v1/crawler/arxiv/import");
   assert.equal(captured.init.method, "POST");
   assert.deepEqual(JSON.parse(captured.init.body), {
     dataset_id: 7,
-    arxiv_ids: ["2608.12345v1", "2608.12346v1"],
+    papers: [
+      { arxiv_id: "2608.12345v1", title: "Carbon Accounting with AI" },
+      { arxiv_id: "2608.12346v1", title: "Lifecycle Emissions Analysis" },
+    ],
   });
+});
+
+test("crawler review list and decision use the authenticated review contract", async () => {
+  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse({ items: [], total: 0, offset: 0, limit: 50 });
+  };
+
+  await listCrawlerSubmissions({ reviewStatus: "PENDING" });
+  await reviewCrawlerSubmission(51, { decision: "APPROVED", note: null });
+
+  assert.equal(
+    requests[0].url,
+    "http://api.local/api/v1/crawler/submissions?review_status=PENDING&offset=0&limit=50",
+  );
+  assert.equal(requests[0].init.headers.get("Authorization"), "Bearer token-7");
+  assert.equal(requests[1].url, "http://api.local/api/v1/crawler/submissions/51/review");
+  assert.equal(requests[1].init.method, "POST");
+  assert.deepEqual(JSON.parse(requests[1].init.body), { decision: "APPROVED", note: null });
+});
+
+test("crawler original file is fetched as a protected blob", async () => {
+  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(new Uint8Array([37, 80, 68, 70]), {
+      status: 200,
+      headers: { "Content-Type": "application/pdf" },
+    });
+  };
+
+  const blob = await getCrawlerSubmissionFile(51);
+
+  assert.equal(captured.url, "http://api.local/api/v1/crawler/submissions/51/file");
+  assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
+  assert.equal(blob.type, "application/pdf");
 });
 
 test("RAG stream sends snake_case payload and consumes terminal SSE event", async () => {
