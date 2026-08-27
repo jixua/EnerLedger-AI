@@ -63,6 +63,8 @@ class RecallHit:
     dataset_id: int
     fused_score: float
     scores: dict[str, float | None]
+    normalized_scores: dict[str, float | None] = field(default_factory=dict)
+    weighted_contributions: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -155,7 +157,8 @@ class RecallRequest:
         enabled_sources: 可选「本次启用哪几条召回路」。``None`` / 空列表表示用全部已装配路；
             非空时**只在已装配路集合内收窄**——列出的未装配路被忽略，交集为空则回退全部已装配路。
             来自数据集级 ``recall_config.recall_enabled_sources``。
-        strict_override: 可选容错模式覆盖；``None`` 时沿用 pipeline 装配期 ``RecallPipelineConfig.strict``。
+        strict_override: 可选容错模式覆盖；``None`` 时沿用 pipeline 装配期
+            ``RecallPipelineConfig.strict``。
             来自数据集级 ``recall_config.recall_strict``。
         fusion_*_weight_override: 可选三路融合权重覆盖；``None`` 时沿用 pipeline 装配期默认值。
             来自数据集级 ``recall_config``。
@@ -208,6 +211,8 @@ class RecallResponse:
     # 对外 JSON/SSE 序列化器不暴露这两个字段；未提供时保持旧调用方兼容。
     candidate_hits: list[RecallHit] = field(default_factory=list)
     route_hits: dict[str, list[RetrieverHit]] = field(default_factory=dict)
+    # 本次实际参与融合的来源归一化权重。失败路、空结果路不占权重。
+    fusion_weights: dict[str, float] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)

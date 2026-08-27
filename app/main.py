@@ -19,6 +19,7 @@ from app.services.document_dispatch import run_document_dispatch_reconciler
 
 setup_logger()
 
+from app.api.agent import router as agent_router
 from app.api.auth import router as auth_router
 from app.api.crawler import router as crawler_router
 from app.api.datasets import router as datasets_router
@@ -76,6 +77,7 @@ app.add_middleware(
     expose_headers=["Location", "X-Request-Id", "X-Document-Version"],
 )
 app.include_router(auth_router)
+app.include_router(agent_router)
 app.include_router(crawler_router)
 app.include_router(llm_router)
 app.include_router(datasets_router)

@@ -24,7 +24,7 @@ import {
   updateDataset,
   uploadDocument,
 } from "../src/lib/api.js";
-import { streamRag } from "../src/lib/sse.js";
+import { streamAgent, streamRag } from "../src/lib/sse.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -365,4 +365,54 @@ test("RAG stream sends snake_case payload and consumes terminal SSE event", asyn
   });
   assert.equal(result.answer, "无法回答");
   assert.equal(result.terminalEvent, "answer_done");
+});
+
+test("Pi Agent stream sends current-page history to the dedicated endpoint", async () => {
+  let captured;
+  const frames = [
+    'event: stream_started\ndata: {"request_id":"agent-1"}\n\n',
+    'event: recall_done\ndata: {"request_id":"agent-1","hits":[],"failed_sources":[]}\n\n',
+    'event: answer_done\ndata: {"request_id":"agent-1","answer":"根据资料无法回答","hits":[],"failed_sources":[],"usage":null,"elapsed_ms":10}\n\n',
+  ].join("");
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(frames, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  };
+
+  await streamAgent({
+    query: "继续说明",
+    datasetIds: [2],
+    history: [{ role: "user", content: "上一问" }, { role: "assistant", content: "上一答" }],
+  });
+
+  assert.equal(captured.url, "/api/v1/agent/stream");
+  assert.deepEqual(JSON.parse(captured.init.body), {
+    query: "继续说明",
+    dataset_ids: [2],
+    history: [{ role: "user", content: "上一问" }, { role: "assistant", content: "上一答" }],
+  });
+});
+
+test("Pi Agent stream keeps an empty dataset list as the all-knowledge-base scope", async () => {
+  let captured;
+  const frames = [
+    'event: stream_started\ndata: {"request_id":"agent-all"}\n\n',
+    'event: answer_done\ndata: {"request_id":"agent-all","answer":"你好","hits":[],"failed_sources":[],"usage":null,"elapsed_ms":2}\n\n',
+  ].join("");
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(frames, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  };
+
+  await streamAgent({ query: "你好", datasetIds: [], history: [] });
+
+  assert.equal(captured.url, "/api/v1/agent/stream");
+  assert.deepEqual(JSON.parse(captured.init.body), {
+    query: "你好",
+    dataset_ids: [],
+    history: [],
+  });
 });

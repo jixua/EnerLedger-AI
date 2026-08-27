@@ -101,6 +101,16 @@ function toRequestBody(payload) {
   return body;
 }
 
+function toAgentRequestBody(payload) {
+  return {
+    ...toRequestBody(payload),
+    history: (payload.history ?? []).map((message) => ({
+      role: message.role,
+      content: message.content,
+    })),
+  };
+}
+
 async function notify(handlers, name, data, event) {
   await handlers.onEvent?.({ event: name, data, raw: event.raw });
   const named = {
@@ -113,11 +123,11 @@ async function notify(handlers, name, data, event) {
   await named?.(data);
 }
 
-export async function streamRag(payload, handlers = {}) {
+async function streamConversation(path, body, handlers = {}) {
   const { signal } = handlers;
   let response;
   try {
-    response = await fetch(buildApiUrl("/api/v1/rag/stream"), {
+    response = await fetch(buildApiUrl(path), {
       method: "POST",
       headers: createApiHeaders(
         {
@@ -126,7 +136,7 @@ export async function streamRag(payload, handlers = {}) {
         },
         { auth: true },
       ),
-      body: JSON.stringify(toRequestBody(payload)),
+      body: JSON.stringify(body),
       signal,
     });
   } catch (error) {
@@ -207,4 +217,12 @@ export async function streamRag(payload, handlers = {}) {
     code: "STREAM_INCOMPLETE",
     payload: result,
   });
+}
+
+export function streamRag(payload, handlers = {}) {
+  return streamConversation("/api/v1/rag/stream", toRequestBody(payload), handlers);
+}
+
+export function streamAgent(payload, handlers = {}) {
+  return streamConversation("/api/v1/agent/stream", toAgentRequestBody(payload), handlers);
 }

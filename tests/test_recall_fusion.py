@@ -66,6 +66,12 @@ def test_three_routes_use_frozen_weights_and_missing_chunk_route_contributes_zer
         SOURCE_SPARSE: None,
         SOURCE_DENSE: None,
     }
+    assert by_id["bm25-only"].normalized_scores[SOURCE_BM25] == pytest.approx(1.0)
+    assert by_id["bm25-only"].weighted_contributions == {
+        SOURCE_BM25: pytest.approx(0.15),
+        SOURCE_SPARSE: pytest.approx(0.0),
+        SOURCE_DENSE: pytest.approx(0.0),
+    }
 
 
 def test_missing_route_renormalizes_weights_over_active_routes_only() -> None:
@@ -83,6 +89,9 @@ def test_missing_route_renormalizes_weights_over_active_routes_only() -> None:
     assert by_id["bm25-only"].fused_score == pytest.approx(0.15 / 0.85)
     assert by_id["dense-only"].fused_score == pytest.approx(0.70 / 0.85)
     assert all(hit.scores[SOURCE_SPARSE] is None for hit in hits)
+    assert by_id["dense-only"].weighted_contributions[SOURCE_DENSE] == pytest.approx(
+        0.70 / 0.85
+    )
 
 
 def test_same_chunk_is_merged_and_keeps_each_route_raw_score() -> None:
