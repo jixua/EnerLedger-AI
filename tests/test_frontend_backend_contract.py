@@ -10,6 +10,10 @@ def test_openapi_contains_every_frontend_runtime_endpoint() -> None:
         ("get", "/api/v1/system/status"),
         ("get", "/api/v1/crawler/arxiv"),
         ("post", "/api/v1/crawler/arxiv/import"),
+        ("post", "/api/v1/crawler/uploads"),
+        ("get", "/api/v1/crawler/submissions"),
+        ("get", "/api/v1/crawler/submissions/{document_id}/file"),
+        ("post", "/api/v1/crawler/submissions/{document_id}/review"),
         ("get", "/api/v1/llm/configs"),
         ("post", "/api/v1/llm/configs"),
         ("patch", "/api/v1/llm/configs/{config_id}"),
@@ -18,6 +22,10 @@ def test_openapi_contains_every_frontend_runtime_endpoint() -> None:
         ("post", "/api/v1/datasets"),
         ("patch", "/api/v1/datasets/{dataset_id}"),
         ("delete", "/api/v1/datasets/{dataset_id}"),
+        ("get", "/api/v1/datasets/{dataset_id}/folders"),
+        ("post", "/api/v1/datasets/{dataset_id}/folders"),
+        ("patch", "/api/v1/datasets/{dataset_id}/folders/{folder_id}"),
+        ("delete", "/api/v1/datasets/{dataset_id}/folders/{folder_id}"),
         ("get", "/api/v1/documents"),
         ("get", "/api/v1/datasets/{dataset_id}/documents"),
         ("post", "/api/v1/datasets/{dataset_id}/documents"),
@@ -66,6 +74,7 @@ def test_document_and_model_responses_do_not_expose_secrets_or_queue_tokens() ->
     assert "vision_config_id" in dataset_fields
     assert "lease_token" not in document_fields
     assert "lease_owner" not in document_fields
+    assert "folder_id" in document_fields
     assert {
         "status",
         "attempt_count",
@@ -74,6 +83,8 @@ def test_document_and_model_responses_do_not_expose_secrets_or_queue_tokens() ->
         "parse_quality_status",
         "parse_quality",
         "retrieval_ready",
+        "source_type",
+        "review_status",
     } <= document_fields.keys()
     assert {
         "user_id",

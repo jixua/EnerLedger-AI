@@ -388,6 +388,7 @@ export function AppProvider({ children }) {
             preview: true,
             document_id: Date.now() + index,
             dataset_id: id,
+            folder_id: options.folderId ?? null,
             filename: file.name,
             file_type: file.name.split(".").pop()?.toLowerCase() || "file",
             file_size: file.size,
@@ -437,7 +438,10 @@ export function AppProvider({ children }) {
           }, 2600 + index * 180);
         } else {
           // 当前后端一次接收一个文件，成功后立即返回 QUEUED。
-          const result = await uploadDocument(id, file, { signal: options.signal });
+          const result = await uploadDocument(id, file, {
+            signal: options.signal,
+            folderId: options.folderId,
+          });
           results.push(result);
           options.onFileComplete?.(file, result, index);
           await loadDocuments(id);

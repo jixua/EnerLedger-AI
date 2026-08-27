@@ -1,9 +1,10 @@
 # Alembic 迁移
 
-本目录只管理当前项目的四张 MySQL 业务表：
+本目录只管理当前项目的五张 MySQL 业务表：
 
 - `llm_config`
 - `dataset`
+- `document_folder`
 - `document`
 - `document_chunk`
 
@@ -18,14 +19,18 @@ Alembic 自己创建的 `alembic_version` 是版本记录表，不属于业务�
   -> 0002_document_parse_queue
   -> 0003_chunk_structure_metadata
   -> 0004_document_parse_quality
-  -> 0005_dataset_vision_config (head)
+  -> 0005_dataset_vision_config
+  -> 0006_document_dispatch_outbox
+  -> 0007_crawler_document_review (head)
 ```
 
-`0001_minimal_rag` 直接创建四张业务表，不依赖历史 LinkRag schema；后续迁移仍只修改这四张表。`migrations/db.sql` 是当前 head 的可读 SQL 快照；正常部署应以 `alembic upgrade head` 为准，不要同时手工执行 SQL 文件。
+`0001_minimal_rag` 直接创建最初四张业务表，不依赖历史 LinkRag schema；`0007_document_folders` 增加仅用于文档分类的 `document_folder` 表和可空 `document.folder_id`。`migrations/db.sql` 是当前 head 的可读 SQL 快照；正常部署应以 `alembic upgrade heads` 为准，以兼容 `dev` 中多个从 `master` 派生的候选迁移，不要同时手工执行 SQL 文件。
 
 `0004_document_parse_quality` 只在 `document` 表增加可空的质量状态与 JSON 摘要字段。升级时将已有 PDF 标记为 `LEGACY_UNCHECKED`，已有非 PDF 标记为 `NOT_APPLICABLE`；不会改变文档解析、队列或召回就绪状态。
 
 `0005_dataset_vision_config` 在 `dataset` 表增加可空的 `vision_config_id`，用于绑定 PDF 页级 OCR/视觉兜底模型；不新增配置表，也不修改已有数据集的绑定。
+
+`0007_crawler_document_review` 在 `document` 表保存第三方采集来源与人工审核状态。外部上传文件在审核通过前保持 `PENDING_REVIEW`，不会进入 RabbitMQ 解析队列。
 
 ## 与旧 39 版迁移链不兼容
 
@@ -52,7 +57,7 @@ docker compose up --build -d
 
 ```bash
 # 仅对空库或已经处于本基线的数据库执行
-uv run alembic upgrade head
+uv run alembic upgrade heads
 
 uv run alembic current
 uv run alembic heads
@@ -62,4 +67,4 @@ uv run alembic history
 uv run alembic revision --autogenerate -m "describe change"
 ```
 
-降级到根版本之前会依次撤销增量字段；继续执行根版本的 `downgrade()` 会删除四张业务表，同样属于破坏性操作。
+降级到根版本之前会依次撤销增量字段和文件夹表；继续执行根版本的 `downgrade()` 会删除最初四张业务表，同样属于破坏性操作。

@@ -249,6 +249,14 @@ class Settings(BaseSettings):
     # 从高到低纳入，累计超过该预算即截断尾部低分片段（见 recall_stream_runtime 生成段）。
     RECALL_GENERATION_CONTEXT_TOKEN_BUDGET: int = 4000
 
+    # 本机 Codex CLI 对话协议。它复用当前操作系统中的 Codex 登录态，仅适用于
+    # API 进程能够直接执行该二进制的本机/受控环境。
+    CODEX_CLI_PATH: str = "codex"
+    CODEX_CLI_WORKDIR: str = "/tmp/enerledger-codex-cli"
+    CODEX_CLI_REASONING_EFFORT: str = "medium"
+    CODEX_CLI_TIMEOUT_MS: int = Field(default=300000, ge=10000, le=1800000)
+    CODEX_CLI_MAX_CONCURRENCY: int = Field(default=1, ge=1, le=8)
+
     # ==========================================
     # 企业文档分析 (Enterprise Document Analysis)
     # ==========================================
@@ -629,7 +637,9 @@ class Settings(BaseSettings):
     PARSE_TEMP_DIR: str = "/tmp/tolink-rag-parse"
 
     STORAGE_TYPE: str = "minio"  # minio / local
-    DOCUMENT_UPLOAD_MAX_BYTES: int = Field(default=100 * 1024 * 1024, gt=0)
+    DOCUMENT_UPLOAD_MAX_BYTES: int = Field(default=128 * 1024 * 1024, gt=0)
+    # 第三方爬虫上传专用凭证；为空时关闭外部上传入口。
+    CRAWLER_UPLOAD_API_KEY: str = ""
     # RabbitMQ 主动投递；MySQL document 表保留 lease 与重试状态。
     DOCUMENT_QUEUE_LEASE_SECONDS: int = Field(default=300, gt=0)
     DOCUMENT_QUEUE_HEARTBEAT_SECONDS: int = Field(default=30, gt=0)

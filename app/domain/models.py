@@ -57,6 +57,38 @@ class Dataset(Base):
     )
 
 
+class DocumentFolder(Base):
+    """数据集内的虚拟文件夹，支持用 ``parent_id`` 表示层级。"""
+
+    __tablename__ = "document_folder"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "dataset_id",
+            "name",
+            name="uk_document_folder_user_dataset_name",
+        ),
+        Index("idx_document_folder_dataset", "user_id", "dataset_id", "created_at"),
+        Index("idx_document_folder_parent", "dataset_id", "parent_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    dataset_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    parent_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
+    name: Mapped[str] = mapped_column(String(64), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+
+
 class Document(Base):
     """上传文件、解析结果与最终状态的单表记录。
 
@@ -71,11 +103,14 @@ class Document(Base):
         Index("idx_document_queue_available", "status", "available_at", "id"),
         Index("idx_document_lease_expiry", "status", "lease_expires_at", "id"),
         Index("idx_document_dispatch_available", "dispatch_status", "dispatch_available_at", "id"),
+        Index("idx_document_review_status", "user_id", "review_status", "created_at"),
+        Index("idx_document_folder", "folder_id", "id"),
     )
 
     id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
     dataset_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
     user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    folder_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
     filename: Mapped[str] = mapped_column(String(255), nullable=False)
     file_type: Mapped[str] = mapped_column(String(32), nullable=False)
     file_size: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
@@ -121,6 +156,18 @@ class Document(Base):
     parse_time_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
     parse_quality_status: Mapped[str | None] = mapped_column(String(32), nullable=True)
     parse_quality: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    source_type: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="MANUAL_UPLOAD", server_default="MANUAL_UPLOAD"
+    )
+    source_url: Mapped[str | None] = mapped_column(String(1024), nullable=True)
+    source_title: Mapped[str | None] = mapped_column(String(512), nullable=True)
+    source_metadata: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    review_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="NOT_REQUIRED", server_default="NOT_REQUIRED"
+    )
+    review_note: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    reviewed_by_user_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
+    reviewed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
     )

@@ -71,7 +71,8 @@ def build_provider_from_runtime_config(
 
     protocol = config.protocol.strip()
     provider_type = normalize_provider_type(config.provider_type)
-    if protocol.lower() != "google" and not config.api_base_url.strip():
+    protocol_lower = protocol.lower()
+    if protocol_lower not in {"google", "codex_cli"} and not config.api_base_url.strip():
         raise ProviderConnectionError(
             message=f"api_base_url is required for protocol {protocol!r}.",
             provider_type=provider_type,
@@ -79,10 +80,18 @@ def build_provider_from_runtime_config(
     provider = ModelFactory().create_client(
         protocol=protocol,
         provider_type=provider_type,
-        api_key=decrypt_api_key(config.api_key_ciphertext),
+        api_key=(
+            ""
+            if protocol_lower == "codex_cli"
+            else decrypt_api_key(config.api_key_ciphertext)
+        ),
         api_base_url=config.api_base_url,
         model_name=config.model_name,
-        timeout_ms=settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS,
+        timeout_ms=(
+            settings.CODEX_CLI_TIMEOUT_MS
+            if protocol_lower == "codex_cli"
+            else settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS
+        ),
     )
     if not provider.has_capability(capability_type):
         supported = [
