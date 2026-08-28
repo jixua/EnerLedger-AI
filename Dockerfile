@@ -67,6 +67,7 @@ RUN python -m nltk.downloader \
 
 COPY README.md ./
 COPY app ./app
+COPY reporting ./reporting
 
 RUN --mount=type=cache,id=enerledger-uv,target=/root/.cache/uv,sharing=locked \
     uv pip install --system --link-mode=copy --no-deps .

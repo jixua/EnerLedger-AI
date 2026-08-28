@@ -1,0 +1,84 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://enerledger.local/schemas/report-ir.json",
+  "title": "EnerLedger Report IR",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["schema_version", "meta", "evidence", "field_ledger", "sections", "calculations", "warnings", "limitations", "render_profile"],
+  "properties": {
+    "schema_version": {"const": 1},
+    "meta": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["run_id", "report_type", "template_id", "template_version", "document_id", "document_version"],
+      "properties": {
+        "run_id": {"type": "string", "minLength": 1},
+        "report_type": {"enum": ["R1", "R2", "R3", "R4", "R5", "R6", "R7"]},
+        "template_id": {"type": "string", "minLength": 1},
+        "template_version": {"type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$"},
+        "document_id": {"type": "integer", "minimum": 1},
+        "document_version": {"type": "integer", "minimum": 1},
+        "language": {"type": "string", "default": "zh-CN"}
+      }
+    },
+    "evidence": {
+      "type": "array",
+      "items": {"$ref": "evidence.schema.json"}
+    },
+    "field_ledger": {
+      "type": "array",
+      "items": {"$ref": "field-ledger.schema.json"}
+    },
+    "sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["section_id", "title", "blocks"],
+        "properties": {
+          "section_id": {"type": "string", "pattern": "^[a-z][a-z0-9_]*$"},
+          "title": {"type": "string", "minLength": 1},
+          "blocks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["type", "evidence_ids"],
+              "properties": {
+                "type": {
+                  "enum": ["heading", "paragraph", "list", "table", "metric_cards", "bar_chart", "donut_chart", "timeline", "risk_matrix", "callout", "source_note", "signature_block", "page_break"]
+                },
+                "text": {"type": "string"},
+                "data": {},
+                "evidence_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+              },
+              "additionalProperties": false
+            }
+          }
+        }
+      }
+    },
+    "calculations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["formula_id", "formula_version", "operator", "input_field_ids", "inputs", "parameters", "parameter_evidence_ids", "output_field_id", "value", "unit"],
+        "properties": {
+          "formula_id": {"type": "string"},
+          "formula_version": {"type": "string"},
+          "operator": {"type": "string"},
+          "input_field_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "inputs": {"type": "object"},
+          "parameters": {"type": "object"},
+          "parameter_evidence_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true},
+          "output_field_id": {"type": "string"},
+          "value": {"type": "number"},
+          "unit": {"type": ["string", "null"]}
+        }
+      }
+    },
+    "warnings": {"type": "array", "items": {"type": "string"}},
+    "limitations": {"type": "array", "items": {"type": "string"}},
+    "render_profile": {"type": "string", "minLength": 1}
+  }
+}

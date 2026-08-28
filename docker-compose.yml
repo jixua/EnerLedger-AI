@@ -130,6 +130,12 @@ services:
       ENERLEDGER_INTERNAL_AGENT_TOKEN: ${ENERLEDGER_INTERNAL_AGENT_TOKEN:-pi-to-api-local-token-000000000001}
       AGENT_RUN_TIMEOUT_SECONDS: ${AGENT_RUN_TIMEOUT_SECONDS:-120}
       AGENT_TOOL_TIMEOUT_SECONDS: ${AGENT_TOOL_TIMEOUT_SECONDS:-30}
+      REPORT_AGENT_INTERNAL_TOKEN: ${REPORT_AGENT_INTERNAL_TOKEN:-}
+      REPORT_AGENT_TOOL_TIMEOUT_SECONDS: ${REPORT_AGENT_TOOL_TIMEOUT_SECONDS:-30}
+      REPORT_AGENT_RUN_TIMEOUT_SECONDS: ${REPORT_AGENT_RUN_TIMEOUT_SECONDS:-600}
+      REPORT_AGENT_MAX_TOOL_CALLS: ${REPORT_AGENT_MAX_TOOL_CALLS:-80}
+      REPORT_MODEL_ALLOWED_HOSTS: ${REPORT_MODEL_ALLOWED_HOSTS:-}
+      REPORT_MODEL_ALLOW_PRIVATE_ENDPOINTS: ${REPORT_MODEL_ALLOW_PRIVATE_ENDPOINTS:-false}
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8010/health').then(r=>{if(!r.ok)process.exit(1)})"]
       interval: 15s
@@ -181,6 +187,9 @@ services:
       ENERLEDGER_INTERNAL_AGENT_TOKEN: ${ENERLEDGER_INTERNAL_AGENT_TOKEN:-pi-to-api-local-token-000000000001}
       AGENT_RUN_TIMEOUT_SECONDS: ${AGENT_RUN_TIMEOUT_SECONDS:-120}
       AGENT_TOOL_TIMEOUT_SECONDS: ${AGENT_TOOL_TIMEOUT_SECONDS:-30}
+      PI_SERVICE_URL: http://pi-agent:8010
+      REPORT_AGENT_INTERNAL_TOKEN: ${REPORT_AGENT_INTERNAL_TOKEN:-}
+      REPORT_AGENT_RUN_TOKEN_SECRET: ${REPORT_AGENT_RUN_TOKEN_SECRET:-}
     ports:
       - "${API_PORT:-8000}:8000"
     depends_on:
@@ -240,6 +249,38 @@ services:
       disable: true
     depends_on:
       api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+
+  report-worker:
+    profiles: ["reports"]
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    stop_grace_period: 12m
+    command: ["python", "-m", "app.workers.report_generation_worker"]
+    env_file: .env
+    environment:
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DATABASE_URL: ${DATABASE_URL:-mysql+pymysql://tolink:tolink-local-change-me@mysql:3306/tolink_rag_db?charset=utf8mb4}
+      MQ_VENDOR: rabbitmq
+      RABBITMQ_URL: ${RABBITMQ_URL:-amqp://energy-carbon:energy-carbon-local-change-me@rabbitmq:5672/energy-carbon}
+      RABBITMQ_PREFETCH_COUNT: ${REPORT_QUEUE_WORKER_CONCURRENCY:-1}
+      REPORT_PROCESSOR_MODE: pi
+      PI_SERVICE_URL: http://pi-agent:8010
+      PI_SERVICE_TOKEN: ${PI_SERVICE_TOKEN:-api-to-pi-local-token-000000000001}
+      REPORT_AGENT_INTERNAL_TOKEN: ${REPORT_AGENT_INTERNAL_TOKEN:-}
+      REPORT_AGENT_RUN_TOKEN_SECRET: ${REPORT_AGENT_RUN_TOKEN_SECRET:-}
+      LOG_FILE_ENABLED: "false"
+    healthcheck:
+      disable: true
+    depends_on:
+      api:
+        condition: service_healthy
+      pi-agent:
         condition: service_healthy
       rabbitmq:
         condition: service_healthy

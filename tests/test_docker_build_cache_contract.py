@@ -62,3 +62,16 @@ def test_api_entrypoint_applies_every_candidate_migration_head() -> None:
 
     assert "alembic upgrade heads" in entrypoint
     assert "alembic upgrade head\n" not in entrypoint
+
+
+@pytest.mark.parametrize(
+    ("path", "reporting_copy"),
+    (
+        ("Dockerfile", "COPY reporting ./reporting"),
+        ("deploy/jenkins/Dockerfile.api", "COPY source/reporting ./reporting"),
+    ),
+)
+def test_api_images_include_report_template_assets(path: str, reporting_copy: str) -> None:
+    dockerfile = (ROOT / path).read_text()
+
+    assert reporting_copy in dockerfile

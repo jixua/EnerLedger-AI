@@ -1,0 +1,39 @@
+{
+  "template_id": "r1-product-carbon-footprint",
+  "report_type": "R1",
+  "version": "1.0.0",
+  "name": "产品碳足迹评价报告",
+  "status": "DRAFT",
+  "description": "依据生命周期评价逻辑编制产品碳足迹报告草稿。",
+  "applicable_documents": ["产品生命周期清单", "产品碳足迹核算材料", "原料制造运输使用及处置数据"],
+  "inapplicable_documents": ["仅有组织级年度排放总量且无法分配到产品的材料"],
+  "fields": [
+    {"id":"product_name","label":"产品名称","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"min_length":1},"formula_id":null},
+    {"id":"product_code","label":"产品编码/SKU","type":"string","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"functional_unit","label":"功能单位","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"quantity_required":true},"formula_id":null},
+    {"id":"system_boundary","label":"系统边界","type":"enum","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["cradle-to-gate","cradle-to-grave","gate-to-gate"]},"formula_id":null},
+    {"id":"cutoff_threshold","label":"取舍阈值","type":"number","required":true,"blocking":false,"unit":"%","source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":0,"maximum":100},"formula_id":null},
+    {"id":"allocation_method","label":"分配方法","type":"enum","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["质量","能量","体积","经济","不适用"]},"formula_id":null},
+    {"id":"raw_material_emissions","label":"原料获取排放","type":"number","required":true,"blocking":false,"unit":"kgCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"manufacturing_emissions","label":"制造阶段排放","type":"number","required":true,"blocking":false,"unit":"kgCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"transport_emissions","label":"运输分销排放","type":"number","required":true,"blocking":false,"unit":"kgCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"use_emissions","label":"使用阶段排放","type":"number","required":true,"blocking":false,"unit":"kgCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"end_of_life_emissions","label":"报废回收排放","type":"number","required":false,"blocking":false,"unit":"kgCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"total_product_footprint","label":"产品碳足迹总值","type":"number","required":true,"blocking":false,"unit":"kgCO2e","source_types":["CALCULATION"],"validation":{"minimum":0},"formula_id":"R1_TOTAL_PRODUCT_FOOTPRINT"},
+    {"id":"gwp_version","label":"GWP版本","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","KNOWLEDGE_BASE","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"data_quality_rating","label":"数据质量评分","type":"integer","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":1,"maximum":5},"formula_id":null},
+    {"id":"verification_status","label":"核查状态","type":"enum","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["未核查","第三方核查","无法判断"]},"formula_id":null},
+    {"id":"verification_body","label":"核查机构","type":"string","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"report_date","label":"报告日期","type":"date","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null}
+  ],
+  "sections": [
+    {"id":"executive_summary","title":"报告摘要","required":true,"field_ids":["product_name","functional_unit","total_product_footprint"],"allowed_blocks":["paragraph","metric_cards","callout"]},
+    {"id":"goal_and_scope","title":"评价目标与范围","required":true,"field_ids":["functional_unit","system_boundary","cutoff_threshold","allocation_method"],"allowed_blocks":["paragraph","table"]},
+    {"id":"life_cycle_inventory","title":"生命周期清单","required":true,"field_ids":["raw_material_emissions","manufacturing_emissions","transport_emissions","use_emissions","end_of_life_emissions"],"allowed_blocks":["paragraph","table"]},
+    {"id":"impact_results","title":"碳足迹结果与热点","required":true,"field_ids":["total_product_footprint","gwp_version"],"allowed_blocks":["paragraph","table","donut_chart","bar_chart"]},
+    {"id":"quality_and_limitations","title":"数据质量、核查与限制","required":true,"field_ids":["data_quality_rating","verification_status","verification_body"],"allowed_blocks":["paragraph","table","callout"]}
+  ],
+  "calculations": [{"formula_id":"R1_TOTAL_PRODUCT_FOOTPRINT","version":"1","output_field_id":"total_product_footprint","input_field_ids":["raw_material_emissions","manufacturing_emissions","transport_emissions","use_emissions","end_of_life_emissions"],"description":"对适用生命周期阶段排放求和。","operator":"SUM"}],
+  "disclaimers": ["报告为基于现有材料生成的草稿，不能替代符合适用标准的独立核查。"],
+  "render_profile": "r1-product-landscape"
+}

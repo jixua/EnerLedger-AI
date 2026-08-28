@@ -1,0 +1,13 @@
+{
+  "$schema": "../common/template-registry.schema.json",
+  "registry_version": "1.0.0",
+  "templates": [
+    {"report_type": "R1", "template_id": "r1-product-carbon-footprint", "version": "1.0.0", "status": "DRAFT", "definition_path": "r1-product-carbon-footprint/definition.json"},
+    {"report_type": "R2", "template_id": "r2-organizational-ghg", "version": "1.0.0", "status": "DRAFT", "definition_path": "r2-organizational-ghg/definition.json"},
+    {"report_type": "R3", "template_id": "r3-esg-sustainability", "version": "1.0.0", "status": "DRAFT", "definition_path": "r3-esg-sustainability/definition.json"},
+    {"report_type": "R4", "template_id": "r4-energy-audit", "version": "1.0.0", "status": "DRAFT", "definition_path": "r4-energy-audit/definition.json"},
+    {"report_type": "R5", "template_id": "r5-cbam", "version": "1.0.0", "status": "DRAFT", "definition_path": "r5-cbam/definition.json"},
+    {"report_type": "R6", "template_id": "r6-sbti", "version": "1.0.0", "status": "DRAFT", "definition_path": "r6-sbti/definition.json"},
+    {"report_type": "R7", "template_id": "r7-verification", "version": "1.0.0", "status": "DRAFT", "definition_path": "r7-verification/definition.json"}
+  ]
+}

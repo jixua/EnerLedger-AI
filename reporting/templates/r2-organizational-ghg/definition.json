@@ -1,0 +1,37 @@
+{
+  "template_id":"r2-organizational-ghg","report_type":"R2","version":"1.0.0","name":"组织温室气体排放清单报告","status":"DRAFT","description":"编制组织级年度温室气体排放清单草稿。",
+  "applicable_documents":["年度温室气体盘查数据","Scope 1/2/3 活动数据","组织碳排放清单"],"inapplicable_documents":["仅有单一产品生命周期排放且无组织边界的材料"],
+  "fields":[
+    {"id":"organization_name","label":"组织名称","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"min_length":1},"formula_id":null},
+    {"id":"reporting_year","label":"报告年度","type":"integer","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":2000},"formula_id":null},
+    {"id":"organizational_boundary_method","label":"组织边界方法","type":"enum","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["股权比例法","财务控制法","运营控制法"]},"formula_id":null},
+    {"id":"base_year","label":"基准年","type":"integer","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":1990},"formula_id":null},
+    {"id":"scope1_stationary","label":"Scope 1 固定燃烧","type":"number","required":true,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"scope1_mobile","label":"Scope 1 移动燃烧","type":"number","required":true,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"scope1_fugitive","label":"Scope 1 逃逸排放","type":"number","required":false,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"scope1_process","label":"Scope 1 过程排放","type":"number","required":false,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"scope1_total","label":"Scope 1 总量","type":"number","required":true,"blocking":false,"unit":"tCO2e","source_types":["CALCULATION"],"validation":{"minimum":0},"formula_id":"R2_SCOPE1_TOTAL"},
+    {"id":"scope2_location","label":"Scope 2 基于位置","type":"number","required":true,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"scope2_market","label":"Scope 2 基于市场","type":"number","required":false,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"scope3_categories","label":"Scope 3 类别排放","type":"array","required":false,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"max_items":15,"item_required_keys":["category","emissions"]},"formula_id":null},
+    {"id":"scope3_total","label":"Scope 3 总量","type":"number","required":false,"blocking":false,"unit":"tCO2e","source_types":["CALCULATION"],"validation":{"minimum":0},"formula_id":"R2_SCOPE3_TOTAL"},
+    {"id":"total_emissions_location","label":"排放总量（位置法）","type":"number","required":true,"blocking":false,"unit":"tCO2e","source_types":["CALCULATION"],"validation":{"minimum":0},"formula_id":"R2_TOTAL_LOCATION"},
+    {"id":"emission_factor_sources","label":"排放因子来源","type":"array","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","KNOWLEDGE_BASE","USER_INPUT"],"validation":{"min_items":1},"formula_id":null},
+    {"id":"gwp_version","label":"GWP版本","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","KNOWLEDGE_BASE","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"verification_status","label":"核查状态","type":"enum","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["未核查","第三方核查","无法判断"]},"formula_id":null}
+  ],
+  "sections":[
+    {"id":"inventory_summary","title":"清单摘要","required":true,"field_ids":["organization_name","reporting_year","total_emissions_location"],"allowed_blocks":["paragraph","metric_cards","donut_chart"]},
+    {"id":"boundaries_and_method","title":"边界与核算方法","required":true,"field_ids":["organizational_boundary_method","base_year","emission_factor_sources","gwp_version"],"allowed_blocks":["paragraph","table"]},
+    {"id":"scope1_inventory","title":"Scope 1 直接排放","required":true,"field_ids":["scope1_stationary","scope1_mobile","scope1_fugitive","scope1_process","scope1_total"],"allowed_blocks":["paragraph","table","bar_chart"]},
+    {"id":"scope2_inventory","title":"Scope 2 能源间接排放","required":true,"field_ids":["scope2_location","scope2_market"],"allowed_blocks":["paragraph","table"]},
+    {"id":"scope3_inventory","title":"Scope 3 其他间接排放","required":false,"field_ids":["scope3_categories","scope3_total"],"allowed_blocks":["paragraph","table","bar_chart"]},
+    {"id":"verification_and_limitations","title":"核查状态与限制","required":true,"field_ids":["verification_status"],"allowed_blocks":["paragraph","callout"]}
+  ],
+  "calculations":[
+    {"formula_id":"R2_SCOPE1_TOTAL","version":"1","output_field_id":"scope1_total","input_field_ids":["scope1_stationary","scope1_mobile","scope1_fugitive","scope1_process"],"description":"Scope 1 各适用排放源求和。","operator":"SUM"},
+    {"formula_id":"R2_SCOPE3_TOTAL","version":"1","output_field_id":"scope3_total","input_field_ids":["scope3_categories"],"description":"Scope 3 各适用类别求和。","operator":"SUM","collection_value_key":"emissions"},
+    {"formula_id":"R2_TOTAL_LOCATION","version":"1","output_field_id":"total_emissions_location","input_field_ids":["scope1_total","scope2_location","scope3_total"],"description":"按位置法汇总组织排放。","operator":"SUM"}
+  ],
+  "disclaimers":["报告为基于现有材料生成的清单草稿，不构成第三方核查结论。"],"render_profile":"r2-audit-portrait"
+}

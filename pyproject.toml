@@ -14,6 +14,7 @@ dependencies = [
   "fastapi>=0.115.0",
   "httpx>=0.27.0",
   "infinity-sdk>=0.7.0",
+  "jsonschema>=4.23.0,<5.0.0",
   "loguru>=0.7.0",
   "mammoth>=1.6.0",
   # NLTK 3.10 的 pathsec 会把 Docker Desktop 的 198.18/15 DNS 代理地址

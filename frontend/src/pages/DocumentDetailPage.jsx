@@ -9,6 +9,7 @@ import {
   Copy,
   Eye,
   EyeOff,
+  FileOutput,
   FileText,
   Layers3,
   Loader2,
@@ -28,6 +29,7 @@ import {
   remarkDocumentHtmlTables,
 } from "../components/DocumentHtmlTable";
 import { DocumentPreviewImage } from "../components/DocumentPreviewImage";
+import { ReportGenerationDialog } from "../components/ReportGenerationDialog";
 import {
   createDocumentBoundaryPlugin,
   mergeDocumentDetailSnapshot,
@@ -265,6 +267,7 @@ export function DocumentDetailPage() {
   const [jumpTarget, setJumpTarget] = useState("");
   const [busyAction, setBusyAction] = useState(false);
   const [copiedValue, setCopiedValue] = useState("");
+  const [reportDialogOpen, setReportDialogOpen] = useState(false);
 
   const status = normalizedStatus(document);
   const documentVersion = Number(document?.version ?? 0);
@@ -467,6 +470,7 @@ export function DocumentDetailPage() {
         <div className="document-detail-header__actions">
           <button type="button" className="button button--secondary" onClick={() => { void refreshPage(); }} disabled={loadingDocument || loadingPreview}><RefreshCw className={loadingDocument || loadingPreview ? "spin" : ""} size={15} />刷新</button>
           {status === "READY" ? <Link className="button button--primary" to={`/datasets/${datasetId}/documents/${targetDocumentId}/analysis`}><BrainCircuit size={16} />分析报告</Link> : null}
+          {status === "READY" ? <button type="button" className="button button--primary" onClick={() => setReportDialogOpen(true)}><FileOutput size={16} />生成报告</button> : null}
           {status === "READY" ? <button type="button" className="button button--secondary" onClick={() => handleLifecycleAction(actions.reparseDocument)} disabled={busyAction}><RotateCw className={busyAction ? "spin" : ""} size={15} />重新解析</button> : null}
           {canRetry ? <button type="button" className="button button--primary" onClick={() => handleLifecycleAction(actions.retryDocument)} disabled={busyAction}><RefreshCw className={busyAction ? "spin" : ""} size={15} />重试解析</button> : null}
         </div>
@@ -537,6 +541,7 @@ export function DocumentDetailPage() {
           )}
         </section>
       )}
+      <ReportGenerationDialog document={document} open={reportDialogOpen} onClose={() => setReportDialogOpen(false)} />
     </div>
   );
 }
