@@ -1,0 +1,21 @@
+{
+  "$schema": "../../common/template-review.schema.json",
+  "template_id": "r1-product-carbon-footprint",
+  "template_version": "1.0.0",
+  "technical_review": {
+    "status": "PASSED",
+    "checks": [
+      "schema-valid",
+      "field-and-section-ids-unique",
+      "formula-dependencies-resolvable",
+      "skill-and-style-profile-consistent",
+      "missing-functional-unit-fixture-passing"
+    ]
+  },
+  "business_review": {
+    "status": "PENDING",
+    "reviewer": null,
+    "reviewed_at": null,
+    "notes": "需要业务负责人确认功能单位、系统边界、分配方法和生命周期章节。"
+  }
+}

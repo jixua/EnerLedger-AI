@@ -13,6 +13,7 @@ from sqlalchemy import (
     Index,
     Integer,
     String,
+    Text,
     UniqueConstraint,
     func,
 )
@@ -130,4 +131,148 @@ class Document(Base):
         default=utc_now,
         onupdate=utc_now,
         server_default=func.current_timestamp(),
+    )
+
+
+class ReportRun(Base):
+    """A frozen, tenant-owned report-generation execution."""
+
+    __tablename__ = "report_run"
+    __table_args__ = (
+        Index("idx_report_run_user_created", "user_id", "created_at"),
+        Index("idx_report_run_document_created", "document_id", "created_at"),
+        Index("idx_report_run_state_available", "state", "available_at", "created_at"),
+        Index(
+            "idx_report_run_dispatch_available",
+            "dispatch_status",
+            "dispatch_available_at",
+            "created_at",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    dataset_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    document_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    document_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    parsed_bucket: Mapped[str] = mapped_column(String(64), nullable=False)
+    parsed_object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    report_type: Mapped[str] = mapped_column(String(2), nullable=False)
+    template_id: Mapped[str] = mapped_column(String(64), nullable=False)
+    template_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    template_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    model_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    document_manifest: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    mode: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="GENERATE", server_default="GENERATE"
+    )
+    language: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="zh-CN", server_default="zh-CN"
+    )
+    reporting_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    user_instructions: Mapped[str | None] = mapped_column(Text, nullable=True)
+    output_formats: Mapped[list[str]] = mapped_column(JSON, nullable=False)
+    llm_config_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    llm_snapshot_version: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    state: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="PENDING", server_default="PENDING"
+    )
+    stage: Mapped[str] = mapped_column(
+        String(32), nullable=False, default="WAITING", server_default="WAITING"
+    )
+    input_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    available_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    report_ir: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    analysis_coverage: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    validation_report: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    dispatch_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="PENDING", server_default="PENDING"
+    )
+    dispatch_attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default="0"
+    )
+    dispatch_available_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dispatch_lease_token: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    dispatch_lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    dispatch_error: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+
+
+class ReportQuestion(Base):
+    """A field-bound clarification that can resume one report run."""
+
+    __tablename__ = "report_question"
+    __table_args__ = (
+        UniqueConstraint("run_id", "field_id", "question_type", name="uk_report_question_field"),
+        Index("idx_report_question_run_status", "run_id", "status", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    field_id: Mapped[str] = mapped_column(String(128), nullable=False)
+    question_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    question: Mapped[str] = mapped_column(String(1000), nullable=False)
+    options: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON, nullable=True)
+    required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=True, server_default="1"
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="OPEN", server_default="OPEN"
+    )
+    answer: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    answered_by: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
+    answered_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+
+
+class ReportArtifact(Base):
+    """An immutable object-store artifact produced by one report run."""
+
+    __tablename__ = "report_artifact"
+    __table_args__ = (
+        UniqueConstraint("run_id", "artifact_type", name="uk_report_artifact_type"),
+        Index("idx_report_artifact_run", "run_id", "id"),
+    )
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    run_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    artifact_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    bucket: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    size_bytes: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    renderer_version: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
     )

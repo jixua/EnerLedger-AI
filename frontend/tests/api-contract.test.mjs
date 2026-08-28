@@ -3,15 +3,20 @@ import { afterEach, test } from "node:test";
 
 import {
   configureApi,
+  cancelReportRun,
+  createDocumentReport,
   createDataset,
   getDocumentPreviewAsset,
   getDocumentPreviewContent,
   getDocumentPreviewMap,
   isDocumentPreviewAssetUrl,
   listDocumentChunks,
+  listDocumentReportRuns,
   getSystemStatus,
   importArxivPapers,
   listAllDocuments,
+  listReportTemplates,
+  retryReportRun,
   searchArxivPapers,
   updateDocument,
   updateDataset,
@@ -60,6 +65,58 @@ test("document rename sends the backend PATCH contract", async () => {
   assert.equal(captured.url, "/api/v1/documents/31");
   assert.equal(captured.init.method, "PATCH");
   assert.deepEqual(JSON.parse(captured.init.body), { filename: "核算报告.pdf" });
+});
+
+test("report creation sends the user-selected type and frozen input fields", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse(url.endsWith("report-templates")
+      ? [{ report_type: "R2", selectable: true }]
+      : { run_id: "run-1", state: "PENDING", report_type: "R2" }, url.endsWith("reports") ? 202 : 200);
+  };
+
+  const templates = await listReportTemplates();
+  const run = await createDocumentReport(31, {
+    report_type: "R2",
+    llm_config_id: 7,
+    language: "zh-CN",
+    reporting_year: 2025,
+    user_instructions: "重点展示 Scope 3",
+    output_formats: ["ONLINE"],
+  });
+
+  assert.equal(templates[0].report_type, "R2");
+  assert.equal(requests[0].url, "/api/v1/report-templates");
+  assert.equal(requests[1].url, "/api/v1/documents/31/reports");
+  assert.equal(requests[1].init.method, "POST");
+  assert.deepEqual(JSON.parse(requests[1].init.body), {
+    report_type: "R2",
+    llm_config_id: 7,
+    language: "zh-CN",
+    reporting_year: 2025,
+    user_instructions: "重点展示 Scope 3",
+    output_formats: ["ONLINE"],
+  });
+  assert.equal(run.run_id, "run-1");
+});
+
+test("report workbench restores history and supports cancel and retry", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse([]);
+  };
+
+  await listDocumentReportRuns(31, { limit: 5 });
+  await cancelReportRun("run-1");
+  await retryReportRun("run-1");
+
+  assert.equal(requests[0].url, "/api/v1/documents/31/report-runs?limit=5");
+  assert.equal(requests[1].url, "/api/v1/report-runs/run-1/cancel");
+  assert.equal(requests[1].init.method, "POST");
+  assert.equal(requests[2].url, "/api/v1/report-runs/run-1/retry");
+  assert.equal(requests[2].init.method, "POST");
 });
 
 test("dataset create and update keep the optional vision model binding", async () => {

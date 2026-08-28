@@ -4,7 +4,17 @@ from __future__ import annotations
 
 from datetime import datetime
 
-from sqlalchemy import BigInteger, Boolean, DateTime, Index, String, UniqueConstraint, func, true
+from sqlalchemy import (
+    BigInteger,
+    Boolean,
+    DateTime,
+    Index,
+    String,
+    UniqueConstraint,
+    false,
+    func,
+    true,
+)
 from sqlalchemy.dialects import mysql
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
@@ -55,6 +65,9 @@ class LLMModelConfigDB(Base):
     api_key: Mapped[str] = mapped_column(String(512), nullable=False)
     is_active: Mapped[bool] = mapped_column(
         Boolean, nullable=False, default=True, server_default=true()
+    )
+    supports_tool_calling: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=false()
     )
     snapshot_version: Mapped[int] = mapped_column(
         UnsignedBigInteger, nullable=False, default=1, server_default="1"

@@ -76,6 +76,7 @@ def _config_response(config: LLMModelConfigDB) -> LLMConfigRead:
         api_base_url=config.api_base_url,
         api_key_masked=_safe_mask_ciphertext(config.api_key),
         is_active=config.is_active,
+        supports_tool_calling=bool(config.supports_tool_calling),
         snapshot_version=config.snapshot_version,
         created_at=config.created_at,
         updated_at=config.updated_at,
@@ -142,6 +143,7 @@ async def create_config(
         api_base_url=str(payload.api_base_url),
         api_key=encrypt_api_key(payload.api_key.get_secret_value().strip()),
         is_active=payload.is_active,
+        supports_tool_calling=payload.supports_tool_calling,
         snapshot_version=1,
     )
     try:

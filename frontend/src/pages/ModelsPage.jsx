@@ -52,6 +52,7 @@ const EMPTY_FORM = {
   api_base_url: "",
   api_key: "",
   is_active: true,
+  supports_tool_calling: false,
 };
 
 function capabilityCount(models, capability) {
@@ -113,6 +114,7 @@ export function ModelsPage() {
       api_base_url: model.api_base_url || "",
       api_key: "",
       is_active: model.is_active !== false,
+      supports_tool_calling: model.supports_tool_calling === true,
     });
     setEditingModel(model);
     setFormError("");
@@ -132,6 +134,7 @@ export function ModelsPage() {
         api_base_url: form.api_base_url.trim(),
         api_key: form.api_key.trim(),
         is_active: form.is_active,
+        supports_tool_calling: form.capability === "CHAT" && form.supports_tool_calling,
       };
       const payload = editingModel ? mutableFields : {
         ...mutableFields,
@@ -256,6 +259,7 @@ export function ModelsPage() {
                   <span>{CAPABILITY_LABELS[model.capability] || model.capability}</span>
                   <span>{model.provider_type}</span>
                   <span>{model.protocol}</span>
+                  {model.supports_tool_calling ? <span>工具调用</span> : null}
                 </div>
                 <div className="model-row__endpoint">
                   <small>API 地址</small>
@@ -368,6 +372,13 @@ export function ModelsPage() {
                   <input type="checkbox" checked={form.is_active} onChange={(event) => updateField("is_active", event.target.checked)} />
                   <i aria-hidden="true" />
                 </label>
+                {form.capability === "CHAT" ? (
+                  <label className="switch-field">
+                    <span><strong>支持工具调用</strong><small>仅在模型实际支持 Tool Calling 时开启；报告 Agent 只展示已开启的模型</small></span>
+                    <input type="checkbox" checked={form.supports_tool_calling} onChange={(event) => updateField("supports_tool_calling", event.target.checked)} />
+                    <i aria-hidden="true" />
+                  </label>
+                ) : null}
               </div>
 
               {formError ? (

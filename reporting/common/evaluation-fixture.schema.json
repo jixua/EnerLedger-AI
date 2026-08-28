@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://enerledger.local/schemas/report-evaluation-fixture.json",
+  "title": "Report Template Evaluation Fixture",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["fixture_id", "template_id", "description", "input_summary", "expected", "prohibited_claims"],
+  "properties": {
+    "fixture_id": {"type": "string", "pattern": "^[a-z0-9-]+$"},
+    "template_id": {"type": "string"},
+    "description": {"type": "string"},
+    "input_summary": {"type": "object"},
+    "expected": {
+      "type": "object",
+      "required": ["field_statuses", "clarification_field_ids"],
+      "properties": {
+        "field_statuses": {"type": "object", "additionalProperties": {"type": "string"}},
+        "clarification_field_ids": {"type": "array", "items": {"type": "string"}, "uniqueItems": true}
+      },
+      "additionalProperties": false
+    },
+    "prohibited_claims": {"type": "array", "items": {"type": "string"}}
+  }
+}

@@ -1,0 +1,32 @@
+{
+  "template_id":"r7-verification","report_type":"R7","version":"1.0.0","name":"核查/验证报告","status":"DRAFT","description":"形成核查范围、程序、发现和意见的待确认草稿。",
+  "applicable_documents":["核查计划和证据记录","温室气体清单核查材料","核查发现和整改记录"],"inapplicable_documents":["没有独立核查委托、核查范围或程序证据的材料"],
+  "fields":[
+    {"id":"verification_body","label":"核查机构名称","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"accreditation_number","label":"认可编号","type":"string","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"client_name","label":"客户名称","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"verification_standard","label":"核查标准","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","KNOWLEDGE_BASE","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"subject_type","label":"核查对象类型","type":"enum","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["GHG清单","产品碳足迹","能源","其他"]},"formula_id":null},
+    {"id":"scope_description","label":"核查范围","type":"text","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"reporting_period","label":"报告期","type":"date_range","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"assurance_level","label":"保证等级","type":"enum","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["有限","合理"]},"formula_id":null},
+    {"id":"materiality_threshold","label":"实质性阈值","type":"number","required":true,"blocking":true,"unit":"%","source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":0,"maximum":10},"formula_id":null},
+    {"id":"team_lead","label":"核查组长","type":"string","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"verification_methods","label":"核查方法","type":"array","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"min_items":1},"formula_id":null},
+    {"id":"sampling_rate","label":"数据抽样率","type":"number","required":false,"blocking":false,"unit":"%","source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":0,"maximum":100},"formula_id":null},
+    {"id":"site_visit_date","label":"现场访问日期","type":"date","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"conformities","label":"符合项","type":"array","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT"],"validation":{},"formula_id":null},
+    {"id":"nonconformities","label":"不符合项","type":"array","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT"],"validation":{},"formula_id":null},
+    {"id":"corrective_actions","label":"整改记录","type":"array","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"verification_opinion","label":"核查意见","type":"enum","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["无实质性偏差","存在实质性偏差","无法表示意见","待核查机构确认"]},"formula_id":null},
+    {"id":"statement_date","label":"声明日期","type":"date","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null}
+  ],
+  "sections":[
+    {"id":"statement_profile","title":"核查声明概况","required":true,"field_ids":["verification_body","client_name","verification_standard","subject_type","reporting_period"],"allowed_blocks":["paragraph","table"]},
+    {"id":"scope_and_assurance","title":"范围、保证等级与实质性","required":true,"field_ids":["scope_description","assurance_level","materiality_threshold"],"allowed_blocks":["paragraph","table"]},
+    {"id":"team_and_methods","title":"核查团队与程序","required":true,"field_ids":["team_lead","verification_methods","sampling_rate","site_visit_date"],"allowed_blocks":["paragraph","table","timeline"]},
+    {"id":"findings_and_actions","title":"核查发现与整改","required":true,"field_ids":["conformities","nonconformities","corrective_actions"],"allowed_blocks":["paragraph","table","callout"]},
+    {"id":"draft_opinion","title":"核查意见草稿","required":true,"field_ids":["verification_opinion","statement_date","accreditation_number"],"allowed_blocks":["paragraph","signature_block","callout"]}
+  ],
+  "calculations":[],"disclaimers":["该产物仅为待核查机构复核和签署的草稿，不构成独立核查声明。","不得生成虚构签名、印章或认可编号。"],"render_profile":"r7-verification-opinion"
+}
