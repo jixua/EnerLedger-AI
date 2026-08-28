@@ -34,6 +34,7 @@ const CAPABILITY_LABELS = Object.fromEntries(
 );
 
 const PROTOCOL_OPTIONS = [
+  { value: "codex_cli", label: "Codex CLI（本地进程）" },
   { value: "openai", label: "OpenAI 兼容" },
   { value: "dashscope", label: "DashScope" },
   { value: "doubao_vision", label: "火山方舟稀疏向量" },
@@ -91,9 +92,23 @@ export function ModelsPage() {
       return matchesCapability && matchesSearch;
     });
   }, [filter, models, search]);
+  const isCodexCli = form.protocol === "codex_cli";
 
   function updateField(name, value) {
-    setForm((current) => ({ ...current, [name]: value }));
+    setForm((current) => {
+      if (name === "protocol" && value === "codex_cli") {
+        return {
+          ...current,
+          protocol: value,
+          provider_type: "codex_cli",
+          model_name: "gpt-5.4-mini",
+          capability: "CHAT",
+          api_base_url: "",
+          api_key: "",
+        };
+      }
+      return { ...current, [name]: value };
+    });
   }
 
   function openCreateForm() {
@@ -128,14 +143,17 @@ export function ModelsPage() {
     setSubmitting(true);
     setFormError("");
     try {
+      const isCodexCli = form.protocol === "codex_cli";
       const mutableFields = {
         display_name: form.display_name.trim() || null,
         model_name: form.model_name.trim(),
-        api_base_url: form.api_base_url.trim(),
-        api_key: form.api_key.trim(),
         is_active: form.is_active,
         supports_tool_calling: form.capability === "CHAT" && form.supports_tool_calling,
       };
+      if (!isCodexCli) {
+        mutableFields.api_base_url = form.api_base_url.trim();
+        mutableFields.api_key = form.api_key.trim();
+      }
       const payload = editingModel ? mutableFields : {
         ...mutableFields,
         provider_type: form.provider_type.trim(),
@@ -149,7 +167,11 @@ export function ModelsPage() {
       setForm(EMPTY_FORM);
       setEditingModel(null);
       setNoticeTone("success");
-      setNotice(editingModel ? "模型配置已更新，新密钥将用于后续请求。" : "模型配置已安全保存，API Key 只以掩码形式展示。");
+      setNotice(editingModel
+        ? "模型配置已更新。"
+        : isCodexCli
+          ? "本地 Codex CLI 对话模式已保存。"
+          : "模型配置已安全保存，API Key 只以掩码形式展示。");
       window.setTimeout(() => setNotice(""), 3200);
     } catch (error) {
       setFormError(error?.message || "模型配置保存失败，请检查协议、能力和必填字段。");
@@ -263,7 +285,7 @@ export function ModelsPage() {
                 </div>
                 <div className="model-row__endpoint">
                   <small>API 地址</small>
-                  <span>{model.api_base_url}</span>
+                  <span>{model.protocol === "codex_cli" ? "本机 Codex CLI" : model.api_base_url}</span>
                 </div>
                 <div className="model-row__actions">
                   <button className="icon-button" type="button" onClick={() => openEditForm(model)} disabled={busyModelId === model.id} title="编辑模型" aria-label={`编辑 ${modelName(model)}`}>
@@ -323,16 +345,16 @@ export function ModelsPage() {
                 <div className="form-grid form-grid--two">
                   <label className="field">
                     <span>服务商</span>
-                    <input required disabled={Boolean(editingModel)} value={form.provider_type} onChange={(event) => updateField("provider_type", event.target.value)} placeholder="deepseek / qwen / doubao" maxLength={32} />
+                    <input required disabled={Boolean(editingModel) || isCodexCli} value={form.provider_type} onChange={(event) => updateField("provider_type", event.target.value)} placeholder="deepseek / qwen / doubao" maxLength={32} />
                   </label>
                   <label className="field">
                     <span>模型名称</span>
-                    <input required value={form.model_name} onChange={(event) => updateField("model_name", event.target.value)} placeholder="官方模型 ID" maxLength={128} />
+                    <input required disabled={isCodexCli} value={form.model_name} onChange={(event) => updateField("model_name", event.target.value)} placeholder="官方模型 ID" maxLength={128} />
                   </label>
                 </div>
                 <label className="field">
                   <span>模型能力</span>
-                  <select disabled={Boolean(editingModel)} value={form.capability} onChange={(event) => updateField("capability", event.target.value)}>
+                  <select disabled={Boolean(editingModel) || isCodexCli} value={form.capability} onChange={(event) => updateField("capability", event.target.value)}>
                     {CAPABILITIES.filter((item) => item.value !== "ALL").map((item) => (
                       <option key={item.value} value={item.value}>{item.label}</option>
                     ))}
@@ -343,7 +365,7 @@ export function ModelsPage() {
               <div className="form-section">
                 <div className="form-section__title">
                   <span>02</span>
-                  <div><h3>连接配置</h3><p>系统将校验接口协议与模型能力。</p></div>
+                  <div><h3>连接配置</h3><p>{isCodexCli ? "复用本机 Codex CLI 登录态，无需 API Key。" : "系统将校验接口协议与模型能力。"}</p></div>
                 </div>
                 <label className="field">
                   <span>接口协议</span>
@@ -353,20 +375,28 @@ export function ModelsPage() {
                     ))}
                   </select>
                 </label>
-                <label className="field">
-                  <span>官方 API 地址</span>
-                  <input required type="url" value={form.api_base_url} onChange={(event) => updateField("api_base_url", event.target.value)} placeholder="https://api.example.com/v1" />
-                </label>
-                <label className="field">
-                  <span>API Key</span>
-                  <span className="secret-control">
-                    <KeyRound size={16} />
-                    <input required={!editingModel} type={showKey ? "text" : "password"} value={form.api_key} onChange={(event) => updateField("api_key", event.target.value)} placeholder={editingModel ? "留空保留当前 API Key" : "输入官方 API Key"} autoComplete="new-password" />
-                    <button type="button" onClick={() => setShowKey((current) => !current)} aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}>
-                      {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
-                    </button>
-                  </span>
-                </label>
+                {isCodexCli ? (
+                  <div className="form-hint">
+                    启动 API 服务的系统中需要安装并登录 Codex CLI。该模式固定使用 GPT-5.4 Mini 和 medium（中等）推理档位。
+                  </div>
+                ) : (
+                  <>
+                    <label className="field">
+                      <span>官方 API 地址</span>
+                      <input required type="url" value={form.api_base_url} onChange={(event) => updateField("api_base_url", event.target.value)} placeholder="https://api.example.com/v1" />
+                    </label>
+                    <label className="field">
+                      <span>API Key</span>
+                      <span className="secret-control">
+                        <KeyRound size={16} />
+                        <input required={!editingModel} type={showKey ? "text" : "password"} value={form.api_key} onChange={(event) => updateField("api_key", event.target.value)} placeholder={editingModel ? "留空保留当前 API Key" : "输入官方 API Key"} autoComplete="new-password" />
+                        <button type="button" onClick={() => setShowKey((current) => !current)} aria-label={showKey ? "隐藏 API Key" : "显示 API Key"}>
+                          {showKey ? <EyeOff size={16} /> : <Eye size={16} />}
+                        </button>
+                      </span>
+                    </label>
+                  </>
+                )}
                 <label className="switch-field">
                   <span><strong>{editingModel ? "启用此配置" : "创建后立即启用"}</strong><small>启用后可被数据集绑定</small></span>
                   <input type="checkbox" checked={form.is_active} onChange={(event) => updateField("is_active", event.target.checked)} />

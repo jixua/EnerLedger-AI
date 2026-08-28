@@ -20,6 +20,7 @@ from app.services.report_dispatch import run_report_dispatch_reconciler
 
 setup_logger()
 
+from app.api.agent import router as agent_router
 from app.api.auth import router as auth_router
 from app.api.crawler import router as crawler_router
 from app.api.datasets import router as datasets_router
@@ -76,10 +77,17 @@ app.add_middleware(
     allow_origins=settings.cors_allow_origins,
     allow_credentials=False,
     allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
-    allow_headers=["Accept", "Authorization", "Content-Type", "X-Request-Id"],
+    allow_headers=[
+        "Accept",
+        "Authorization",
+        "Content-Type",
+        "X-Crawler-Api-Key",
+        "X-Request-Id",
+    ],
     expose_headers=["Location", "X-Request-Id", "X-Document-Version"],
 )
 app.include_router(auth_router)
+app.include_router(agent_router)
 app.include_router(crawler_router)
 app.include_router(llm_router)
 app.include_router(datasets_router)

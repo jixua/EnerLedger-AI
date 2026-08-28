@@ -13,6 +13,7 @@ CORE_TABLES = {
     "dataset",
     "document",
     "document_chunk",
+    "document_folder",
     "llm_config",
     "report_run",
     "report_question",
@@ -29,7 +30,7 @@ from app.rag.models.db_models import Base
 
 actual = set(Base.metadata.tables)
 expected = {
-    "dataset", "document", "document_chunk", "llm_config",
+    "dataset", "document", "document_chunk", "document_folder", "llm_config",
     "report_run", "report_question", "report_artifact",
 }
 if actual != expected:
@@ -58,7 +59,7 @@ from app.rag.models.db_models import Base
 
 actual = set(Base.metadata.tables)
 expected = {
-    "dataset", "document", "document_chunk", "llm_config",
+    "dataset", "document", "document_chunk", "document_folder", "llm_config",
     "report_run", "report_question", "report_artifact",
 }
 if actual != expected:
@@ -83,7 +84,10 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0004_document_parse_quality.py",
         "0005_dataset_vision_config.py",
         "0006_document_dispatch_outbox.py",
-        "0007_report_platform_foundation.py",
+        "0007_crawler_document_review.py",
+        "0007_document_folders.py",
+        "0008_document_folder_hierarchy.py",
+        "0009_report_platform_foundation.py",
     ]
 
     root_revision = runpy.run_path(str(version_files[0]))
@@ -92,7 +96,10 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     parse_quality_revision = runpy.run_path(str(version_files[3]))
     vision_config_revision = runpy.run_path(str(version_files[4]))
     dispatch_outbox_revision = runpy.run_path(str(version_files[5]))
-    report_revision = runpy.run_path(str(version_files[6]))
+    crawler_review_revision = runpy.run_path(str(version_files[6]))
+    folders_revision = runpy.run_path(str(version_files[7]))
+    folder_hierarchy_revision = runpy.run_path(str(version_files[8]))
+    report_revision = runpy.run_path(str(version_files[9]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
@@ -105,15 +112,24 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     assert vision_config_revision["down_revision"] == "0004_document_parse_quality"
     assert dispatch_outbox_revision["revision"] == "0006_document_dispatch_outbox"
     assert dispatch_outbox_revision["down_revision"] == "0005_dataset_vision_config"
-    assert report_revision["revision"] == "0007_report_platform_foundation"
-    assert report_revision["down_revision"] == "0006_document_dispatch_outbox"
+    assert crawler_review_revision["revision"] == "0007_crawler_document_review"
+    assert crawler_review_revision["down_revision"] == "0006_document_dispatch_outbox"
+    assert folders_revision["revision"] == "0007_document_folders"
+    assert folders_revision["down_revision"] == "0006_document_dispatch_outbox"
+    assert folder_hierarchy_revision["revision"] == "0008_document_folder_hierarchy"
+    assert folder_hierarchy_revision["down_revision"] == (
+        "0007_crawler_document_review",
+        "0007_document_folders",
+    )
+    assert report_revision["revision"] == "0009_report_platform_foundation"
+    assert report_revision["down_revision"] == "0008_document_folder_hierarchy"
 
 
-def test_alembic_offline_sql_contains_current_schema() -> None:
+def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
     env = os.environ.copy()
     env["ALEMBIC_DATABASE_URL"] = "mysql+pymysql://user:pass@localhost/minimal_rag_test"
     completed = subprocess.run(
-        [sys.executable, "-m", "alembic", "upgrade", "head", "--sql"],
+        [sys.executable, "-m", "alembic", "upgrade", "heads", "--sql"],
         cwd=PROJECT_ROOT,
         env=env,
         capture_output=True,
@@ -133,6 +149,13 @@ def test_alembic_offline_sql_contains_current_schema() -> None:
     assert "not_applicable" in sql
     assert "alter table dataset add column vision_config_id bigint unsigned" in sql
     assert "alter table document add column dispatch_status varchar(16)" in sql
+    assert "alter table document add column review_status varchar(16)" in sql
+    assert "alter table document add column source_metadata json" in sql
+    assert "idx_document_review_status" in sql
+    assert "create table document_folder" in sql
+    assert "alter table document add column folder_id bigint unsigned" in sql
+    assert "alter table document_folder add column parent_id bigint unsigned" in sql
+    assert "idx_document_folder_parent" in sql
     assert "alter table llm_config add column supports_tool_calling bool" in sql
     assert "create table report_run" in sql
     assert "template_snapshot json not null" in sql
@@ -168,5 +191,13 @@ def test_readable_sql_snapshot_contains_current_chunk_structure_column() -> None
     assert "vision_config_id bigint unsigned null" in sql
     assert "dispatch_status varchar(16) not null" in sql
     assert "idx_document_dispatch_available" in sql
+    assert "review_status varchar(16) not null" in sql
+    assert "source_metadata json null" in sql
+    assert "idx_document_review_status" in sql
+    assert "create table document_folder" in sql
+    assert "folder_id bigint unsigned null" in sql
+    assert "idx_document_folder" in sql
+    assert "parent_id bigint unsigned null" in sql
+    assert "idx_document_folder_parent" in sql
     assert "template_snapshot json not null" in sql
     assert "document_manifest json not null" in sql

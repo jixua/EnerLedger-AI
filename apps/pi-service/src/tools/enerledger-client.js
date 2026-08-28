@@ -6,7 +6,7 @@ export class AgentToolError extends Error {
   }
 }
 
-export function createEnerLedgerClient(config, runId, runToken, signal) {
+export function createEnerLedgerClient(config, runId, signal) {
   async function request(path, options = {}) {
     const combined = AbortSignal.any([signal, AbortSignal.timeout(config.toolTimeoutMs)]);
     const response = await fetch(`${config.backendBaseUrl}${path}`, {
@@ -15,61 +15,54 @@ export function createEnerLedgerClient(config, runId, runToken, signal) {
       headers: {
         Authorization: `Bearer ${config.backendToken}`,
         "Content-Type": "application/json",
-        "X-Report-Run-Token": runToken,
         ...options.headers,
       },
     });
     if (!response.ok) {
-      let code = "REPORT_AGENT_TOOL_FAILED";
+      let code = "AGENT_TOOL_FAILED";
       try {
         const body = await response.json();
         code = body?.detail?.code ?? body?.code ?? code;
       } catch {
-        // Do not expose backend response bodies.
+        // Keep the public error generic.
       }
       throw new AgentToolError(code, response.status);
     }
     return response.json();
   }
 
-  const prefix = `/internal/report-agent/runs/${encodeURIComponent(runId)}`;
   return {
-    readiness: () => request("/internal/report-agent/readiness"),
-    context: () => request(`${prefix}/context`),
-    clarifications: () => request(`${prefix}/clarifications`),
-    template: () => request(`${prefix}/template`),
-    chunks: (cursor = null, limit = 20) => request(`${prefix}/document-chunks`, {
+    readiness: () => request("/internal/agent/readiness"),
+    scope: (query = "", requestedNames = []) => request(`/internal/agent/runs/${encodeURIComponent(runId)}/scope`, {
       method: "POST",
-      body: JSON.stringify({ cursor, limit }),
+      body: JSON.stringify({ query, requested_names: requestedNames }),
     }),
-    searchReferences: (query, limit = 10) => request(`${prefix}/references/search`, {
-      method: "POST",
-      body: JSON.stringify({ query, limit }),
-    }),
-    calculate: (formulaId, inputs, parameters = {}, parameterEvidenceIds = []) => request(`${prefix}/calculate`, {
+    hybridRecall: (query, intent = "fact_lookup", knowledgeBaseRefs = []) => request(`/internal/agent/runs/${encodeURIComponent(runId)}/recall`, {
       method: "POST",
       body: JSON.stringify({
-        formula_id: formulaId,
-        inputs,
-        parameters,
-        parameter_evidence_ids: parameterEvidenceIds,
+        query,
+        intent,
+        knowledge_base_refs: knowledgeBaseRefs,
       }),
     }),
-    checkpoint: (payload) => request(`${prefix}/checkpoint`, {
+    expandEvidence: (evidenceId, before = 1, after = 1) => request(`/internal/agent/runs/${encodeURIComponent(runId)}/evidence/expand`, {
       method: "POST",
-      body: JSON.stringify(payload),
+      body: JSON.stringify({ evidence_id: evidenceId, before, after }),
     }),
-    clarify: (questions) => request(`${prefix}/clarifications`, {
+    documentOutline: ({ evidenceId, documentRef }) => request(`/internal/agent/runs/${encodeURIComponent(runId)}/documents/outline`, {
       method: "POST",
-      body: JSON.stringify({ questions }),
+      body: JSON.stringify({
+        evidence_id: evidenceId ?? null,
+        document_ref: documentRef ?? null,
+      }),
     }),
-    validate: (reportIr) => request(`${prefix}/validate`, {
+    readDocumentSection: (sectionRef, { includeDescendants = true, cursor = null } = {}) => request(`/internal/agent/runs/${encodeURIComponent(runId)}/documents/sections/read`, {
       method: "POST",
-      body: JSON.stringify({ report_ir: reportIr }),
-    }),
-    submit: (reportIr, coverage) => request(`${prefix}/submit`, {
-      method: "POST",
-      body: JSON.stringify({ report_ir: reportIr, coverage }),
+      body: JSON.stringify({
+        section_ref: sectionRef,
+        include_descendants: includeDescendants,
+        cursor,
+      }),
     }),
   };
 }

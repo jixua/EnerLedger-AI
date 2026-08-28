@@ -78,6 +78,7 @@ RUN mkdir -p "${NLTK_DATA}/tokenizers" "${NLTK_DATA}/corpora" \
 
 COPY source/README.md ./
 COPY source/app ./app
+COPY source/reporting ./reporting
 
 RUN --mount=type=cache,id=enerledger-uv,target=/root/.cache/uv,sharing=locked \
     uv pip install --system --link-mode=copy --no-deps .

@@ -24,7 +24,7 @@ UnsignedBigInteger = BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mys
 
 
 class Base(DeclarativeBase):
-    """四张核心业务表共用的声明基类。"""
+    """当前核心业务表共用的声明基类。"""
 
 
 class LLMModelConfigDB(Base):

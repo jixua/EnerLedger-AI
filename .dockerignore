@@ -2,8 +2,9 @@
 .gitignore
 .venv
 node_modules
-frontend/node_modules
 apps/pi-service/node_modules
+third_party/pi/node_modules
+frontend/node_modules
 .pytest_cache
 .ruff_cache
 __pycache__

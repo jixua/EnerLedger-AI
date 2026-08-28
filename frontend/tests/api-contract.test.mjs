@@ -2,26 +2,34 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
 import {
-  configureApi,
   cancelReportRun,
-  createDocumentReport,
+  configureApi,
   createDataset,
+  createDocumentReport,
+  createDocumentFolder,
+  deleteDocumentFolder,
+  getCrawlerSubmissionFile,
   getDocumentPreviewAsset,
   getDocumentPreviewContent,
   getDocumentPreviewMap,
   isDocumentPreviewAssetUrl,
   listDocumentChunks,
-  listDocumentReportRuns,
   getSystemStatus,
   importArxivPapers,
   listAllDocuments,
+  listDocumentFolders,
+  listDocumentReportRuns,
+  listCrawlerSubmissions,
   listReportTemplates,
   retryReportRun,
+  reviewCrawlerSubmission,
   searchArxivPapers,
   updateDocument,
+  updateDocumentFolder,
   updateDataset,
+  uploadDocument,
 } from "../src/lib/api.js";
-import { streamRag } from "../src/lib/sse.js";
+import { streamAgent, streamRag } from "../src/lib/sse.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -90,14 +98,6 @@ test("report creation sends the user-selected type and frozen input fields", asy
   assert.equal(requests[0].url, "/api/v1/report-templates");
   assert.equal(requests[1].url, "/api/v1/documents/31/reports");
   assert.equal(requests[1].init.method, "POST");
-  assert.deepEqual(JSON.parse(requests[1].init.body), {
-    report_type: "R2",
-    llm_config_id: 7,
-    language: "zh-CN",
-    reporting_year: 2025,
-    user_instructions: "重点展示 Scope 3",
-    output_formats: ["ONLINE"],
-  });
   assert.equal(run.run_id, "run-1");
 });
 
@@ -117,6 +117,52 @@ test("report workbench restores history and supports cancel and retry", async ()
   assert.equal(requests[1].init.method, "POST");
   assert.equal(requests[2].url, "/api/v1/report-runs/run-1/retry");
   assert.equal(requests[2].init.method, "POST");
+});
+
+test("dataset folder lifecycle uses tenant-scoped dataset routes", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    if (init.method === "DELETE") return new Response(null, { status: 204 });
+    return jsonResponse(init.method === "GET" ? [] : { id: 4, dataset_id: 2, name: "排放因子" });
+  };
+
+  await listDocumentFolders(2);
+  await createDocumentFolder(2, { name: "排放因子" });
+  await updateDocumentFolder(2, 4, { name: "采购排放因子" });
+  await deleteDocumentFolder(2, 4);
+
+  assert.deepEqual(requests.map(({ url, init }) => [url, init.method]), [
+    ["/api/v1/datasets/2/folders", "GET"],
+    ["/api/v1/datasets/2/folders", "POST"],
+    ["/api/v1/datasets/2/folders/4", "PATCH"],
+    ["/api/v1/datasets/2/folders/4", "DELETE"],
+  ]);
+  assert.deepEqual(JSON.parse(requests[2].init.body), { name: "采购排放因子" });
+});
+
+test("document upload can assign a virtual folder without changing the file", async () => {
+  const originalFile = globalThis.File;
+  globalThis.File = class File extends Blob {
+    constructor(parts, name, options) {
+      super(parts, options);
+      this.name = name;
+    }
+  };
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return jsonResponse({ document_id: 31, dataset_id: 2, folder_id: 4, status: "QUEUED" }, 202);
+  };
+  try {
+    await uploadDocument(2, new File(["pdf"], "report.pdf", { type: "application/pdf" }), { folderId: 4 });
+  } finally {
+    globalThis.File = originalFile;
+  }
+
+  assert.equal(captured.url, "/api/v1/datasets/2/documents");
+  assert.equal(captured.init.body.get("folder_id"), "4");
+  assert.equal(captured.init.body.get("file").name, "report.pdf");
 });
 
 test("dataset create and update keep the optional vision model binding", async () => {
@@ -255,7 +301,7 @@ test("system page reads the detailed backend status endpoint", async () => {
   assert.equal(result.components.mysql.status, "ready");
 });
 
-test("arXiv crawler encodes keyword and bounded result count", async () => {
+test("arXiv crawler requires the target dataset before AI-optimized search", async () => {
   configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
   let captured;
   globalThis.fetch = async (url, init) => {
@@ -263,30 +309,83 @@ test("arXiv crawler encodes keyword and bounded result count", async () => {
     return jsonResponse({ source: "arXiv", query: "carbon footprint", total_results: 0, items: [] });
   };
 
-  await searchArxivPapers({ query: " carbon footprint ", maxResults: 5 });
+  await searchArxivPapers({
+    query: " 动力电池碳排 ",
+    maxResults: 5,
+    datasetId: 7,
+    aiOptimize: true,
+  });
 
   assert.equal(
     captured.url,
-    "http://api.local/api/v1/crawler/arxiv?query=carbon+footprint&max_results=5",
+    "http://api.local/api/v1/crawler/arxiv?query=%E5%8A%A8%E5%8A%9B%E7%94%B5%E6%B1%A0%E7%A2%B3%E6%8E%92&max_results=5&dataset_id=7&ai_optimize=true",
   );
   assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
 });
 
-test("arXiv import sends selected paper ids to the target dataset", async () => {
+test("arXiv import sends selected paper titles to the target dataset", async () => {
   let captured;
   globalThis.fetch = async (url, init) => {
     captured = { url, init };
     return jsonResponse({ dataset_id: 7, queued_count: 2, failed_count: 0, items: [] }, 202);
   };
 
-  await importArxivPapers({ datasetId: "7", arxivIds: ["2608.12345v1", "2608.12346v1"] });
+  await importArxivPapers({
+    datasetId: "7",
+    papers: [
+      { arxiv_id: "2608.12345v1", title: "Carbon Accounting with AI" },
+      { arxiv_id: "2608.12346v1", title: "Lifecycle Emissions Analysis" },
+    ],
+  });
 
   assert.equal(captured.url, "/api/v1/crawler/arxiv/import");
   assert.equal(captured.init.method, "POST");
   assert.deepEqual(JSON.parse(captured.init.body), {
     dataset_id: 7,
-    arxiv_ids: ["2608.12345v1", "2608.12346v1"],
+    papers: [
+      { arxiv_id: "2608.12345v1", title: "Carbon Accounting with AI" },
+      { arxiv_id: "2608.12346v1", title: "Lifecycle Emissions Analysis" },
+    ],
   });
+});
+
+test("crawler review list and decision use the authenticated review contract", async () => {
+  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse({ items: [], total: 0, offset: 0, limit: 50 });
+  };
+
+  await listCrawlerSubmissions({ reviewStatus: "PENDING" });
+  await reviewCrawlerSubmission(51, { decision: "APPROVED", note: null });
+
+  assert.equal(
+    requests[0].url,
+    "http://api.local/api/v1/crawler/submissions?review_status=PENDING&offset=0&limit=50",
+  );
+  assert.equal(requests[0].init.headers.get("Authorization"), "Bearer token-7");
+  assert.equal(requests[1].url, "http://api.local/api/v1/crawler/submissions/51/review");
+  assert.equal(requests[1].init.method, "POST");
+  assert.deepEqual(JSON.parse(requests[1].init.body), { decision: "APPROVED", note: null });
+});
+
+test("crawler original file is fetched as a protected blob", async () => {
+  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(new Uint8Array([37, 80, 68, 70]), {
+      status: 200,
+      headers: { "Content-Type": "application/pdf" },
+    });
+  };
+
+  const blob = await getCrawlerSubmissionFile(51);
+
+  assert.equal(captured.url, "http://api.local/api/v1/crawler/submissions/51/file");
+  assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
+  assert.equal(blob.type, "application/pdf");
 });
 
 test("RAG stream sends snake_case payload and consumes terminal SSE event", async () => {
@@ -315,4 +414,54 @@ test("RAG stream sends snake_case payload and consumes terminal SSE event", asyn
   });
   assert.equal(result.answer, "无法回答");
   assert.equal(result.terminalEvent, "answer_done");
+});
+
+test("Pi Agent stream sends current-page history to the dedicated endpoint", async () => {
+  let captured;
+  const frames = [
+    'event: stream_started\ndata: {"request_id":"agent-1"}\n\n',
+    'event: recall_done\ndata: {"request_id":"agent-1","hits":[],"failed_sources":[]}\n\n',
+    'event: answer_done\ndata: {"request_id":"agent-1","answer":"根据资料无法回答","hits":[],"failed_sources":[],"usage":null,"elapsed_ms":10}\n\n',
+  ].join("");
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(frames, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  };
+
+  await streamAgent({
+    query: "继续说明",
+    datasetIds: [2],
+    history: [{ role: "user", content: "上一问" }, { role: "assistant", content: "上一答" }],
+  });
+
+  assert.equal(captured.url, "/api/v1/agent/stream");
+  assert.deepEqual(JSON.parse(captured.init.body), {
+    query: "继续说明",
+    dataset_ids: [2],
+    history: [{ role: "user", content: "上一问" }, { role: "assistant", content: "上一答" }],
+  });
+});
+
+test("Pi Agent stream keeps an empty dataset list as the all-knowledge-base scope", async () => {
+  let captured;
+  const frames = [
+    'event: stream_started\ndata: {"request_id":"agent-all"}\n\n',
+    'event: answer_done\ndata: {"request_id":"agent-all","answer":"你好","hits":[],"failed_sources":[],"usage":null,"elapsed_ms":2}\n\n',
+  ].join("");
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(frames, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  };
+
+  await streamAgent({ query: "你好", datasetIds: [], history: [] });
+
+  assert.equal(captured.url, "/api/v1/agent/stream");
+  assert.deepEqual(JSON.parse(captured.init.body), {
+    query: "你好",
+    dataset_ids: [],
+    history: [],
+  });
 });

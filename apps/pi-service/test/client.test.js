@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { createEnerLedgerClient } from "../src/tools/enerledger-client.js";
+import { createEnerLedgerClient } from "../src/tools/report-client.js";
 
 test("tool client binds every request to run id and short-lived run token", async () => {
   const originalFetch = globalThis.fetch;

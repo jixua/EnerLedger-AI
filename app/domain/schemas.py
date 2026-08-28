@@ -55,31 +55,55 @@ class ArxivPaper(BaseModel):
 class ArxivSearchResponse(BaseModel):
     source: Literal["arXiv"] = "arXiv"
     query: str
+    optimized_query: str
+    search_query: str
+    optimization_mode: Literal["AI", "RULES"]
+    optimization_model: str | None = None
+    optimization_warning: str | None = None
     total_results: int
     fetched_at: datetime
     items: list[ArxivPaper]
 
 
-class ArxivImportRequest(BaseModel):
-    dataset_id: int = Field(gt=0)
-    arxiv_ids: list[str] = Field(min_length=1, max_length=10)
+class ArxivImportPaper(BaseModel):
+    arxiv_id: str
+    title: str = Field(min_length=1, max_length=500)
 
-    @field_validator("arxiv_ids")
+    @field_validator("arxiv_id")
     @classmethod
-    def validate_arxiv_ids(cls, values: list[str]) -> list[str]:
+    def validate_arxiv_id(cls, value: str) -> str:
         pattern = re.compile(
             r"^(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z]{2})?/\d{7})(?:v\d+)?$",
             re.IGNORECASE,
         )
-        normalized: list[str] = []
-        for value in values:
-            arxiv_id = value.strip()
-            if not pattern.fullmatch(arxiv_id):
-                raise ValueError(f"无效的 arXiv ID：{value}")
-            if arxiv_id not in normalized:
-                normalized.append(arxiv_id)
-        if not normalized:
-            raise ValueError("至少选择一篇论文")
+        arxiv_id = value.strip()
+        if not pattern.fullmatch(arxiv_id):
+            raise ValueError(f"无效的 arXiv ID：{value}")
+        return arxiv_id
+
+    @field_validator("title")
+    @classmethod
+    def strip_title(cls, value: str) -> str:
+        title = value.strip()
+        if not title:
+            raise ValueError("论文标题不能为空")
+        return title
+
+
+class ArxivImportRequest(BaseModel):
+    dataset_id: int = Field(gt=0)
+    papers: list[ArxivImportPaper] = Field(min_length=1, max_length=10)
+
+    @field_validator("papers")
+    @classmethod
+    def deduplicate_papers(cls, values: list[ArxivImportPaper]) -> list[ArxivImportPaper]:
+        normalized: list[ArxivImportPaper] = []
+        seen_ids: set[str] = set()
+        for paper in values:
+            if paper.arxiv_id in seen_ids:
+                continue
+            seen_ids.add(paper.arxiv_id)
+            normalized.append(paper)
         return normalized
 
 
@@ -179,23 +203,82 @@ class DatasetRead(BaseModel):
     updated_at: datetime
 
 
+class DocumentFolderCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=64)
+    parent_id: int | None = Field(default=None, gt=0)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("文件夹名称不能为空")
+        if "/" in normalized or "\\" in normalized:
+            raise ValueError("文件夹名称不能包含路径分隔符")
+        return normalized
+
+
+class DocumentFolderUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=64)
+    parent_id: int | None = Field(default=None, gt=0)
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("文件夹名称不能为空")
+        if "/" in normalized or "\\" in normalized:
+            raise ValueError("文件夹名称不能包含路径分隔符")
+        return normalized
+
+    @model_validator(mode="after")
+    def validate_patch_fields(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("至少需要更新一个字段")
+        return self
+
+
+class DocumentFolderRead(BaseModel):
+    id: int
+    dataset_id: int
+    parent_id: int | None
+    name: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class DocumentUpdate(BaseModel):
     """文档展示属性的部分更新；不改变原文件对象与解析格式。"""
 
-    filename: str = Field(min_length=1, max_length=255)
+    filename: str | None = Field(default=None, min_length=1, max_length=255)
+    folder_id: int | None = Field(default=None, gt=0)
 
     @field_validator("filename")
     @classmethod
-    def normalize_filename(cls, value: str) -> str:
+    def normalize_filename(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
         value = PurePath(value.strip()).name
         if not value:
             raise ValueError("文件名不能为空")
         return value
 
+    @model_validator(mode="after")
+    def validate_patch_fields(self) -> Self:
+        if not self.model_fields_set:
+            raise ValueError("至少需要更新一个字段")
+        if "filename" in self.model_fields_set and self.filename is None:
+            raise ValueError("filename 不能为 null")
+        return self
+
 
 class DocumentRead(BaseModel):
     document_id: int
     dataset_id: int
+    folder_id: int | None
     filename: str
     file_type: str
     file_size: int
@@ -217,9 +300,55 @@ class DocumentRead(BaseModel):
     parse_time_ms: int | None
     parse_quality_status: str | None
     parse_quality: dict[str, Any] | None
+    source_type: str
+    source_url: str | None
+    source_title: str | None
+    source_metadata: dict[str, Any] | None
+    review_status: str
+    review_note: str | None
+    reviewed_at: datetime | None
     retrieval_ready: bool
     created_at: datetime
     updated_at: datetime
+
+
+class CrawlerSubmissionRead(BaseModel):
+    document_id: int
+    dataset_id: int
+    dataset_name: str
+    filename: str
+    file_type: str
+    file_size: int
+    content_type: str | None
+    document_status: str
+    source_type: str
+    source_url: str | None
+    source_title: str | None
+    source_metadata: dict[str, Any] | None
+    review_status: Literal["PENDING", "APPROVED", "REJECTED"]
+    review_note: str | None
+    reviewed_at: datetime | None
+    created_at: datetime
+
+
+class CrawlerSubmissionPage(BaseModel):
+    items: list[CrawlerSubmissionRead]
+    total: int
+    offset: int
+    limit: int
+
+
+class CrawlerReviewRequest(BaseModel):
+    decision: Literal["APPROVED", "REJECTED"]
+    note: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("note")
+    @classmethod
+    def normalize_note(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        stripped = value.strip()
+        return stripped or None
 
 
 class DocumentChunkRead(BaseModel):
@@ -297,8 +426,8 @@ class LLMConfigCreate(BaseModel):
     display_name: str | None = Field(default=None, max_length=128)
     capability: Capability
     protocol: ProtocolName
-    api_base_url: AnyHttpUrl
-    api_key: SecretStr
+    api_base_url: AnyHttpUrl | None = None
+    api_key: SecretStr | None = None
     is_active: bool = True
     supports_tool_calling: bool = False
 
@@ -328,10 +457,26 @@ class LLMConfigCreate(BaseModel):
 
     @field_validator("api_key")
     @classmethod
-    def reject_empty_api_key(cls, value: SecretStr) -> SecretStr:
-        if not value.get_secret_value().strip():
+    def reject_empty_api_key(cls, value: SecretStr | None) -> SecretStr | None:
+        if value is not None and not value.get_secret_value().strip():
             raise ValueError("API Key 不能为空")
         return value
+
+    @model_validator(mode="after")
+    def validate_connection_fields(self) -> Self:
+        if self.protocol == "codex_cli":
+            if self.capability != "CHAT":
+                raise ValueError("Codex CLI 本地模式仅支持 CHAT 能力")
+            if self.model_name != "gpt-5.4-mini":
+                raise ValueError("Codex CLI 本地模式固定使用 gpt-5.4-mini")
+            if self.api_base_url is not None or self.api_key is not None:
+                raise ValueError("Codex CLI 本地模式不接受 API 地址或 API Key")
+            return self
+        if self.api_base_url is None:
+            raise ValueError("远程模型必须提供 API 地址")
+        if self.api_key is None:
+            raise ValueError("远程模型必须提供 API Key")
+        return self
 
 
 class LLMConfigUpdate(BaseModel):

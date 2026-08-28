@@ -29,7 +29,9 @@ else:
     raise RuntimeError("unreachable")
 PY
 
-alembic upgrade head
+# dev 可同时接收多个从 master 派生的独立候选迁移；
+# 逐个应用所有 head，避免后合并的候选分支阻断 API 启动。
+alembic upgrade heads
 
 exec uvicorn app.main:app \
     --host "${APP_HOST:-0.0.0.0}" \

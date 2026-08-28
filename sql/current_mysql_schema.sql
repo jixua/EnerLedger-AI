@@ -55,10 +55,25 @@ CREATE TABLE IF NOT EXISTS `dataset` (
   KEY `idx_dataset_user_updated` (`user_id`,`updated_at`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE IF NOT EXISTS `document_folder` (
+  `id` bigint unsigned NOT NULL AUTO_INCREMENT,
+  `dataset_id` bigint unsigned NOT NULL,
+  `user_id` bigint unsigned NOT NULL,
+  `parent_id` bigint unsigned DEFAULT NULL,
+  `name` varchar(64) COLLATE utf8mb4_unicode_ci NOT NULL,
+  `created_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  `updated_at` datetime NOT NULL DEFAULT CURRENT_TIMESTAMP,
+  PRIMARY KEY (`id`),
+  UNIQUE KEY `uk_document_folder_user_dataset_name` (`user_id`,`dataset_id`,`name`),
+  KEY `idx_document_folder_dataset` (`user_id`,`dataset_id`,`created_at`),
+  KEY `idx_document_folder_parent` (`dataset_id`,`parent_id`,`id`)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE IF NOT EXISTS `document` (
   `id` bigint unsigned NOT NULL AUTO_INCREMENT,
   `dataset_id` bigint unsigned NOT NULL,
   `user_id` bigint unsigned NOT NULL,
+  `folder_id` bigint unsigned DEFAULT NULL,
   `filename` varchar(255) COLLATE utf8mb4_unicode_ci NOT NULL,
   `file_type` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL,
   `file_size` bigint unsigned NOT NULL,
@@ -94,13 +109,23 @@ CREATE TABLE IF NOT EXISTS `document` (
   `dispatch_lease_token` varchar(64) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
   `dispatch_lease_expires_at` datetime DEFAULT NULL,
   `dispatch_error` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `source_type` varchar(32) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'MANUAL_UPLOAD',
+  `source_url` varchar(1024) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `source_title` varchar(512) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `source_metadata` json DEFAULT NULL,
+  `review_status` varchar(16) COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT 'NOT_REQUIRED',
+  `review_note` varchar(1000) COLLATE utf8mb4_unicode_ci DEFAULT NULL,
+  `reviewed_by_user_id` bigint unsigned DEFAULT NULL,
+  `reviewed_at` datetime DEFAULT NULL,
   PRIMARY KEY (`id`),
   KEY `idx_document_dataset_created` (`dataset_id`,`created_at`),
   KEY `idx_document_user_status` (`user_id`,`status`),
   KEY `idx_document_queue_available` (`status`,`available_at`,`id`),
   KEY `idx_document_lease_expiry` (`status`,`lease_expires_at`,`id`),
   KEY `idx_document_dispatch_available`
-    (`dispatch_status`,`dispatch_available_at`,`id`)
+    (`dispatch_status`,`dispatch_available_at`,`id`),
+  KEY `idx_document_review_status` (`user_id`,`review_status`,`created_at`),
+  KEY `idx_document_folder` (`folder_id`,`id`)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE IF NOT EXISTS `document_chunk` (

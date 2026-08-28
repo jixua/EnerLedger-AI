@@ -108,6 +108,14 @@ class Settings(BaseSettings):
     JWT_AUDIENCE: str = "energy-carbon-web"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=480, ge=5, le=10080)
 
+    # 独立 Pi Agent 服务。浏览器只访问 FastAPI；两枚令牌分别保护双向服务调用。
+    AGENT_ENABLED: bool = False
+    PI_SERVICE_BASE_URL: str = "http://127.0.0.1:8010"
+    PI_SERVICE_TOKEN: str = ""
+    ENERLEDGER_INTERNAL_AGENT_TOKEN: str = ""
+    AGENT_RUN_TIMEOUT_SECONDS: int = Field(default=120, ge=10, le=900)
+    AGENT_TOOL_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
+
     # ==========================================
     # 召回执行配置 (Recall Pipeline)
     # ==========================================
@@ -239,6 +247,14 @@ class Settings(BaseSettings):
     # 召回融合并回填片段正文后，拼装生成上下文的 token 预算上限。片段按融合分数
     # 从高到低纳入，累计超过该预算即截断尾部低分片段（见 recall_stream_runtime 生成段）。
     RECALL_GENERATION_CONTEXT_TOKEN_BUDGET: int = 4000
+
+    # 本机 Codex CLI 对话协议。它复用当前操作系统中的 Codex 登录态，仅适用于
+    # API 进程能够直接执行该二进制的本机/受控环境。
+    CODEX_CLI_PATH: str = "codex"
+    CODEX_CLI_WORKDIR: str = "/tmp/enerledger-codex-cli"
+    CODEX_CLI_REASONING_EFFORT: str = "medium"
+    CODEX_CLI_TIMEOUT_MS: int = Field(default=300000, ge=10000, le=1800000)
+    CODEX_CLI_MAX_CONCURRENCY: int = Field(default=1, ge=1, le=8)
 
     # ==========================================
     # 企业文档分析 (Enterprise Document Analysis)
@@ -620,7 +636,9 @@ class Settings(BaseSettings):
     PARSE_TEMP_DIR: str = "/tmp/tolink-rag-parse"
 
     STORAGE_TYPE: str = "minio"  # minio / local
-    DOCUMENT_UPLOAD_MAX_BYTES: int = Field(default=100 * 1024 * 1024, gt=0)
+    DOCUMENT_UPLOAD_MAX_BYTES: int = Field(default=128 * 1024 * 1024, gt=0)
+    # 第三方爬虫上传专用凭证；为空时关闭外部上传入口。
+    CRAWLER_UPLOAD_API_KEY: str = ""
     # RabbitMQ 主动投递；MySQL document 表保留 lease 与重试状态。
     DOCUMENT_QUEUE_LEASE_SECONDS: int = Field(default=300, gt=0)
     DOCUMENT_QUEUE_HEARTBEAT_SECONDS: int = Field(default=30, gt=0)
@@ -641,7 +659,6 @@ class Settings(BaseSettings):
     REPORT_QUEUE_RETRY_DELAYS_SECONDS: str = "30,120,600"
     REPORT_PROCESSOR_MODE: str = "disabled"
     PI_SERVICE_URL: str = "http://127.0.0.1:8010"
-    PI_SERVICE_TOKEN: str = ""
     REPORT_AGENT_INTERNAL_TOKEN: str = ""
     REPORT_AGENT_RUN_TOKEN_SECRET: str = ""
     REPORT_AGENT_RUN_TOKEN_TTL_SECONDS: int = Field(default=900, ge=60, le=3600)
@@ -782,6 +799,19 @@ class Settings(BaseSettings):
             raise ValueError("REPORT_QUEUE_RETRY_DELAYS_SECONDS must contain non-negative integers")
         if self.OPENDATALOADER_TABLE_METHOD not in {"default", "cluster"}:
             raise ValueError("OPENDATALOADER_TABLE_METHOD must be default or cluster")
+        if self.AGENT_ENABLED:
+            tokens = (self.PI_SERVICE_TOKEN, self.ENERLEDGER_INTERNAL_AGENT_TOKEN)
+            if any(len(token.strip()) < 32 for token in tokens):
+                raise ValueError("Agent service tokens must contain at least 32 characters")
+            if self.PI_SERVICE_TOKEN == self.ENERLEDGER_INTERNAL_AGENT_TOKEN:
+                raise ValueError("Agent service tokens must be different")
+            if self.APP_ENV.lower() == "production" and any(
+                "local-token" in token.lower() or "change-me" in token.lower()
+                for token in tokens
+            ):
+                raise ValueError("Production Agent service tokens must not use placeholders")
+            if not self.PI_SERVICE_BASE_URL.startswith(("http://", "https://")):
+                raise ValueError("PI_SERVICE_BASE_URL must use HTTP(S)")
         return self
 
     @field_validator("RAW_MARKDOWN_IMAGE_MAX_BYTES")

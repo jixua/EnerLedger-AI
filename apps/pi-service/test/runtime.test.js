@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { assertSafeModelEndpoint, normalizeModelBaseUrl } from "../src/runtime/agent.js";
+import { assertSafeModelEndpoint, normalizeModelBaseUrl } from "../src/runtime/report-agent.js";
 
 test("OpenAI-compatible model endpoint is normalized for Pi runtime", () => {
   assert.equal(
