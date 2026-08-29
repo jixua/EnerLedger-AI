@@ -12,7 +12,7 @@ import { fileURLToPath } from "node:url";
 import { createEnerLedgerClient } from "../tools/enerledger-client.js";
 
 const SYSTEM_PROMPT = `你是能碳会计 AI 智能体的知识库 Agent，只能服务当前已授权运行。
-每轮必须先读取 knowledge-rag/SKILL.md 并遵循其检索、引用和安全规则。
+系统会在每轮开始前加载知识库工作流；你必须遵循其中的检索、引用和安全规则。
 寒暄、能力介绍和纯交互请求无需检索；回答资料、政策、标准或核算依据前必须调用 hybrid_recall。
 当召回片段上下文不完整、指代不清、公式或表格被截断时调用 expand_evidence。
 当用户要求总结整篇、梳理结构、跨章节比较或完整阅读时，先调用 get_document_outline，再按需调用 read_document_section；未读完分页时不得声称已读全文。
@@ -28,6 +28,13 @@ const WORKFLOW_PATHS = [
   name,
   path: fileURLToPath(new URL(`../../resources/skills/${name}/SKILL.md`, import.meta.url)),
 }));
+
+async function loadWorkflowText() {
+  const workflows = await Promise.all(
+    WORKFLOW_PATHS.map(async ({ name, path }) => `\n<!-- ${name} -->\n${await readFile(path, "utf8")}`),
+  );
+  return workflows.join("\n");
+}
 
 const objectSchema = (properties, required = []) => ({
   type: "object",
@@ -103,7 +110,8 @@ export async function executeAgentRun({ config, runId, content, history, model, 
   const startedAt = Date.now();
   const client = createEnerLedgerClient(config, runId, signal);
   const { modelRuntime, model: resolvedModel } = await configuredModel(model);
-  let skillRead = false;
+  const workflowText = await loadWorkflowText();
+  let skillRead = Boolean(workflowText.trim());
   let lastRecall = { hits: [], failed_sources: [], elapsed_ms: 0 };
   const allHitsByEvidence = new Map();
   let finalText = "";
@@ -139,12 +147,9 @@ export async function executeAgentRun({ config, runId, content, history, model, 
     description: "读取唯一允许的知识库问答 Skill。",
     parameters: objectSchema({}),
     execute: async () => {
-      const workflows = await Promise.all(
-        WORKFLOW_PATHS.map(async ({ name, path }) => `\n<!-- ${name} -->\n${await readFile(path, "utf8")}`),
-      );
       skillRead = true;
       return {
-        content: [{ type: "text", text: workflows.join("\n") }],
+        content: [{ type: "text", text: workflowText }],
         details: { skills: WORKFLOW_PATHS.map(({ name }) => name) },
       };
     },
@@ -292,7 +297,7 @@ export async function executeAgentRun({ config, runId, content, history, model, 
     cwd: process.cwd(),
     agentDir: fileURLToPath(new URL("../../resources/", import.meta.url)),
     settingsManager,
-    systemPromptOverride: () => SYSTEM_PROMPT,
+    systemPromptOverride: () => `${SYSTEM_PROMPT}\n\n<knowledge_workflows>${workflowText}\n</knowledge_workflows>`,
   });
   await resourceLoader.reload();
   const { session } = await createAgentSession({

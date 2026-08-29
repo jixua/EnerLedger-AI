@@ -172,20 +172,10 @@ test("Pi runtime reads workflow, runs hybrid recall and emits cited answer", asy
 test("Pi runtime can answer a greeting without recall", async () => {
   let modelCalls = 0;
   const modelServer = await listen(async (request, response) => {
-    await readJson(request);
+    const body = await readJson(request);
     modelCalls += 1;
-    if (modelCalls === 1) {
-      streamCompletion(response, {
-        role: "assistant",
-        tool_calls: [{
-          index: 0,
-          id: "read-workflow",
-          type: "function",
-          function: { name: "read_knowledge_workflow", arguments: "{}" },
-        }],
-      }, "tool_calls");
-      return;
-    }
+    assert.match(body.messages[0].content, /knowledge_workflows/);
+    assert.match(body.messages[0].content, /knowledge-rag/);
     streamCompletion(response, { role: "assistant", content: "你好，我可以帮你检索能碳资料。" }, "stop");
   });
   const emitted = [];
@@ -214,7 +204,7 @@ test("Pi runtime can answer a greeting without recall", async () => {
   } finally {
     await new Promise((resolve) => modelServer.close(resolve));
   }
-  assert.equal(modelCalls, 2);
+  assert.equal(modelCalls, 1);
   assert.deepEqual(emitted.map((event) => event.type), ["answer_delta", "answer_done"]);
   assert.deepEqual(emitted[1].data.hits, []);
 });
