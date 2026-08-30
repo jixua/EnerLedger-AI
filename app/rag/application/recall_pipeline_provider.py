@@ -10,10 +10,8 @@ retriever 与 storage facade，单例化主要是为了与 ``recall_pipeline`` �
 
 from __future__ import annotations
 
-import asyncio
 import time
 from functools import lru_cache
-from importlib import import_module
 from typing import cast
 
 from app.rag.config import settings
@@ -95,20 +93,6 @@ _BUILDERS = {
 def _enabled_sources() -> list[str]:
     raw = settings.RECALL_ENABLED_SOURCES or ""
     return [s.strip() for s in raw.split(",") if s.strip()]
-
-
-@lru_cache(maxsize=1)
-def _prewarm_vector_query_runtime() -> None:
-    """在 API 就绪前完成 Dense/Sparse 查询路径的重型懒加载。
-
-    Dense 首次查询会导入完整 splitter factory，并初始化
-    tiktoken 编码器。这些同步工作在冷启动时可长时间占用
-    事件循环，必须在应用开始接收流量前完成。
-    """
-
-    import_module("app.rag.core.encoding.sparse.factory")
-    splitter_factory = import_module("app.rag.core.splitter.factory")
-    splitter_factory.Tokenizer()
 
 
 def _build_pipeline() -> RecallPipeline:
@@ -233,12 +217,6 @@ async def prewarm_recall_pipeline() -> None:
 
     started_at = time.monotonic()
     get_recall_pipeline()
-    vector_started_at = time.monotonic()
-    await asyncio.to_thread(_prewarm_vector_query_runtime)
-    logger.info(
-        "[RecallPipeline] vector query runtime prewarm completed elapsed_ms={}",
-        int((time.monotonic() - vector_started_at) * 1000),
-    )
     if SOURCE_BM25 in _enabled_sources():
         try:
             await _get_bm25_retriever().warmup()
@@ -260,7 +238,6 @@ async def close_recall_pipeline_resources() -> None:
     _get_vector_recall_facade.cache_clear()
     _get_bm25_retriever.cache_clear()
     await close_process_query_tokenizer()
-    _prewarm_vector_query_runtime.cache_clear()
     get_recall_pipeline.cache_clear()
     get_reranker.cache_clear()
 
