@@ -37,6 +37,11 @@ from app.api.system import router as system_router
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_database()
+    from app.rag.application.recall_pipeline_provider import (
+        prewarm_recall_pipeline,
+    )
+
+    await prewarm_recall_pipeline()
     dispatch_stop = asyncio.Event()
     dispatch_task = asyncio.create_task(
         run_document_dispatch_reconciler(dispatch_stop),
