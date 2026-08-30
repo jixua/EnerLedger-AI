@@ -142,6 +142,9 @@ class Settings(BaseSettings):
     RECALL_DENSE_TOP_K: int = 100
     RECALL_SPARSE_TOP_K: int = 50
     RECALL_BM25_TOP_K: int = 100
+    # Infinity 查询分词独立进程的单路上限。超时时仅 BM25
+    # 降级，不影响 Sparse/Dense 召回和 API 事件循环。
+    BM25_QUERY_TOKENIZE_TIMEOUT_SECONDS: float = Field(default=8.0, gt=0, le=60)
     # Wiki 标题搜索由服务端固定分页；客户端不能覆盖。
     WIKI_SEARCH_PAGE_SIZE: int = 15
     # Wiki mixed 分支为每个有效数据集独立读取的 BM25 候选深度。

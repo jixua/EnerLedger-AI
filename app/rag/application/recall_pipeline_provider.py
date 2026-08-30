@@ -38,7 +38,10 @@ from app.rag.core.pipeline.recall.protocols import (
     Retriever,
 )
 from app.rag.core.pipeline.rerank import PostRecallReranker
-from app.rag.core.preprocessor.ragflow_tokenizer import RagFlowTokenizer
+from app.rag.core.preprocessor.query_tokenizer_process import (
+    close_process_query_tokenizer,
+    get_process_query_tokenizer,
+)
 from app.rag.core.storage.bm25_backend import build_bm25_recall_backend
 from app.rag.core.storage.bm25_retriever import Bm25Retriever
 from app.rag.core.storage.vector import compose_vector_storage_facade
@@ -52,7 +55,8 @@ def _get_bm25_retriever() -> Bm25Retriever:
     # BM25 统一由 Manticore 提供。
     return Bm25Retriever(
         backend=build_bm25_recall_backend(),
-        tokenizer=RagFlowTokenizer(),
+        async_tokenizer=get_process_query_tokenizer(),
+        tokenize_timeout_seconds=settings.BM25_QUERY_TOKENIZE_TIMEOUT_SECONDS,
     )
 
 
@@ -123,9 +127,10 @@ async def aresolve_recall_execution(
 ) -> tuple[RecallConfig, dict[int, DatasetExecutionContext]]:
     """在召回前一次加载每个 Dataset 的独立执行快照。
 
-    单数据集召回使用该数据集自己的 RecallConfig；多数据集混合召回使用版本化的系统级
-    跨库策略（当前为 ``RecallConfig.from_settings()``），避免请求中 dataset_id 的排列顺序
-    改变三路深度、阈值与融合权重。``dataset_ids`` 为空时同样返回系统默认配置。
+    多数据集混合召回时取 **第一个** dataset_id 的配置（各数据集召回深度/阈值无法同时生效，
+    取首个是确定性且可解释的选择）；``dataset_ids`` 为空（全库召回）时返回系统默认
+    ``RecallConfig.from_settings()``——使 enabled_sources / strict / 融合候选池窗口 /
+    三路 top_k 等跟随运行期系统配置，而非被静态默认锁死。
     配置读取经独立短生命周期 session 完成——召回入口可能在请求处理函数返回后才执行（SSE 流），
     不依赖请求级 session。
     """
@@ -140,12 +145,7 @@ async def aresolve_recall_execution(
             dataset_ids,
             DatasetExecutionPurpose.RECALL,
         )
-    recall_config = (
-        contexts[dataset_ids[0]].config.recall
-        if len(dataset_ids) == 1
-        else RecallConfig.from_settings()
-    )
-    return recall_config, contexts
+    return contexts[dataset_ids[0]].config.recall, contexts
 
 
 def build_recall_request_from_config(
@@ -218,7 +218,12 @@ async def prewarm_recall_pipeline() -> None:
     started_at = time.monotonic()
     get_recall_pipeline()
     if SOURCE_BM25 in _enabled_sources():
-        await _get_bm25_retriever().warmup()
+        try:
+            await _get_bm25_retriever().warmup()
+        except TimeoutError:
+            # 预热超时不应让整个 API 拒绝启动。实际请求仍会按
+            # 同一上限降级 BM25，Sparse/Dense 可继续提供召回。
+            logger.warning("[RecallPipeline] BM25 tokenizer startup warmup timed out")
     logger.info(
         "[RecallPipeline] startup prewarm completed elapsed_ms={}",
         int((time.monotonic() - started_at) * 1000),
@@ -232,6 +237,7 @@ async def close_recall_pipeline_resources() -> None:
         await _get_vector_recall_facade().close()
     _get_vector_recall_facade.cache_clear()
     _get_bm25_retriever.cache_clear()
+    await close_process_query_tokenizer()
     get_recall_pipeline.cache_clear()
     get_reranker.cache_clear()
 

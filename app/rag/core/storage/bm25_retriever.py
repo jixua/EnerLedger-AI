@@ -20,6 +20,10 @@ class _QueryTokenizer(Protocol):
     def tokenize(self, text: str): ...  # noqa: ANN201
 
 
+class _AsyncQueryTokenizer(Protocol):
+    async def tokenize(self, text: str) -> list[str]: ...
+
+
 class _Bm25RecallBackend(Protocol):
     async def recall_topk_chunks(self, request: Bm25RecallRequest) -> list[Bm25ChunkHit]: ...
 
@@ -34,18 +38,32 @@ class Bm25Retriever:
 
     source: str = SOURCE_BM25
 
-    def __init__(self, backend: _Bm25RecallBackend, tokenizer: _QueryTokenizer) -> None:
+    def __init__(
+        self,
+        backend: _Bm25RecallBackend,
+        tokenizer: _QueryTokenizer | None = None,
+        *,
+        async_tokenizer: _AsyncQueryTokenizer | None = None,
+        tokenize_timeout_seconds: float = 8.0,
+    ) -> None:
+        if tokenizer is None and async_tokenizer is None:
+            raise ValueError("tokenizer or async_tokenizer is required")
+        if tokenize_timeout_seconds <= 0:
+            raise ValueError("tokenize_timeout_seconds must be positive")
         self._backend = backend
         self._tokenizer = tokenizer
-        # Infinity/RAGFlow 分词为同步 CPU/文件读取工作，不得直接占用
-        # FastAPI 事件循环。分词器实例按进程复用，用线程锁保护其
-        # 内部可变状态，并发请求仅串行执行这一小段分词工作。
+        self._async_tokenizer = async_tokenizer
+        self._tokenize_timeout_seconds = tokenize_timeout_seconds
+        # 同步 tokenizer 只是测试/兼容回退，用锁保护内部可变状态。
+        # 生产环境注入 async_tokenizer，在独立子进程执行。
         self._tokenizer_lock = Lock()
 
     async def warmup(self) -> None:
         """在服务就绪前完成分词器的首次真实分词。"""
 
-        await self._tokenize_async("能碳知识库召回预热")
+        await self._tokenize_async(
+            "TCFD 建议围绕哪四个核心主题领域？请分别解释关注内容并标注依据。"
+        )
 
     async def recall(
         self,
@@ -236,19 +254,39 @@ class Bm25Retriever:
         raise AssertionError("unreachable BM25 retry state")
 
     def _tokenize(self, query: str) -> list[str]:
+        if self._tokenizer is None:
+            raise RuntimeError("synchronous tokenizer is not configured")
         tokenized = self._tokenizer.tokenize(query)
         return [token for token in tokenized.coarse_tokens.split() if token]
 
     async def _tokenize_async(self, query: str) -> list[str]:
-        """在工作线程中执行同步分词，保持 API 事件循环可调度。"""
+        """在隔离的执行器中分词，并为 BM25 单路设置独立上限。"""
 
         started_at = time.monotonic()
+        try:
+            if self._async_tokenizer is not None:
+                tokens = await asyncio.wait_for(
+                    self._async_tokenizer.tokenize(query),
+                    timeout=self._tokenize_timeout_seconds,
+                )
+            else:
+                # 仅供注入轻量测试分词器等非生产场景；生产装配
+                # 始终使用独立进程，避免 Infinity 长时间持有 GIL。
+                def tokenize_locked() -> list[str]:
+                    with self._tokenizer_lock:
+                        return self._tokenize(query)
 
-        def tokenize_locked() -> list[str]:
-            with self._tokenizer_lock:
-                return self._tokenize(query)
-
-        tokens = await asyncio.to_thread(tokenize_locked)
+                tokens = await asyncio.wait_for(
+                    asyncio.to_thread(tokenize_locked),
+                    timeout=self._tokenize_timeout_seconds,
+                )
+        except TimeoutError:
+            logger.warning(
+                "[Bm25Retriever] query tokenization timed out elapsed_ms={} timeout_seconds={}",
+                int((time.monotonic() - started_at) * 1000),
+                self._tokenize_timeout_seconds,
+            )
+            raise
         logger.info(
             "[Bm25Retriever] query tokenized elapsed_ms={} token_count={}",
             int((time.monotonic() - started_at) * 1000),

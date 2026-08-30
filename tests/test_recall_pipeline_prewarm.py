@@ -45,3 +45,20 @@ async def test_startup_prewarm_skips_bm25_when_disabled(monkeypatch) -> None:
 
     recall_pipeline_provider.get_recall_pipeline.assert_called_once_with()
     bm25_factory.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_startup_prewarm_allows_bm25_timeout_degradation(monkeypatch) -> None:
+    retriever = Mock()
+    retriever.warmup = AsyncMock(side_effect=TimeoutError)
+    monkeypatch.setattr(recall_pipeline_provider, "get_recall_pipeline", Mock())
+    monkeypatch.setattr(recall_pipeline_provider, "_enabled_sources", lambda: ["bm25"])
+    monkeypatch.setattr(
+        recall_pipeline_provider,
+        "_get_bm25_retriever",
+        Mock(return_value=retriever),
+    )
+
+    await recall_pipeline_provider.prewarm_recall_pipeline()
+
+    retriever.warmup.assert_awaited_once_with()
