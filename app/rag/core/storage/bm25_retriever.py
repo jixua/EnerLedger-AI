@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import Mapping, Sequence
+from threading import Lock
 from typing import Protocol
 
 from app.rag.config import settings
@@ -35,6 +37,15 @@ class Bm25Retriever:
     def __init__(self, backend: _Bm25RecallBackend, tokenizer: _QueryTokenizer) -> None:
         self._backend = backend
         self._tokenizer = tokenizer
+        # Infinity/RAGFlow 分词为同步 CPU/文件读取工作，不得直接占用
+        # FastAPI 事件循环。分词器实例按进程复用，用线程锁保护其
+        # 内部可变状态，并发请求仅串行执行这一小段分词工作。
+        self._tokenizer_lock = Lock()
+
+    async def warmup(self) -> None:
+        """在服务就绪前完成分词器的首次真实分词。"""
+
+        await self._tokenize_async("能碳知识库召回预热")
 
     async def recall(
         self,
@@ -54,7 +65,7 @@ class Bm25Retriever:
         if not dataset_ids:
             return []
 
-        tokens = self._tokenize(query)
+        tokens = await self._tokenize_async(query)
         if not tokens:
             return []
 
@@ -118,7 +129,7 @@ class Bm25Retriever:
         if not ordered_datasets:
             return by_dataset
 
-        tokens = self._tokenize(query)
+        tokens = await self._tokenize_async(query)
         if not tokens:
             return by_dataset
 
@@ -227,6 +238,23 @@ class Bm25Retriever:
     def _tokenize(self, query: str) -> list[str]:
         tokenized = self._tokenizer.tokenize(query)
         return [token for token in tokenized.coarse_tokens.split() if token]
+
+    async def _tokenize_async(self, query: str) -> list[str]:
+        """在工作线程中执行同步分词，保持 API 事件循环可调度。"""
+
+        started_at = time.monotonic()
+
+        def tokenize_locked() -> list[str]:
+            with self._tokenizer_lock:
+                return self._tokenize(query)
+
+        tokens = await asyncio.to_thread(tokenize_locked)
+        logger.info(
+            "[Bm25Retriever] query tokenized elapsed_ms={} token_count={}",
+            int((time.monotonic() - started_at) * 1000),
+            len(tokens),
+        )
+        return tokens
 
     @staticmethod
     def _merge_dataset_rankings(
