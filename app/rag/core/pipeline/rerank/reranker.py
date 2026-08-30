@@ -16,7 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from typing import Awaitable, Callable
+from collections.abc import Awaitable, Callable
 
 from loguru import logger
 
@@ -24,8 +24,8 @@ from app.rag.config import settings
 from app.rag.core.pipeline.chunk_content import fetch_chunk_contents
 from app.rag.core.pipeline.recall.models import RecallHit
 from app.rag.core.pipeline.rerank.models import RerankedHit, RerankRequest, RerankResponse
-from app.rag.services.usage_reporter import report_usage_nowait
 from app.rag.observability.logging import safe_exception_stack, truncate_log_value
+from app.rag.services.usage_reporter import report_usage_nowait
 
 # 注入点签名：正文回填 (chunk_ids, user_id) -> {chunk_id: 正文}
 ContentFetcher = Callable[[list[str], int], Awaitable[dict[str, str]]]
@@ -49,6 +49,8 @@ def reranked_from_recall(
         dataset_id=hit.dataset_id,
         fused_score=hit.fused_score,
         scores=hit.scores,
+        normalized_scores=hit.normalized_scores,
+        weighted_contributions=hit.weighted_contributions,
         rerank_score=rerank_score,
         rerank_rank=rerank_rank,
     )

@@ -1,12 +1,15 @@
 # Alembic 迁移
 
-本目录只管理当前项目的五张 MySQL 业务表：
+本目录管理当前项目的 MySQL 业务表：
 
 - `llm_config`
 - `dataset`
 - `document_folder`
 - `document`
 - `document_chunk`
+- `report_run`
+- `report_question`
+- `report_artifact`
 
 Alembic 自己创建的 `alembic_version` 是版本记录表，不属于业务表。MinIO、Qdrant 和 Manticore 的数据结构也不由 Alembic 管理。
 
@@ -21,7 +24,9 @@ Alembic 自己创建的 `alembic_version` 是版本记录表，不属于业务�
   -> 0004_document_parse_quality
   -> 0005_dataset_vision_config
   -> 0006_document_dispatch_outbox
-  -> 0007_crawler_document_review (head)
+  -> 0007_crawler_document_review + 0007_document_folders
+  -> 0008_document_folder_hierarchy
+  -> 0009_report_platform_foundation (head)
 ```
 
 `0001_minimal_rag` 直接创建最初四张业务表，不依赖历史 LinkRag schema；`0007_document_folders` 增加仅用于文档分类的 `document_folder` 表和可空 `document.folder_id`。`migrations/db.sql` 是当前 head 的可读 SQL 快照；正常部署应以 `alembic upgrade heads` 为准，以兼容 `dev` 中多个从 `master` 派生的候选迁移，不要同时手工执行 SQL 文件。
@@ -31,6 +36,8 @@ Alembic 自己创建的 `alembic_version` 是版本记录表，不属于业务�
 `0005_dataset_vision_config` 在 `dataset` 表增加可空的 `vision_config_id`，用于绑定 PDF 页级 OCR/视觉兜底模型；不新增配置表，也不修改已有数据集的绑定。
 
 `0007_crawler_document_review` 在 `document` 表保存第三方采集来源与人工审核状态。外部上传文件在审核通过前保持 `PENDING_REVIEW`，不会进入 RabbitMQ 解析队列。
+
+`0009_report_platform_foundation` 在 Dev 已有的双 `0007` 分支和 `0008` 汇合点之后，新增报告任务、补充问题和产物表，并为模型配置增加 Tool Calling 能力标记。
 
 ## 与旧 39 版迁移链不兼容
 

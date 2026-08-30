@@ -1,0 +1,31 @@
+{
+  "template_id":"r3-esg-sustainability","report_type":"R3","version":"1.0.0","name":"ESG/可持续发展报告","status":"DRAFT","description":"围绕气候治理、战略、风险管理、指标和目标形成披露草稿。",
+  "applicable_documents":["ESG 数据与制度材料","气候风险与目标材料","组织排放清单及治理信息"],"inapplicable_documents":["仅有单项排放数据且无治理和战略信息的材料"],
+  "fields":[
+    {"id":"organization_name","label":"组织名称","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"reporting_year","label":"报告年度","type":"integer","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":2000},"formula_id":null},
+    {"id":"reporting_frameworks","label":"报告框架","type":"array","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"allowed":["TCFD","ISSB","GRI","CSRD","其他"]},"formula_id":null},
+    {"id":"board_oversight","label":"董事会气候治理","type":"text","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"management_responsibility","label":"管理层气候职责","type":"text","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"physical_risks","label":"实体风险","type":"array","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"transition_risks","label":"转型风险","type":"array","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"climate_opportunities","label":"气候机遇","type":"array","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"scenario_pathways","label":"情景分析路径","type":"array","required":true,"blocking":false,"unit":"°C","source_types":["DOCUMENT","KNOWLEDGE_BASE","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"scope1_emissions","label":"Scope 1 排放","type":"number","required":true,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"scope2_emissions","label":"Scope 2 排放","type":"number","required":true,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"scope3_emissions","label":"Scope 3 排放","type":"number","required":false,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"near_term_target","label":"近期减排目标","type":"string","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"net_zero_target","label":"净零目标","type":"string","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"internal_carbon_price","label":"内部碳价","type":"number","required":false,"blocking":false,"unit":"currency/tCO2e","source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"assurance_level","label":"第三方鉴证","type":"enum","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["无","有限鉴证","合理鉴证","无法判断"]},"formula_id":null}
+  ],
+  "sections":[
+    {"id":"report_profile","title":"报告概况","required":true,"field_ids":["organization_name","reporting_year","reporting_frameworks"],"allowed_blocks":["paragraph","callout"]},
+    {"id":"governance","title":"治理","required":true,"field_ids":["board_oversight","management_responsibility"],"allowed_blocks":["paragraph","table"]},
+    {"id":"strategy","title":"战略","required":true,"field_ids":["physical_risks","transition_risks","climate_opportunities","scenario_pathways"],"allowed_blocks":["paragraph","risk_matrix","table"]},
+    {"id":"risk_management","title":"风险管理","required":true,"field_ids":["physical_risks","transition_risks"],"allowed_blocks":["paragraph","risk_matrix"]},
+    {"id":"metrics_and_targets","title":"指标与目标","required":true,"field_ids":["scope1_emissions","scope2_emissions","scope3_emissions","near_term_target","net_zero_target","internal_carbon_price"],"allowed_blocks":["paragraph","metric_cards","table","bar_chart","timeline"]},
+    {"id":"assurance_and_limitations","title":"鉴证和限制","required":true,"field_ids":["assurance_level"],"allowed_blocks":["paragraph","callout"]}
+  ],
+  "calculations":[],"disclaimers":["报告草稿不自动构成对 TCFD、ISSB、GRI 或 CSRD 的完整符合声明。"],"render_profile":"r3-esg-editorial"
+}

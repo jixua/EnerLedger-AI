@@ -43,6 +43,8 @@ def test_openapi_contains_every_frontend_runtime_endpoint() -> None:
         ("post", "/api/v1/documents/{document_id}/reparse"),
         ("post", "/api/v1/recall"),
         ("post", "/api/v1/rag/stream"),
+        ("get", "/api/v1/agent/readiness"),
+        ("post", "/api/v1/agent/stream"),
     }
 
     missing = sorted(

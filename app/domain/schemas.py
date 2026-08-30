@@ -408,8 +408,7 @@ class DocumentPreviewMap(BaseModel):
     document_version: int
     boundary_precision: Literal["line", "approximate_line", "legacy_line"] = Field(
         description=(
-            "line=精确行边界；approximate_line=语义细分仅有近似行位置；"
-            "legacy_line=历史数据降级位置"
+            "line=精确行边界；approximate_line=语义细分仅有近似行位置；legacy_line=历史数据降级位置"
         )
     )
     map_reliable: bool = Field(
@@ -430,6 +429,7 @@ class LLMConfigCreate(BaseModel):
     api_base_url: AnyHttpUrl | None = None
     api_key: SecretStr | None = None
     is_active: bool = True
+    supports_tool_calling: bool = False
 
     @field_validator("provider_type")
     @classmethod
@@ -487,6 +487,7 @@ class LLMConfigUpdate(BaseModel):
     api_base_url: AnyHttpUrl | None = None
     api_key: SecretStr | None = None
     is_active: bool | None = None
+    supports_tool_calling: bool | None = None
 
     @field_validator("model_name")
     @classmethod
@@ -518,7 +519,13 @@ class LLMConfigUpdate(BaseModel):
         fields = self.model_fields_set
         if not fields:
             raise ValueError("至少需要更新一个字段")
-        for field_name in ("model_name", "api_base_url", "api_key", "is_active"):
+        for field_name in (
+            "model_name",
+            "api_base_url",
+            "api_key",
+            "is_active",
+            "supports_tool_calling",
+        ):
             if field_name in fields and getattr(self, field_name) is None:
                 raise ValueError(f"{field_name} 不能为 null")
         return self
@@ -539,6 +546,7 @@ class LLMConfigRead(BaseModel):
     api_base_url: str
     api_key_masked: str
     is_active: bool
+    supports_tool_calling: bool
     snapshot_version: int
     created_at: datetime
     updated_at: datetime

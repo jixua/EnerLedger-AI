@@ -16,9 +16,11 @@ from app.rag.database import close_database, init_database
 from app.rag.observability.logging import logger, setup_logger
 from app.services.arxiv_crawler import arxiv_crawler
 from app.services.document_dispatch import run_document_dispatch_reconciler
+from app.services.report_dispatch import run_report_dispatch_reconciler
 
 setup_logger()
 
+from app.api.agent import router as agent_router
 from app.api.auth import router as auth_router
 from app.api.crawler import router as crawler_router
 from app.api.datasets import router as datasets_router
@@ -27,6 +29,8 @@ from app.api.documents import router as documents_router
 from app.api.llm import router as llm_router
 from app.api.rag import router as rag_router
 from app.api.recall import router as recall_router
+from app.api.report_agent_internal import router as report_agent_internal_router
+from app.api.reports import router as reports_router
 from app.api.system import router as system_router
 
 
@@ -43,9 +47,16 @@ async def lifespan(_: FastAPI):
         run_document_dispatch_reconciler(dispatch_stop),
         name="document-dispatch-reconciler",
     )
+    report_dispatch_stop = asyncio.Event()
+    report_dispatch_task = asyncio.create_task(
+        run_report_dispatch_reconciler(report_dispatch_stop),
+        name="report-dispatch-reconciler",
+    )
     yield
     dispatch_stop.set()
+    report_dispatch_stop.set()
     await dispatch_task
+    await report_dispatch_task
     from app.rag.application.recall_pipeline_provider import (
         close_recall_pipeline_resources,
     )
@@ -81,13 +92,16 @@ app.add_middleware(
     expose_headers=["Location", "X-Request-Id", "X-Document-Version"],
 )
 app.include_router(auth_router)
+app.include_router(agent_router)
 app.include_router(crawler_router)
 app.include_router(llm_router)
 app.include_router(datasets_router)
 app.include_router(documents_router)
 app.include_router(document_analysis_router)
 app.include_router(recall_router)
+app.include_router(reports_router)
 app.include_router(rag_router)
+app.include_router(report_agent_internal_router)
 app.include_router(system_router)
 
 

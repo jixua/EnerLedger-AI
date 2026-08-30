@@ -2,8 +2,10 @@ import assert from "node:assert/strict";
 import { afterEach, test } from "node:test";
 
 import {
+  cancelReportRun,
   configureApi,
   createDataset,
+  createDocumentReport,
   createDocumentFolder,
   deleteDocumentFolder,
   getCrawlerSubmissionFile,
@@ -16,7 +18,10 @@ import {
   importArxivPapers,
   listAllDocuments,
   listDocumentFolders,
+  listDocumentReportRuns,
   listCrawlerSubmissions,
+  listReportTemplates,
+  retryReportRun,
   reviewCrawlerSubmission,
   searchArxivPapers,
   updateDocument,
@@ -24,7 +29,7 @@ import {
   updateDataset,
   uploadDocument,
 } from "../src/lib/api.js";
-import { streamRag } from "../src/lib/sse.js";
+import { streamAgent, streamRag } from "../src/lib/sse.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -68,6 +73,50 @@ test("document rename sends the backend PATCH contract", async () => {
   assert.equal(captured.url, "/api/v1/documents/31");
   assert.equal(captured.init.method, "PATCH");
   assert.deepEqual(JSON.parse(captured.init.body), { filename: "核算报告.pdf" });
+});
+
+test("report creation sends the user-selected type and frozen input fields", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse(url.endsWith("report-templates")
+      ? [{ report_type: "R2", selectable: true }]
+      : { run_id: "run-1", state: "PENDING", report_type: "R2" }, url.endsWith("reports") ? 202 : 200);
+  };
+
+  const templates = await listReportTemplates();
+  const run = await createDocumentReport(31, {
+    report_type: "R2",
+    llm_config_id: 7,
+    language: "zh-CN",
+    reporting_year: 2025,
+    user_instructions: "重点展示 Scope 3",
+    output_formats: ["ONLINE"],
+  });
+
+  assert.equal(templates[0].report_type, "R2");
+  assert.equal(requests[0].url, "/api/v1/report-templates");
+  assert.equal(requests[1].url, "/api/v1/documents/31/reports");
+  assert.equal(requests[1].init.method, "POST");
+  assert.equal(run.run_id, "run-1");
+});
+
+test("report workbench restores history and supports cancel and retry", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse([]);
+  };
+
+  await listDocumentReportRuns(31, { limit: 5 });
+  await cancelReportRun("run-1");
+  await retryReportRun("run-1");
+
+  assert.equal(requests[0].url, "/api/v1/documents/31/report-runs?limit=5");
+  assert.equal(requests[1].url, "/api/v1/report-runs/run-1/cancel");
+  assert.equal(requests[1].init.method, "POST");
+  assert.equal(requests[2].url, "/api/v1/report-runs/run-1/retry");
+  assert.equal(requests[2].init.method, "POST");
 });
 
 test("dataset folder lifecycle uses tenant-scoped dataset routes", async () => {
@@ -365,4 +414,54 @@ test("RAG stream sends snake_case payload and consumes terminal SSE event", asyn
   });
   assert.equal(result.answer, "无法回答");
   assert.equal(result.terminalEvent, "answer_done");
+});
+
+test("Pi Agent stream sends current-page history to the dedicated endpoint", async () => {
+  let captured;
+  const frames = [
+    'event: stream_started\ndata: {"request_id":"agent-1"}\n\n',
+    'event: recall_done\ndata: {"request_id":"agent-1","hits":[],"failed_sources":[]}\n\n',
+    'event: answer_done\ndata: {"request_id":"agent-1","answer":"根据资料无法回答","hits":[],"failed_sources":[],"usage":null,"elapsed_ms":10}\n\n',
+  ].join("");
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(frames, {
+      status: 200,
+      headers: { "Content-Type": "text/event-stream" },
+    });
+  };
+
+  await streamAgent({
+    query: "继续说明",
+    datasetIds: [2],
+    history: [{ role: "user", content: "上一问" }, { role: "assistant", content: "上一答" }],
+  });
+
+  assert.equal(captured.url, "/api/v1/agent/stream");
+  assert.deepEqual(JSON.parse(captured.init.body), {
+    query: "继续说明",
+    dataset_ids: [2],
+    history: [{ role: "user", content: "上一问" }, { role: "assistant", content: "上一答" }],
+  });
+});
+
+test("Pi Agent stream keeps an empty dataset list as the all-knowledge-base scope", async () => {
+  let captured;
+  const frames = [
+    'event: stream_started\ndata: {"request_id":"agent-all"}\n\n',
+    'event: answer_done\ndata: {"request_id":"agent-all","answer":"你好","hits":[],"failed_sources":[],"usage":null,"elapsed_ms":2}\n\n',
+  ].join("");
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(frames, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  };
+
+  await streamAgent({ query: "你好", datasetIds: [], history: [] });
+
+  assert.equal(captured.url, "/api/v1/agent/stream");
+  assert.deepEqual(JSON.parse(captured.init.body), {
+    query: "你好",
+    dataset_ids: [],
+    history: [],
+  });
 });

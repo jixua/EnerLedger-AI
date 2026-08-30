@@ -85,6 +85,7 @@ def _config_response(config: LLMModelConfigDB) -> LLMConfigRead:
             else _safe_mask_ciphertext(config.api_key)
         ),
         is_active=config.is_active,
+        supports_tool_calling=bool(config.supports_tool_calling),
         snapshot_version=config.snapshot_version,
         created_at=config.created_at,
         updated_at=config.updated_at,
@@ -159,6 +160,7 @@ async def create_config(
             else encrypt_api_key(payload.api_key.get_secret_value().strip())
         ),
         is_active=payload.is_active,
+        supports_tool_calling=payload.supports_tool_calling,
         snapshot_version=1,
     )
     try:

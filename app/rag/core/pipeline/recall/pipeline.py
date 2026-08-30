@@ -80,7 +80,8 @@ class RecallPipeline:
         started_at = time.monotonic()
         self._validate(request)
 
-        # 本次生效的召回路：按数据集级 enabled_sources 在已装配路集合内收窄（见 _effective_sources）。
+        # 本次生效的召回路：按数据集级 enabled_sources 在已装配路集合内收窄
+        # （见 _effective_sources）。
         effective_sources = self._effective_sources(request)
         fusion_weights = self._effective_fusion_config(request)
         # 容错模式：请求级覆盖优先，未指定时沿用装配期默认。
@@ -159,6 +160,7 @@ class RecallPipeline:
             sources=effective_sources,
             candidate_hits=candidate_hits,
             route_hits=visible_route_hits,
+            fusion_weights=fusion_weights,
         )
 
     def _effective_fusion_config(self, request: RecallRequest) -> dict[str, float]:
@@ -294,7 +296,7 @@ class RecallPipeline:
             for r in retrievers
         ]
         results = await asyncio.gather(*tasks, return_exceptions=True)
-        return {r.source: result for r, result in zip(retrievers, results)}
+        return {r.source: result for r, result in zip(retrievers, results, strict=True)}
 
     async def _run_serial(
         self,
@@ -389,6 +391,7 @@ class RecallPipeline:
         sources: list[str],
         candidate_hits,
         route_hits: dict[str, list[RetrieverHit]],
+        fusion_weights: dict[str, float],
     ) -> RecallResponse:
         """组装响应：per_source_counts 基于本次生效的 source 集；空列表 / 失败路都计 0。"""
         per_source_counts = {source: len(success_hits.get(source, [])) for source in sources}
@@ -416,7 +419,20 @@ class RecallPipeline:
             recall_diagnostics=recall_diagnostics,
             candidate_hits=candidate_hits,
             route_hits=route_hits,
+            fusion_weights=self._normalized_active_weights(success_hits, fusion_weights),
         )
+
+    def _normalized_active_weights(
+        self,
+        success_hits: dict[str, list[RetrieverHit]],
+        weights: dict[str, float],
+    ) -> dict[str, float]:
+        """返回真正有命中的召回源权重，供结果解释与审计。"""
+        active_sources = [source for source in weights if success_hits.get(source)]
+        if not active_sources:
+            return {}
+        total = sum(weights[source] for source in active_sources)
+        return {source: weights[source] / total for source in active_sources} if total > 0 else {}
 
 
 def _find_duplicates(values: list[str]) -> list[str]:

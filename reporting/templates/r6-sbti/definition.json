@@ -1,0 +1,31 @@
+{
+  "template_id":"r6-sbti","report_type":"R6","version":"1.0.0","name":"SBTi 目标设定报告","status":"DRAFT","description":"形成科学碳目标设定和减排路径草稿。",
+  "applicable_documents":["组织基准年排放清单","近期和净零目标材料","减排路径与可再生能源承诺"],"inapplicable_documents":["没有组织排放基准或目标边界的材料"],
+  "fields":[
+    {"id":"organization_name","label":"组织名称","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"sector","label":"行业分类","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","KNOWLEDGE_BASE","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"base_year","label":"基准年","type":"integer","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":1990},"formula_id":null},
+    {"id":"base_scope1","label":"基准年 Scope 1","type":"number","required":true,"blocking":true,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"base_scope2","label":"基准年 Scope 2","type":"number","required":true,"blocking":true,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"base_scope3","label":"基准年 Scope 3","type":"number","required":true,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"near_term_method","label":"近期目标方法","type":"enum","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","KNOWLEDGE_BASE","USER_INPUT"],"validation":{"enum":["绝对收缩","行业脱碳","其他"]},"formula_id":null},
+    {"id":"near_term_year","label":"近期目标年","type":"integer","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"maximum":2050},"formula_id":null},
+    {"id":"near_term_reduction_scope12","label":"近期 S1+2 减排幅度","type":"number","required":true,"blocking":true,"unit":"%","source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":0,"maximum":100},"formula_id":null},
+    {"id":"near_term_reduction_scope3","label":"近期 S3 减排幅度","type":"number","required":true,"blocking":false,"unit":"%","source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":0,"maximum":100},"formula_id":null},
+    {"id":"net_zero_year","label":"净零目标年","type":"integer","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"maximum":2050},"formula_id":null},
+    {"id":"net_zero_reduction_scope12","label":"净零 S1+2 减排幅度","type":"number","required":false,"blocking":false,"unit":"%","source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":0,"maximum":100},"formula_id":null},
+    {"id":"net_zero_reduction_scope3","label":"净零 S3 减排幅度","type":"number","required":false,"blocking":false,"unit":"%","source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":0,"maximum":100},"formula_id":null},
+    {"id":"renewable_electricity_commitment","label":"可再生电力承诺","type":"string","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"bvcm_commitment","label":"超越价值链缓解承诺","type":"text","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"validation_status","label":"SBTi 验证状态","type":"enum","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["未提交","承诺","已提交","验证通过","退回","无法判断"]},"formula_id":null},
+    {"id":"validation_date","label":"验证日期","type":"date","required":false,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null}
+  ],
+  "sections":[
+    {"id":"target_summary","title":"目标摘要","required":true,"field_ids":["organization_name","sector","near_term_year","net_zero_year"],"allowed_blocks":["paragraph","metric_cards","timeline"]},
+    {"id":"base_year_inventory","title":"基准年排放","required":true,"field_ids":["base_year","base_scope1","base_scope2","base_scope3"],"allowed_blocks":["table","donut_chart","paragraph"]},
+    {"id":"near_term_targets","title":"近期目标","required":true,"field_ids":["near_term_method","near_term_year","near_term_reduction_scope12","near_term_reduction_scope3"],"allowed_blocks":["table","timeline","paragraph"]},
+    {"id":"net_zero_pathway","title":"净零路径","required":false,"field_ids":["net_zero_year","net_zero_reduction_scope12","net_zero_reduction_scope3","renewable_electricity_commitment","bvcm_commitment"],"allowed_blocks":["timeline","table","paragraph"]},
+    {"id":"validation_and_limitations","title":"验证状态与限制","required":true,"field_ids":["validation_status","validation_date"],"allowed_blocks":["paragraph","callout"]}
+  ],
+  "calculations":[],"disclaimers":["报告草稿不能声称组织目标已获 SBTi 验证，除非提供可核验的正式证据。"],"render_profile":"r6-climate-pathway"
+}

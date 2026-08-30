@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://enerledger.local/schemas/report-evidence.json",
+  "title": "Report Evidence",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["evidence_id", "source_type", "content_hash"],
+  "properties": {
+    "evidence_id": {"type": "string", "pattern": "^E-[A-Za-z0-9_-]+$"},
+    "source_type": {
+      "enum": ["DOCUMENT", "KNOWLEDGE_BASE", "USER_INPUT", "CALCULATION"]
+    },
+    "document_id": {"type": ["integer", "null"], "minimum": 1},
+    "document_version": {"type": ["integer", "null"], "minimum": 1},
+    "chunk_id": {"type": ["string", "null"]},
+    "page": {"type": ["integer", "null"], "minimum": 1},
+    "reference_uri": {"type": ["string", "null"]},
+    "excerpt": {"type": ["string", "null"], "maxLength": 2000},
+    "content_hash": {"type": "string", "minLength": 8},
+    "metadata": {"type": "object"}
+  }
+}
