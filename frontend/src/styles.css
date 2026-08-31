@@ -212,7 +212,6 @@ img { max-width: 100%; }
 .topbar__path svg { color: var(--muted-soft); }
 .topbar__path small { overflow: hidden; text-overflow: ellipsis; color: var(--muted-soft); font: 500 9px/1 var(--font-mono); letter-spacing: 0.12em; }
 .topbar__actions { display: flex; align-items: center; gap: 8px; }
-.topbar-date { display: inline-flex; align-items: center; gap: 7px; margin-right: 10px; color: var(--muted); font: 500 10px/1 var(--font-mono); }
 .connection-pill { display: inline-flex; align-items: center; gap: 7px; height: 34px; padding: 0 11px; border: 1px solid var(--hairline); border-radius: var(--radius-pill); background: var(--surface); color: var(--muted); font-size: 10px; }
 .status-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
 .status-dot--success { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
@@ -435,7 +434,6 @@ input:focus, textarea:focus, select:focus { outline: none; border-color: var(--p
   .login-story__content { padding-top: 36px; }
   .login-story__content h1 { font-size: 36px; }
   .login-story__note { display: none; }
-  .topbar-date { display: none; }
   .topbar__actions > .icon-button { display: none; }
   .topbar__actions .button { min-width: 38px; padding: 0 10px; font-size: 0; }
   .topbar__actions .button svg { margin: 0; }

@@ -203,12 +203,13 @@ test("quality diagnostics never block READY documents or add a detail-page banne
   assert.match(playgroundSource, /isDocumentRetrievalReady\(document\)/);
 });
 
-test("the primary conversation page switches between original RAG and Pi Agent", () => {
-  assert.match(playgroundSource, /streamAgent, streamRag/);
-  assert.match(playgroundSource, /conversationMode/);
-  assert.match(playgroundSource, /chat-mode-switch/);
-  assert.match(playgroundSource, /普通对话/);
-  assert.match(playgroundSource, /智能体/);
-  assert.match(playgroundSource, /const stream = conversationMode === "agent" \? streamAgent : streamRag/);
+test("the primary conversation page always uses Pi Agent", () => {
+  assert.match(playgroundSource, /streamAgent/);
+  assert.match(playgroundSource, /await streamAgent\(/);
+  assert.doesNotMatch(playgroundSource, /streamRag/);
+  assert.doesNotMatch(playgroundSource, /conversationMode/);
+  assert.doesNotMatch(playgroundSource, /chat-mode-switch/);
+  assert.doesNotMatch(playgroundSource, /普通对话/);
   assert.match(playgroundSource, /全部知识库/);
+  assert.match(playgroundSource, /const showModelSelector = needsExplicitModel && chatModels\.length > 1/);
 });
