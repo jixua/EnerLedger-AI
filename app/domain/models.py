@@ -323,3 +323,157 @@ class ReportArtifact(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
     )
+
+
+class StructuredAsset(Base):
+    """数据集内的结构化资源；原始文件与发布版本分离。"""
+
+    __tablename__ = "structured_asset"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "dataset_id", "asset_code", name="uk_structured_asset_dataset_code"
+        ),
+        Index("idx_structured_asset_dataset", "user_id", "dataset_id", "updated_at"),
+    )
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    dataset_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    asset_code: Mapped[str] = mapped_column(String(128), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    asset_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="ACTIVE", server_default="ACTIVE"
+    )
+    current_version_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+
+
+class StructuredAssetVersion(Base):
+    """不可变结构化资源版本；发布仅切换 ``current_version_id``。"""
+
+    __tablename__ = "structured_asset_version"
+    __table_args__ = (
+        UniqueConstraint("asset_id", "content_hash", name="uk_structured_version_hash"),
+        Index("idx_structured_version_asset_state", "asset_id", "state", "created_at"),
+        Index("idx_structured_version_edition", "asset_id", "edition_year", "created_at"),
+    )
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    asset_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    dataset_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    version_label: Mapped[str] = mapped_column(String(64), nullable=False)
+    edition_year: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    template_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    state: Mapped[str] = mapped_column(String(24), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    file_size: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    raw_bucket: Mapped[str] = mapped_column(String(64), nullable=False)
+    raw_object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    profile: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default="0")
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    published_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+
+
+class StructuredAssetAlias(Base):
+    """同一内容哈希对应的原始文件名别名。"""
+
+    __tablename__ = "structured_asset_alias"
+    __table_args__ = (
+        UniqueConstraint("version_id", "filename", name="uk_structured_alias_filename"),
+    )
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    version_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+
+
+class StructuredTable(Base):
+    """发布版本中的一个逻辑表及其 Parquet 位置。"""
+
+    __tablename__ = "structured_table"
+    __table_args__ = (
+        UniqueConstraint("version_id", "table_code", name="uk_structured_table_code"),
+        Index("idx_structured_table_version", "version_id", "table_code"),
+    )
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    version_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    table_code: Mapped[str] = mapped_column(String(64), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_sheet: Mapped[str] = mapped_column(String(255), nullable=False)
+    source_range: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    object_bucket: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    schema_json: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+
+
+class StructuredTermAlias(Base):
+    """面向 Agent 的中英文术语映射。"""
+
+    __tablename__ = "structured_term_alias"
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id", "dataset_id", "term", "canonical_value", name="uk_structured_term_alias"
+        ),
+        Index("idx_structured_term_lookup", "user_id", "dataset_id", "term"),
+    )
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    dataset_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    term: Mapped[str] = mapped_column(String(255), nullable=False)
+    canonical_value: Mapped[str] = mapped_column(String(255), nullable=False)
+    field_name: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+
+
+class StructuredQueryAudit(Base):
+    """结构化查询审计；不保存凭证或任意 SQL。"""
+
+    __tablename__ = "structured_query_audit"
+    __table_args__ = (Index("idx_structured_query_user_created", "user_id", "created_at"),)
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    dataset_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
+    request_payload: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    result_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    error_message: Mapped[str | None] = mapped_column(Text, nullable=True)
+    elapsed_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
