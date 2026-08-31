@@ -32,6 +32,7 @@ from app.api.recall import router as recall_router
 from app.api.report_agent_internal import router as report_agent_internal_router
 from app.api.reports import router as reports_router
 from app.api.system import router as system_router
+from app.api.structured_data import router as structured_data_router
 
 
 @asynccontextmanager
@@ -103,6 +104,7 @@ app.include_router(reports_router)
 app.include_router(rag_router)
 app.include_router(report_agent_internal_router)
 app.include_router(system_router)
+app.include_router(structured_data_router)
 
 
 @app.get("/health/live", tags=["系统"])

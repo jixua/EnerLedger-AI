@@ -12,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from loguru import logger
 
 from app.domain.auth import get_user_id
 from app.domain.models import Dataset
@@ -34,6 +35,7 @@ from app.rag.core.pipeline.recall import RecallError, RecallFatalError, RecallVa
 from app.rag.core.pipeline.recall.generation import assemble_context
 from app.rag.core.prompts import RAG_GENERATION_SYSTEM_PROMPT, build_rag_user_prompt
 from app.rag.database import get_db, get_db_context
+from app.services.structured_query import StructuredQueryService
 
 router = APIRouter(prefix="/api/v1/rag", tags=["对话"])
 
@@ -71,6 +73,44 @@ def _sse(event: str, payload: dict) -> str:
     return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
+async def _structured_lookup(recall_request) -> list[dict]:
+    try:
+        async with get_db_context() as db:
+            return await StructuredQueryService().query_natural_language(
+                db,
+                user_id=recall_request.user_id,
+                dataset_ids=list(recall_request.dataset_ids),
+                text=recall_request.query,
+            )
+    except LookupError:
+        return []
+    except Exception as exc:  # noqa: BLE001 - structured sidecar must not break document RAG
+        logger.bind(error=str(exc)).warning("structured lookup degraded")
+        return []
+
+
+def _structured_context(rows: list[dict]) -> str:
+    if not rows:
+        return ""
+    lines = ["[结构化数据查询结果：数值、单位和版本以本区块为准]"]
+    for index, row in enumerate(rows, start=1):
+        lines.append(
+            " | ".join(
+                [
+                    f"S{index}",
+                    f"年份={row.get('edition_year')}",
+                    f"表={row.get('table_code')}",
+                    f"活动={row.get('activity_name')}",
+                    f"气体={row.get('gas')}",
+                    f"数值={row.get('factor_value')}",
+                    f"单位={row.get('numerator_unit')}/{row.get('denominator_unit')}",
+                    f"来源={row.get('source_file')}#{row.get('source_sheet')}:{row.get('source_row')}",
+                ]
+            )
+        )
+    return "\n".join(lines)
+
+
 async def _owned_datasets(
     db: AsyncSession,
     *,
@@ -100,6 +140,7 @@ async def _event_stream(
     chat_config_id: int | None = None,
 ) -> AsyncGenerator[str, None]:
     yield _sse("stream_started", {"request_id": request_id})
+    structured_task = asyncio.create_task(_structured_lookup(recall_request))
     try:
         response = await asyncio.wait_for(
             get_recall_pipeline().execute(recall_request),
@@ -131,8 +172,14 @@ async def _event_stream(
                 "failed_sources": response.failed_sources,
             },
         )
+        structured_rows = await structured_task
+        if structured_rows:
+            yield _sse(
+                "structured_data_done",
+                {"request_id": request_id, "rows": structured_rows},
+            )
 
-        if not context.blocks:
+        if not context.blocks and not structured_rows:
             yield _sse("answer_delta", {"text": NO_CONTEXT_ANSWER})
             yield _sse(
                 "answer_done",
@@ -143,6 +190,7 @@ async def _event_stream(
                     "hits": serialized_hits,
                     "failed_sources": response.failed_sources,
                     "elapsed_ms": response.elapsed_ms,
+                    "structured_data": [],
                 },
             )
             return
@@ -172,7 +220,10 @@ async def _event_stream(
                 )
                 return
 
-        prompt = build_rag_user_prompt(recall_request.query, context.context_text)
+        combined_context = "\n\n".join(
+            part for part in (context.context_text, _structured_context(structured_rows)) if part
+        )
+        prompt = build_rag_user_prompt(recall_request.query, combined_context)
         answer_parts: list[str] = []
         usage = UsageInfo()
         terminal_seen = False
@@ -215,6 +266,7 @@ async def _event_stream(
                 "hits": serialized_hits,
                 "failed_sources": response.failed_sources,
                 "elapsed_ms": response.elapsed_ms,
+                "structured_data": structured_rows,
             },
         )
     except asyncio.CancelledError:
@@ -233,6 +285,8 @@ async def _event_stream(
     except Exception:
         yield _sse("error", {"code": "GENERATION_FAILED", "message": "LLM 流式生成失败"})
     finally:
+        if not structured_task.done():
+            structured_task.cancel()
         contexts = (getattr(recall_request, "dataset_contexts", None) or {}).values()
         await aclose_dataset_execution_contexts(
             contexts,

@@ -18,6 +18,12 @@ CORE_TABLES = {
     "report_run",
     "report_question",
     "report_artifact",
+    "structured_asset",
+    "structured_asset_alias",
+    "structured_asset_version",
+    "structured_query_audit",
+    "structured_table",
+    "structured_term_alias",
 }
 
 
@@ -32,6 +38,8 @@ actual = set(Base.metadata.tables)
 expected = {
     "dataset", "document", "document_chunk", "document_folder", "llm_config",
     "report_run", "report_question", "report_artifact",
+    "structured_asset", "structured_asset_alias", "structured_asset_version",
+    "structured_query_audit", "structured_table", "structured_term_alias",
 }
 if actual != expected:
     raise SystemExit(f"unexpected metadata tables: {sorted(actual)}")
@@ -61,6 +69,8 @@ actual = set(Base.metadata.tables)
 expected = {
     "dataset", "document", "document_chunk", "document_folder", "llm_config",
     "report_run", "report_question", "report_artifact",
+    "structured_asset", "structured_asset_alias", "structured_asset_version",
+    "structured_query_audit", "structured_table", "structured_term_alias",
 }
 if actual != expected:
     raise SystemExit(f"unexpected metadata tables: {sorted(actual)}")
@@ -88,6 +98,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0007_document_folders.py",
         "0008_document_folder_hierarchy.py",
         "0009_report_platform_foundation.py",
+        "0009_structured_assets.py",
     ]
 
     root_revision = runpy.run_path(str(version_files[0]))
@@ -100,6 +111,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     folders_revision = runpy.run_path(str(version_files[7]))
     folder_hierarchy_revision = runpy.run_path(str(version_files[8]))
     report_revision = runpy.run_path(str(version_files[9]))
+    structured_assets_revision = runpy.run_path(str(version_files[10]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
@@ -123,6 +135,8 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     )
     assert report_revision["revision"] == "0009_report_platform_foundation"
     assert report_revision["down_revision"] == "0008_document_folder_hierarchy"
+    assert structured_assets_revision["revision"] == "0009_structured_assets"
+    assert structured_assets_revision["down_revision"] == "0008_document_folder_hierarchy"
 
 
 def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
@@ -162,6 +176,10 @@ def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
     assert "model_snapshot json not null" in sql
     assert "document_manifest json not null" in sql
     assert "analysis_coverage json" in sql
+    assert "create table structured_asset" in sql
+    assert "create table structured_asset_version" in sql
+    assert "create table structured_table" in sql
+    assert "create table structured_query_audit" in sql
 
     legacy_tables = {
         "dataset_parse_config",
@@ -201,3 +219,6 @@ def test_readable_sql_snapshot_contains_current_chunk_structure_column() -> None
     assert "idx_document_folder_parent" in sql
     assert "template_snapshot json not null" in sql
     assert "document_manifest json not null" in sql
+    assert "create table structured_asset" in sql
+    assert "create table structured_asset_version" in sql
+    assert "create table structured_table" in sql
