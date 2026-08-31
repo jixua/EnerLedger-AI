@@ -13,7 +13,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
-from app.domain.models import Dataset, StructuredAsset, StructuredAssetVersion, StructuredTable
+from app.domain.models import Dataset, StructuredAsset, StructuredAssetVersion
 from app.rag.config import settings
 from app.rag.database import get_db
 from app.services.structured_assets import (

@@ -198,6 +198,7 @@ CREATE TABLE document (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
+    UNIQUE KEY uk_document_user_dataset_filename (user_id, dataset_id, filename),
     KEY idx_document_dataset_created (dataset_id, created_at),
     KEY idx_document_user_status (user_id, status),
     KEY idx_document_queue_available (status, available_at, id),

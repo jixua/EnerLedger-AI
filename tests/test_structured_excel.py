@@ -10,15 +10,43 @@ from app.services.structured_excel import (
     parse_epa_workbook,
     profile_workbook,
     sha256_file,
+    write_parquet_tables,
 )
+from app.services.structured_query import StructuredFactorQuery, StructuredQueryService
 
 
 def _append_epa_table(sheet, number: int) -> None:
     sheet.append([None, f"Table {number}", f"Table {number} title"])
     sheet.append([])
     if number == 1:
-        sheet.append([None, None, "Fuel Type", "Heat Content (HHV)", "CO2 Factor", "CH4 Factor", "N2O Factor", "CO2 Factor", "CH4 Factor", "N2O Factor"])
-        sheet.append([None, None, None, "mmBtu per short ton", "kg CO2 per mmBtu", "g CH4 per mmBtu", "g N2O per mmBtu", "kg CO2 per short ton", "g CH4 per short ton", "g N2O per short ton"])
+        sheet.append(
+            [
+                None,
+                None,
+                "Fuel Type",
+                "Heat Content (HHV)",
+                "CO2 Factor",
+                "CH4 Factor",
+                "N2O Factor",
+                "CO2 Factor",
+                "CH4 Factor",
+                "N2O Factor",
+            ]
+        )
+        sheet.append(
+            [
+                None,
+                None,
+                None,
+                "mmBtu per short ton",
+                "kg CO2 per mmBtu",
+                "g CH4 per mmBtu",
+                "g N2O per mmBtu",
+                "kg CO2 per short ton",
+                "g CH4 per short ton",
+                "g N2O per short ton",
+            ]
+        )
         sheet.append([None, None, "Coal and Coke"])
         sheet.append([None, None, "Anthracite", 25.09, 103.69, 11, 1.6, 2602, 276, 40])
     elif number == 2:
@@ -28,27 +56,67 @@ def _append_epa_table(sheet, number: int) -> None:
         sheet.append([None, None, "Vehicle Type", "Model Year", "CH4 Factor", "N2O Factor"])
         sheet.append([None, None, "Passenger Cars", "2020", 0.1, 0.2])
     elif number == 4:
-        sheet.append([None, None, "Vehicle Type", "Fuel Type", "Model Year", "CH4 Factor", "N2O Factor"])
+        sheet.append(
+            [None, None, "Vehicle Type", "Fuel Type", "Model Year", "CH4 Factor", "N2O Factor"]
+        )
         sheet.append([None, None, "Passenger Cars", "Diesel", "2020", 0.1, 0.2])
     elif number == 5:
         sheet.append([None, None, "Vehicle Type", "Fuel Type", "CH4 Factor", "N2O Factor"])
         sheet.append([None, None, "Ships", "Diesel", 0.1, 0.2])
     elif number == 6:
         sheet.append([None, None, None, None, "Total Output", None, None, "Non-Baseload"])
-        sheet.append([None, None, "eGRID Subregion Acronym", "eGRID Subregion Name", "CO2 Factor", "CH4 Factor", "N2O Factor", "CO2 Factor", "CH4 Factor", "N2O Factor", "Grid Gross Loss (%)"])
-        sheet.append([None, None, None, None, "lb/MWh", "lb/MWh", "lb/MWh", "lb/MWh", "lb/MWh", "lb/MWh"])
+        sheet.append(
+            [
+                None,
+                None,
+                "eGRID Subregion Acronym",
+                "eGRID Subregion Name",
+                "CO2 Factor",
+                "CH4 Factor",
+                "N2O Factor",
+                "CO2 Factor",
+                "CH4 Factor",
+                "N2O Factor",
+                "Grid Gross Loss (%)",
+            ]
+        )
+        sheet.append(
+            [None, None, None, None, "lb/MWh", "lb/MWh", "lb/MWh", "lb/MWh", "lb/MWh", "lb/MWh"]
+        )
         sheet.append([None, None, "TEST", "Test Region", 1, 2, 3, 4, 5, 6, 0.04])
     elif number == 7:
         sheet.append([None, None, None, "CO2 Factor", "CH4 Factor", "N2O Factor"])
         sheet.append([None, None, "Steam and Heat", 1, 2, 3])
     elif number in {8, 10}:
-        sheet.append([None, None, "Vehicle Type", "CO2 Factor", "CH4 Factor", "N2O Factor", "Units"])
+        sheet.append(
+            [None, None, "Vehicle Type", "CO2 Factor", "CH4 Factor", "N2O Factor", "Units"]
+        )
         sheet.append([None, None, "Passenger Car", 1, 2, 3, "vehicle-mile"])
     elif number == 9:
-        sheet.append([None, None, "Material", "Recycled", "Landfilled", "Combusted", "Composted", "Anaerobically Digested Dry", "Anaerobically Digested Wet"])
+        sheet.append(
+            [
+                None,
+                None,
+                "Material",
+                "Recycled",
+                "Landfilled",
+                "Combusted",
+                "Composted",
+                "Anaerobically Digested Dry",
+                "Anaerobically Digested Wet",
+            ]
+        )
         sheet.append([None, None, "Aluminum", 1, 2, 3, "NA", "NA", "NA"])
     elif number == 11:
-        sheet.append([None, None, "Industrial Designation or Common Name", "Chemical Formula", "100-Year GWP"])
+        sheet.append(
+            [
+                None,
+                None,
+                "Industrial Designation or Common Name",
+                "Chemical Formula",
+                "100-Year GWP",
+            ]
+        )
         sheet.append([None, None, "Carbon dioxide", "CO2", 1])
     elif number == 12:
         sheet.append([None, None, "ASHRAE #", "100-year GWP", "Blend Composition"])
@@ -124,3 +192,27 @@ def test_sha256_is_stable_for_duplicate_files(tmp_path: Path) -> None:
     second.write_bytes(first.read_bytes())
 
     assert sha256_file(first) == sha256_file(second)
+
+
+def test_generated_parquet_supports_typed_parameterized_query(tmp_path: Path) -> None:
+    path = tmp_path / "2025 GHG Emission Factors Hub.xlsx"
+    _epa_fixture(path)
+    parsed = parse_epa_workbook(path, path.name)
+    files = write_parquet_tables(parsed, tmp_path / "parquet")
+
+    rows = StructuredQueryService()._execute(
+        [files["stationary_combustion"]],
+        StructuredFactorQuery(
+            dataset_ids=[1],
+            table_code="stationary_combustion",
+            activity="Anthracite",
+            gas="CO2",
+            denominator_unit="mmBtu",
+        ),
+    )
+
+    assert len(rows) == 1
+    assert rows[0]["factor_value"] == "103.690000000000"
+    assert rows[0]["numerator_unit"] == "kg CO2"
+    assert rows[0]["denominator_unit"] == "mmBtu"
+    assert rows[0]["source_file"] == path.name

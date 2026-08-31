@@ -154,8 +154,7 @@ class StructuredAssetPublisher:
             file_size=prepared.file_size,
             raw_bucket=settings.MINIO_RAW_BUCKET,
             raw_object_key=(
-                f"structured/{user_id}/{dataset_id}/{asset.id}/raw/"
-                f"{prepared.content_hash}.xlsx"
+                f"structured/{user_id}/{dataset_id}/{asset.id}/raw/{prepared.content_hash}.xlsx"
             ),
             profile={
                 "sheet_names": prepared.profile.sheet_names,
@@ -259,9 +258,7 @@ class StructuredAssetPublisher:
             asset.current_version_id = candidate.id
 
     @staticmethod
-    async def _ensure_default_aliases(
-        db: AsyncSession, *, user_id: int, dataset_id: int
-    ) -> None:
+    async def _ensure_default_aliases(db: AsyncSession, *, user_id: int, dataset_id: int) -> None:
         existing = set(
             (
                 await db.scalars(

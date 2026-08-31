@@ -9,10 +9,10 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import StreamingResponse
+from loguru import logger
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
 
 from app.domain.auth import get_user_id
 from app.domain.models import Dataset
@@ -74,6 +74,21 @@ def _sse(event: str, payload: dict) -> str:
 
 
 async def _structured_lookup(recall_request) -> list[dict]:
+    query_text = recall_request.query.lower()
+    structured_markers = (
+        "排放因子",
+        "排放系数",
+        "gwp",
+        "温室效应潜能",
+        "二氧化碳",
+        "甲烷",
+        "氧化亚氮",
+        "co2",
+        "ch4",
+        "n2o",
+    )
+    if not any(marker in query_text for marker in structured_markers):
+        return []
     try:
         async with get_db_context() as db:
             return await StructuredQueryService().query_natural_language(
@@ -190,7 +205,6 @@ async def _event_stream(
                     "hits": serialized_hits,
                     "failed_sources": response.failed_sources,
                     "elapsed_ms": response.elapsed_ms,
-                    "structured_data": [],
                 },
             )
             return
@@ -257,18 +271,17 @@ async def _event_stream(
             )
             return
 
-        yield _sse(
-            "answer_done",
-            {
-                "request_id": request_id,
-                "answer": "".join(answer_parts),
-                "usage": usage.model_dump(),
-                "hits": serialized_hits,
-                "failed_sources": response.failed_sources,
-                "elapsed_ms": response.elapsed_ms,
-                "structured_data": structured_rows,
-            },
-        )
+        answer_payload = {
+            "request_id": request_id,
+            "answer": "".join(answer_parts),
+            "usage": usage.model_dump(),
+            "hits": serialized_hits,
+            "failed_sources": response.failed_sources,
+            "elapsed_ms": response.elapsed_ms,
+        }
+        if structured_rows:
+            answer_payload["structured_data"] = structured_rows
+        yield _sse("answer_done", answer_payload)
     except asyncio.CancelledError:
         raise
     except TimeoutError:

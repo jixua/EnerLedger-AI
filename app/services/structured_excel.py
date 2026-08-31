@@ -149,9 +149,7 @@ def profile_workbook(path: Path, filename: str) -> WorkbookProfile:
             found: dict[int, int] = {}
             for row in sheet.iter_rows(values_only=True):
                 for value in row:
-                    match = re.fullmatch(
-                        r"Table\s+(\d+)", _text(value), flags=re.IGNORECASE
-                    )
+                    match = re.fullmatch(r"Table\s+(\d+)", _text(value), flags=re.IGNORECASE)
                     if match:
                         found[int(match.group(1))] = len(found) + 1
             if set(found) != set(EPA_TABLES):
@@ -211,12 +209,7 @@ def _find_table_rows(rows: list[tuple[Any, ...]]) -> dict[int, int]:
 
 
 def _trim_leading_empty_columns(rows: list[tuple[Any, ...]]) -> list[tuple[Any, ...]]:
-    populated = [
-        index
-        for row in rows
-        for index, value in enumerate(row)
-        if _text(value)
-    ]
+    populated = [index for row in rows for index, value in enumerate(row) if _text(value)]
     if not populated:
         return rows
     offset = min(populated)
@@ -614,9 +607,7 @@ def parse_epa_workbook(path: Path, filename: str) -> ParsedWorkbook:
         raise StructuredWorkbookError("该文件不是 EPA 排放因子模板")
     workbook = load_workbook(path, read_only=True, data_only=True)
     try:
-        rows = _trim_leading_empty_columns(
-            list(workbook[EPA_SHEET].iter_rows(values_only=True))
-        )
+        rows = _trim_leading_empty_columns(list(workbook[EPA_SHEET].iter_rows(values_only=True)))
     finally:
         workbook.close()
     starts = _find_table_rows(rows)
@@ -657,9 +648,7 @@ def write_parquet_tables(parsed: ParsedWorkbook, output_dir: Path) -> dict[str, 
                 [[record.get(column) for column in columns] for record in table.records],
             )
             escaped = str(destination).replace("'", "''")
-            connection.execute(
-                f"COPY factors TO '{escaped}' (FORMAT PARQUET, COMPRESSION ZSTD)"
-            )
+            connection.execute(f"COPY factors TO '{escaped}' (FORMAT PARQUET, COMPRESSION ZSTD)")
         finally:
             connection.close()
         outputs[table.table_code] = destination

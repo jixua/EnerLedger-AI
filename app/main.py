@@ -31,8 +31,8 @@ from app.api.rag import router as rag_router
 from app.api.recall import router as recall_router
 from app.api.report_agent_internal import router as report_agent_internal_router
 from app.api.reports import router as reports_router
-from app.api.system import router as system_router
 from app.api.structured_data import router as structured_data_router
+from app.api.system import router as system_router
 
 
 @asynccontextmanager

@@ -75,9 +75,7 @@ class StructuredQueryService:
         db.add(audit)
         try:
             tables = await self._authorized_tables(db, user_id=user_id, query=query)
-            local_files = await asyncio.gather(
-                *(self._materialize(table) for table in tables)
-            )
+            local_files = await asyncio.gather(*(self._materialize(table) for table in tables))
             rows = await asyncio.to_thread(self._execute, local_files, query)
             audit.status = "SUCCESS"
             audit.result_count = len(rows)
@@ -85,10 +83,22 @@ class StructuredQueryService:
             await db.commit()
             return rows
         except Exception as exc:
-            audit.status = "FAILED"
-            audit.error_message = str(exc)[:2000]
-            audit.elapsed_ms = int((time.monotonic() - started) * 1000)
-            await db.commit()
+            await db.rollback()
+            db.add(
+                StructuredQueryAudit(
+                    user_id=user_id,
+                    dataset_ids=query.dataset_ids,
+                    request_payload=query.audit_payload(),
+                    status="FAILED",
+                    result_count=0,
+                    error_message=str(exc)[:2000],
+                    elapsed_ms=int((time.monotonic() - started) * 1000),
+                )
+            )
+            try:
+                await db.commit()
+            except Exception:
+                await db.rollback()
             raise
 
     async def query_natural_language(
@@ -191,9 +201,7 @@ class StructuredQueryService:
                 StructuredAsset.current_version_id == StructuredAssetVersion.id
             )
         else:
-            statement = statement.where(
-                StructuredAssetVersion.edition_year == query.edition_year
-            )
+            statement = statement.where(StructuredAssetVersion.edition_year == query.edition_year)
         if query.table_code:
             statement = statement.where(StructuredTable.table_code == query.table_code)
         tables = list((await db.scalars(statement)).all())
@@ -203,9 +211,7 @@ class StructuredQueryService:
 
     async def _materialize(self, table: StructuredTable) -> Path:
         self._cache_dir.mkdir(parents=True, exist_ok=True)
-        key = hashlib.sha256(
-            f"{table.id}:{table.content_hash}".encode("utf-8")
-        ).hexdigest()
+        key = hashlib.sha256(f"{table.id}:{table.content_hash}".encode()).hexdigest()
         destination = self._cache_dir / f"{key}.parquet"
         if destination.exists() and destination.stat().st_size > 0:
             return destination
@@ -220,9 +226,7 @@ class StructuredQueryService:
         return destination
 
     @staticmethod
-    def _execute(
-        paths: list[Path], query: StructuredFactorQuery
-    ) -> list[dict[str, Any]]:
+    def _execute(paths: list[Path], query: StructuredFactorQuery) -> list[dict[str, Any]]:
         import duckdb
 
         if not paths:

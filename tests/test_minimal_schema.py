@@ -95,6 +95,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0005_dataset_vision_config.py",
         "0006_document_dispatch_outbox.py",
         "0007_crawler_document_review.py",
+        "0007_document_filename_unique.py",
         "0007_document_folders.py",
         "0008_document_folder_hierarchy.py",
         "0009_report_platform_foundation.py",
@@ -108,10 +109,11 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     vision_config_revision = runpy.run_path(str(version_files[4]))
     dispatch_outbox_revision = runpy.run_path(str(version_files[5]))
     crawler_review_revision = runpy.run_path(str(version_files[6]))
-    folders_revision = runpy.run_path(str(version_files[7]))
-    folder_hierarchy_revision = runpy.run_path(str(version_files[8]))
-    report_revision = runpy.run_path(str(version_files[9]))
-    structured_assets_revision = runpy.run_path(str(version_files[10]))
+    filename_unique_revision = runpy.run_path(str(version_files[7]))
+    folders_revision = runpy.run_path(str(version_files[8]))
+    folder_hierarchy_revision = runpy.run_path(str(version_files[9]))
+    report_revision = runpy.run_path(str(version_files[10]))
+    structured_assets_revision = runpy.run_path(str(version_files[11]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
@@ -126,6 +128,8 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     assert dispatch_outbox_revision["down_revision"] == "0005_dataset_vision_config"
     assert crawler_review_revision["revision"] == "0007_crawler_document_review"
     assert crawler_review_revision["down_revision"] == "0006_document_dispatch_outbox"
+    assert filename_unique_revision["revision"] == "0007_document_filename_unique"
+    assert filename_unique_revision["down_revision"] == "0006_document_dispatch_outbox"
     assert folders_revision["revision"] == "0007_document_folders"
     assert folders_revision["down_revision"] == "0006_document_dispatch_outbox"
     assert folder_hierarchy_revision["revision"] == "0008_document_folder_hierarchy"
@@ -136,7 +140,10 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     assert report_revision["revision"] == "0009_report_platform_foundation"
     assert report_revision["down_revision"] == "0008_document_folder_hierarchy"
     assert structured_assets_revision["revision"] == "0009_structured_assets"
-    assert structured_assets_revision["down_revision"] == "0008_document_folder_hierarchy"
+    assert structured_assets_revision["down_revision"] == (
+        "0009_report_platform_foundation",
+        "0007_document_filename_unique",
+    )
 
 
 def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
@@ -176,6 +183,7 @@ def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
     assert "model_snapshot json not null" in sql
     assert "document_manifest json not null" in sql
     assert "analysis_coverage json" in sql
+    assert "uk_document_user_dataset_filename" in sql
     assert "create table structured_asset" in sql
     assert "create table structured_asset_version" in sql
     assert "create table structured_table" in sql
