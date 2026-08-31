@@ -2,10 +2,6 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 
-const crawlerPageSource = await readFile(
-  new URL("../src/pages/CrawlerPage.jsx", import.meta.url),
-  "utf8",
-);
 const crawlerReviewPageSource = await readFile(
   new URL("../src/pages/CrawlerReviewPage.jsx", import.meta.url),
   "utf8",
@@ -26,53 +22,6 @@ const uploadDialogSource = await readFile(
   new URL("../src/components/UploadDialog.jsx", import.meta.url),
   "utf8",
 );
-
-test("crawler requires a dataset and places the query before compact selectors", () => {
-  const datasetSelector = crawlerPageSource.indexOf('className="crawler-search__dataset"');
-  const resultLimit = crawlerPageSource.indexOf('className="crawler-search__limit"');
-  const queryInput = crawlerPageSource.indexOf('className="crawler-search__input"');
-
-  assert.ok(queryInput >= 0);
-  assert.ok(datasetSelector > queryInput);
-  assert.ok(resultLimit > datasetSelector);
-  assert.match(
-    crawlerPageSource,
-    /disabled=\{!datasetId \|\| loading \|\| query\.trim\(\)\.length < 2\}/,
-  );
-  assert.match(
-    crawlerPageSource,
-    /if \(!datasetId \|\| normalized\.length < 2 \|\| loading\) return/,
-  );
-});
-
-test("crawler always enables AI optimization without showing a toggle or success card", () => {
-  assert.match(crawlerPageSource, /aiOptimize: true/);
-  assert.doesNotMatch(
-    crawlerPageSource,
-    /setAiOptimize|crawler-search__ai|crawler-search__note/,
-  );
-  assert.doesNotMatch(crawlerPageSource, /AI 优化检索|规则优化检索/);
-  assert.match(crawlerPageSource, /result\?\.optimization_warning/);
-});
-
-test("search results remain bound to the selected dataset", () => {
-  assert.match(crawlerPageSource, /function handleDatasetChange/);
-  assert.match(crawlerPageSource, /setResult\(null\)/);
-  assert.match(crawlerPageSource, /setSelectedIds\(\[\]\)/);
-  assert.match(crawlerPageSource, /crawler-import__target/);
-  assert.doesNotMatch(crawlerPageSource, /setDatasetId\(""\)/);
-  assert.doesNotMatch(crawlerPageSource, /aria-label="目标数据集"/);
-});
-
-test("crawler unlocks import before background document refresh", () => {
-  const unlockIndex = crawlerPageSource.indexOf("setImporting(false);");
-  const refreshIndex = crawlerPageSource.indexOf(
-    "Promise.resolve(actions.loadDocuments?.(targetDatasetId))",
-  );
-
-  assert.ok(unlockIndex >= 0);
-  assert.ok(refreshIndex > unlockIndex);
-});
 
 test("crawler review gates parsing behind an explicit approval action", () => {
   assert.match(crawlerReviewPageSource, /listCrawlerSubmissions/);
@@ -97,12 +46,11 @@ test("manual upload selector includes Markdown files", () => {
   assert.match(uploadDialogSource, /PDF、Word、Markdown、HTML/);
 });
 
-test("arXiv collection and crawler review have independent routes and navigation", () => {
-  assert.doesNotMatch(crawlerPageSource, /listCrawlerSubmissions/);
-  assert.doesNotMatch(crawlerReviewPageSource, /searchArxivPapers/);
+test("document review remains the only crawler navigation entry", () => {
   assert.match(appShellSource, /to: "\/crawler\/review", label: "资料审核"/);
-  assert.match(appShellSource, /to: "\/crawler", label: "arXiv 采集"[^\n]*end: true/);
+  assert.doesNotMatch(appShellSource, /to: "\/crawler"[^/]/);
   assert.match(appSource, /path="crawler\/review"/);
+  assert.doesNotMatch(appSource, /path="crawler"/);
 });
 
 test("crawler review filter and refresh action stay in one row", () => {

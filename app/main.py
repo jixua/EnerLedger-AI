@@ -14,7 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.rag.config import settings
 from app.rag.database import close_database, init_database
 from app.rag.observability.logging import logger, setup_logger
-from app.services.arxiv_crawler import arxiv_crawler
 from app.services.document_dispatch import run_document_dispatch_reconciler
 from app.services.report_dispatch import run_report_dispatch_reconciler
 
@@ -67,7 +66,6 @@ async def lifespan(_: FastAPI):
     await drain_usage_reports()
     await close_recall_pipeline_resources()
     await close_ingestion_resources()
-    await arxiv_crawler.close()
     await close_database()
     await logger.complete()
 

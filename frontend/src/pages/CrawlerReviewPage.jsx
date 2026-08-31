@@ -187,7 +187,7 @@ export function CrawlerReviewPage() {
           return (
             <article className="panel crawler-review-card" key={submission.document_id}>
               <div className="crawler-review-card__body">
-                <div className="crawler-paper__meta">
+                <div className="crawler-review-card__meta">
                   <span>{submission.dataset_name}</span>
                   <span>{formatBytes(submission.file_size)}</span>
                   <span>{formatDate(submission.created_at)}</span>
