@@ -100,6 +100,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0008_document_folder_hierarchy.py",
         "0009_report_platform_foundation.py",
         "0009_structured_assets.py",
+        "0010_structured_report_merge.py",
     ]
 
     root_revision = runpy.run_path(str(version_files[0]))
@@ -114,6 +115,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     folder_hierarchy_revision = runpy.run_path(str(version_files[9]))
     report_revision = runpy.run_path(str(version_files[10]))
     structured_assets_revision = runpy.run_path(str(version_files[11]))
+    merge_revision = runpy.run_path(str(version_files[12]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
@@ -141,8 +143,13 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     assert report_revision["down_revision"] == "0008_document_folder_hierarchy"
     assert structured_assets_revision["revision"] == "0009_structured_assets"
     assert structured_assets_revision["down_revision"] == (
-        "0009_report_platform_foundation",
+        "0008_document_folder_hierarchy",
         "0007_document_filename_unique",
+    )
+    assert merge_revision["revision"] == "0010_structured_report_merge"
+    assert merge_revision["down_revision"] == (
+        "0009_report_platform_foundation",
+        "0009_structured_assets",
     )
 
 

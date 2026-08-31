@@ -1,7 +1,7 @@
 """structured Excel assets and query catalog
 
 Revision ID: 0009_structured_assets
-Revises: 0009_report_platform_foundation, 0007_document_filename_unique
+Revises: 0008_document_folder_hierarchy, 0007_document_filename_unique
 Create Date: 2026-08-31
 """
 
@@ -13,7 +13,7 @@ from sqlalchemy.dialects import mysql
 
 revision: str = "0009_structured_assets"
 down_revision: tuple[str, str] = (
-    "0009_report_platform_foundation",
+    "0008_document_folder_hierarchy",
     "0007_document_filename_unique",
 )
 branch_labels: str | Sequence[str] | None = None
