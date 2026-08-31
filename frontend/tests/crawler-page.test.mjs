@@ -22,6 +22,10 @@ const pageStyles = await readFile(
   new URL("../src/pages.css", import.meta.url),
   "utf8",
 );
+const uploadDialogSource = await readFile(
+  new URL("../src/components/UploadDialog.jsx", import.meta.url),
+  "utf8",
+);
 
 test("crawler requires a dataset and places the query before compact selectors", () => {
   const datasetSelector = crawlerPageSource.indexOf('className="crawler-search__dataset"');
@@ -75,7 +79,22 @@ test("crawler review gates parsing behind an explicit approval action", () => {
   assert.match(crawlerReviewPageSource, /reviewCrawlerSubmission/);
   assert.match(crawlerReviewPageSource, /decision === "APPROVED"/);
   assert.match(crawlerReviewPageSource, /通过并解析/);
-  assert.match(crawlerReviewPageSource, /查看原文件/);
+  assert.match(crawlerReviewPageSource, /审核预览/);
+});
+
+test("review preview renders PDF and Markdown without parsing Word before approval", () => {
+  assert.match(crawlerReviewPageSource, /submissionPreviewKind/);
+  assert.match(crawlerReviewPageSource, /preview\.kind === "pdf"/);
+  assert.match(crawlerReviewPageSource, /<ReactMarkdown/);
+  assert.match(crawlerReviewPageSource, /Word 原文件需下载后审核/);
+  assert.match(crawlerReviewPageSource, /系统不会提前把 Word 转换为 HTML/);
+  assert.match(pageStyles, /\.crawler-preview-dialog__pdf/);
+  assert.match(pageStyles, /\.crawler-preview-dialog__markdown/);
+});
+
+test("manual upload selector includes Markdown files", () => {
+  assert.match(uploadDialogSource, /'md', 'markdown'/);
+  assert.match(uploadDialogSource, /PDF、Word、Markdown、HTML/);
 });
 
 test("arXiv collection and crawler review have independent routes and navigation", () => {

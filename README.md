@@ -292,33 +292,35 @@ curl -X POST http://127.0.0.1:8000/api/v1/documents/123/analysis \
 
 ## 文档状态
 
-- `PENDING_REVIEW`：第三方爬虫原文件已保存到 MinIO，等待管理员审核，不会投递解析任务。
+- `PENDING_REVIEW`：外部系统提交的原文件已保存到 MinIO，等待管理员审核，不会投递解析任务。
 - `QUEUED`：原文件已持久化，等待独立 `parse-worker` 领取。
 - `PROCESSING`：worker 已持有可续租 lease，正在解析、切分或写入索引。
 - `READY`：Markdown/资产、PDF 质量门禁与三路索引均完成，可以召回。
 - `FAILED`：自动退避重试耗尽后失败，原因记录在 `error_code/error_message`，不会参与召回。
-- `REJECTED`：第三方采集资料未通过人工审核，保留原文件和审核记录，但不会解析或召回。
+- `REJECTED`：外部提交资料未通过人工审核，保留原文件和审核记录，但不会解析或召回。
 
-## 第三方爬虫上传与审核
+## 外部文档上传与审核
 
-部署时为 API 配置独立的 `CRAWLER_UPLOAD_API_KEY`；留空会关闭外部上传入口。第三方服务使用
-`POST /api/v1/crawler/uploads` 提交 multipart 表单，其中 `dataset_id` 和 `file` 必填，
-`source_url`、`title`、`crawler_name` 与 JSON 对象字符串 `metadata` 可选：
+部署时为 API 配置独立的 `CRAWLER_UPLOAD_API_KEY`；留空会关闭外部上传入口。外部系统使用
+`POST /api/v1/document-submissions` 提交 multipart 表单，其中 `dataset_id` 和 `file` 必填，
+支持 PDF、Word（DOC/DOCX）和 UTF-8 Markdown（MD/MARKDOWN）；`source_url`、`title`、
+`source_name` 与 JSON 对象字符串 `metadata` 可选：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/crawler/uploads \
-  -H 'X-Crawler-Api-Key: <crawler_api_key>' \
+curl -X POST http://127.0.0.1:8000/api/v1/document-submissions \
+  -H 'X-Document-Submission-Key: <submission_api_key>' \
   -F 'dataset_id=1' \
   -F 'file=@article.pdf;type=application/pdf' \
   -F 'source_url=https://example.org/articles/1' \
   -F 'title=文章标题' \
-  -F 'crawler_name=partner-crawler' \
+  -F 'source_name=partner-system' \
   -F 'metadata={"external_id":"article-1"}'
 ```
 
-成功响应为 `201`，文档保持 `PENDING_REVIEW` 且 outbox 为 `IDLE`。管理员在前端“资料采集”
+旧的 `POST /api/v1/crawler/uploads`、`X-Crawler-Api-Key` 和 `crawler_name` 参数继续兼容。
+成功响应为 `201`，文档保持 `PENDING_REVIEW` 且 outbox 为 `IDLE`。管理员在前端“资料审核”
 页面查看原文件后执行通过或拒绝；通过操作调用
-`POST /api/v1/crawler/submissions/{document_id}/review`，在同一事务中将文档切为 `QUEUED`
+`POST /api/v1/document-submissions/{document_id}/review`，在同一事务中将文档切为 `QUEUED`
 并创建待投递 outbox，随后才发送 RabbitMQ 解析消息。待审核和已拒绝资料不会出现在普通文档
 列表或解析队列中。
 

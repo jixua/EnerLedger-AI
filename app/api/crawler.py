@@ -62,6 +62,10 @@ from app.services.document_queue import (
 )
 
 router = APIRouter(prefix="/api/v1/crawler", tags=["资料采集"])
+submission_router = APIRouter(
+    prefix="/api/v1/document-submissions",
+    tags=["外部文档审核"],
+)
 
 
 def _paper_filename(title: str) -> str:
@@ -105,8 +109,11 @@ def _normalize_source_url(value: str | None) -> str | None:
     return normalized
 
 
-def _parse_source_metadata(value: str | None, crawler_name: str) -> dict[str, object]:
-    metadata: dict[str, object] = {"crawler_name": crawler_name}
+def _parse_source_metadata(value: str | None, source_name: str) -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "source_name": source_name,
+        "crawler_name": source_name,
+    }
     if not value:
         return metadata
     try:
@@ -116,7 +123,8 @@ def _parse_source_metadata(value: str | None, crawler_name: str) -> dict[str, ob
     if not isinstance(parsed, dict):
         raise HTTPException(status_code=422, detail="metadata 必须是 JSON 对象")
     metadata.update(parsed)
-    metadata["crawler_name"] = crawler_name
+    metadata["source_name"] = source_name
+    metadata["crawler_name"] = source_name
     return metadata
 
 
@@ -125,28 +133,34 @@ def _parse_source_metadata(value: str | None, crawler_name: str) -> dict[str, ob
     response_model=CrawlerSubmissionRead,
     status_code=status.HTTP_201_CREATED,
 )
+@submission_router.post(
+    "",
+    response_model=CrawlerSubmissionRead,
+    status_code=status.HTTP_201_CREATED,
+)
 async def upload_crawler_submission(
     dataset_id: Annotated[int, Form(gt=0)],
     file: Annotated[UploadFile, File()],
     source_url: Annotated[str | None, Form(max_length=1024)] = None,
     title: Annotated[str | None, Form(max_length=512)] = None,
+    source_name: Annotated[str | None, Form(min_length=1, max_length=64)] = None,
     crawler_name: Annotated[str, Form(min_length=1, max_length=64)] = "external-crawler",
     metadata: Annotated[str | None, Form(max_length=16384)] = None,
     _: None = Depends(require_crawler_api_key),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """Receive a crawler file into MinIO without dispatching a parse task."""
+    """Receive an external file into MinIO without dispatching a parse task."""
 
     dataset = await _owned_dataset(db, dataset_id, ADMIN_USER_ID)
-    normalized_crawler_name = crawler_name.strip()
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", normalized_crawler_name):
+    normalized_source_name = (source_name or crawler_name).strip()
+    if not re.fullmatch(r"[A-Za-z0-9_.-]+", normalized_source_name):
         raise HTTPException(
             status_code=422,
-            detail="crawler_name 只能包含字母、数字、点、下划线和连字符",
+            detail="source_name 只能包含字母、数字、点、下划线和连字符",
         )
     normalized_title = (title.strip() or None) if title else None
     normalized_source_url = _normalize_source_url(source_url)
-    source_metadata = _parse_source_metadata(metadata, normalized_crawler_name)
+    source_metadata = _parse_source_metadata(metadata, normalized_source_name)
     filename = re.split(r"[/\\]", file.filename or "")[-1]
     file_type = Path(filename).suffix.lower().lstrip(".")
     parse_temp_root = Path(settings.PARSE_TEMP_DIR)
@@ -178,6 +192,7 @@ async def upload_crawler_submission(
 
 
 @router.get("/submissions", response_model=CrawlerSubmissionPage)
+@submission_router.get("", response_model=CrawlerSubmissionPage)
 async def list_crawler_submissions(
     review_status: Literal["PENDING", "APPROVED", "REJECTED"] | None = Query(default="PENDING"),
     offset: int = Query(default=0, ge=0),
@@ -213,6 +228,7 @@ async def list_crawler_submissions(
 
 
 @router.get("/submissions/{document_id}/file")
+@submission_router.get("/{document_id}/file")
 async def download_crawler_submission_file(
     document_id: int,
     user_id: int = Depends(get_user_id),
@@ -258,6 +274,10 @@ async def download_crawler_submission_file(
 
 @router.post(
     "/submissions/{document_id}/review",
+    response_model=CrawlerSubmissionRead,
+)
+@submission_router.post(
+    "/{document_id}/review",
     response_model=CrawlerSubmissionRead,
 )
 async def review_crawler_submission(
