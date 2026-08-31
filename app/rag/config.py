@@ -32,8 +32,7 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     APP_ENV: str = "development"
     CORS_ALLOW_ORIGINS: str = (
-        "http://127.0.0.1:4173,http://localhost:4173,"
-        "http://127.0.0.1:4175,http://localhost:4175"
+        "http://127.0.0.1:4173,http://localhost:4173,http://127.0.0.1:4175,http://localhost:4175"
     )
 
     @property
@@ -109,6 +108,14 @@ class Settings(BaseSettings):
     JWT_AUDIENCE: str = "energy-carbon-web"
     JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = Field(default=480, ge=5, le=10080)
 
+    # 独立 Pi Agent 服务。浏览器只访问 FastAPI；两枚令牌分别保护双向服务调用。
+    AGENT_ENABLED: bool = False
+    PI_SERVICE_BASE_URL: str = "http://127.0.0.1:8010"
+    PI_SERVICE_TOKEN: str = ""
+    ENERLEDGER_INTERNAL_AGENT_TOKEN: str = ""
+    AGENT_RUN_TIMEOUT_SECONDS: int = Field(default=120, ge=10, le=900)
+    AGENT_TOOL_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
+
     # ==========================================
     # 召回执行配置 (Recall Pipeline)
     # ==========================================
@@ -135,6 +142,9 @@ class Settings(BaseSettings):
     RECALL_DENSE_TOP_K: int = 100
     RECALL_SPARSE_TOP_K: int = 50
     RECALL_BM25_TOP_K: int = 100
+    # Infinity 查询分词独立进程的单路上限。超时时仅 BM25
+    # 降级，不影响 Sparse/Dense 召回和 API 事件循环。
+    BM25_QUERY_TOKENIZE_TIMEOUT_SECONDS: float = Field(default=8.0, gt=0, le=60)
     # Wiki 标题搜索由服务端固定分页；客户端不能覆盖。
     WIKI_SEARCH_PAGE_SIZE: int = 15
     # Wiki mixed 分支为每个有效数据集独立读取的 BM25 候选深度。
@@ -642,6 +652,23 @@ class Settings(BaseSettings):
     DOCUMENT_DISPATCH_RETRY_SECONDS: int = Field(default=5, ge=1, le=3600)
     DOCUMENT_DISPATCH_LEASE_SECONDS: int = Field(default=30, ge=5, le=300)
     DOCUMENT_DISPATCH_BATCH_SIZE: int = Field(default=20, ge=1, le=200)
+    REPORT_DISPATCH_POLL_SECONDS: float = Field(default=2.0, gt=0, le=60)
+    REPORT_DISPATCH_RETRY_SECONDS: int = Field(default=5, ge=1, le=3600)
+    REPORT_DISPATCH_LEASE_SECONDS: int = Field(default=30, ge=5, le=300)
+    REPORT_DISPATCH_BATCH_SIZE: int = Field(default=20, ge=1, le=200)
+    REPORT_QUEUE_LEASE_SECONDS: int = Field(default=300, gt=0)
+    REPORT_QUEUE_HEARTBEAT_SECONDS: int = Field(default=30, gt=0)
+    REPORT_QUEUE_MAX_ATTEMPTS: int = Field(default=3, gt=0)
+    REPORT_QUEUE_RETRY_DELAYS_SECONDS: str = "30,120,600"
+    REPORT_PROCESSOR_MODE: str = "disabled"
+    PI_SERVICE_URL: str = "http://127.0.0.1:8010"
+    REPORT_AGENT_INTERNAL_TOKEN: str = ""
+    REPORT_AGENT_RUN_TOKEN_SECRET: str = ""
+    REPORT_AGENT_RUN_TOKEN_TTL_SECONDS: int = Field(default=900, ge=60, le=3600)
+    REPORT_AGENT_RUN_TIMEOUT_SECONDS: float = Field(default=600, gt=0, le=3600)
+    REPORT_AGENT_MAX_TOOL_CALLS: int = Field(default=80, ge=10, le=1000)
+    REPORT_MODEL_ALLOWED_HOSTS: str = ""
+    REPORT_MODEL_ALLOW_PRIVATE_ENDPOINTS: bool = False
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
@@ -737,8 +764,15 @@ class Settings(BaseSettings):
             raise ValueError("ADMIN_PASSWORD_HASH must be a generated scrypt hash")
         if self.DOCUMENT_QUEUE_HEARTBEAT_SECONDS >= self.DOCUMENT_QUEUE_LEASE_SECONDS:
             raise ValueError(
-                "DOCUMENT_QUEUE_HEARTBEAT_SECONDS must be less than "
-                "DOCUMENT_QUEUE_LEASE_SECONDS"
+                "DOCUMENT_QUEUE_HEARTBEAT_SECONDS must be less than DOCUMENT_QUEUE_LEASE_SECONDS"
+            )
+        if self.REPORT_QUEUE_HEARTBEAT_SECONDS >= self.REPORT_QUEUE_LEASE_SECONDS:
+            raise ValueError(
+                "REPORT_QUEUE_HEARTBEAT_SECONDS must be less than REPORT_QUEUE_LEASE_SECONDS"
+            )
+        if self.REPORT_AGENT_RUN_TOKEN_TTL_SECONDS <= self.REPORT_AGENT_RUN_TIMEOUT_SECONDS:
+            raise ValueError(
+                "REPORT_AGENT_RUN_TOKEN_TTL_SECONDS must exceed REPORT_AGENT_RUN_TIMEOUT_SECONDS"
             )
         try:
             retry_delays = [
@@ -754,8 +788,33 @@ class Settings(BaseSettings):
             raise ValueError(
                 "DOCUMENT_QUEUE_RETRY_DELAYS_SECONDS must contain non-negative integers"
             )
+        try:
+            report_retry_delays = [
+                int(item.strip())
+                for item in self.REPORT_QUEUE_RETRY_DELAYS_SECONDS.split(",")
+                if item.strip()
+            ]
+        except ValueError as exc:
+            raise ValueError(
+                "REPORT_QUEUE_RETRY_DELAYS_SECONDS must be comma-separated integers"
+            ) from exc
+        if not report_retry_delays or any(delay < 0 for delay in report_retry_delays):
+            raise ValueError("REPORT_QUEUE_RETRY_DELAYS_SECONDS must contain non-negative integers")
         if self.OPENDATALOADER_TABLE_METHOD not in {"default", "cluster"}:
             raise ValueError("OPENDATALOADER_TABLE_METHOD must be default or cluster")
+        if self.AGENT_ENABLED:
+            tokens = (self.PI_SERVICE_TOKEN, self.ENERLEDGER_INTERNAL_AGENT_TOKEN)
+            if any(len(token.strip()) < 32 for token in tokens):
+                raise ValueError("Agent service tokens must contain at least 32 characters")
+            if self.PI_SERVICE_TOKEN == self.ENERLEDGER_INTERNAL_AGENT_TOKEN:
+                raise ValueError("Agent service tokens must be different")
+            if self.APP_ENV.lower() == "production" and any(
+                "local-token" in token.lower() or "change-me" in token.lower()
+                for token in tokens
+            ):
+                raise ValueError("Production Agent service tokens must not use placeholders")
+            if not self.PI_SERVICE_BASE_URL.startswith(("http://", "https://")):
+                raise ValueError("PI_SERVICE_BASE_URL must use HTTP(S)")
         return self
 
     @field_validator("RAW_MARKDOWN_IMAGE_MAX_BYTES")

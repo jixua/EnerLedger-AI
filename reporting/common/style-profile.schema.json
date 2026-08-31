@@ -1,0 +1,39 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://enerledger.local/schemas/report-style-profile.json",
+  "title": "Report Style Profile",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["profile_id", "page", "typography", "colors", "cover", "tables", "charts", "footer"],
+  "properties": {
+    "profile_id": {"type": "string", "pattern": "^r[1-7]-[a-z0-9-]+$"},
+    "page": {
+      "type": "object",
+      "required": ["size", "orientation", "margins_mm"],
+      "properties": {
+        "size": {"enum": ["A4", "LETTER"]},
+        "orientation": {"enum": ["portrait", "landscape"]},
+        "margins_mm": {"type": "array", "items": {"type": "number", "minimum": 0}, "minItems": 4, "maxItems": 4}
+      },
+      "additionalProperties": false
+    },
+    "typography": {
+      "type": "object",
+      "required": ["body", "heading", "base_size_pt"],
+      "properties": {"body": {"type": "string"}, "heading": {"type": "string"}, "base_size_pt": {"type": "number", "minimum": 8}},
+      "additionalProperties": false
+    },
+    "colors": {
+      "type": "object",
+      "required": ["primary", "secondary", "accent", "text", "muted"],
+      "properties": {
+        "primary": {"type": "string"}, "secondary": {"type": "string"}, "accent": {"type": "string"}, "text": {"type": "string"}, "muted": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "cover": {"type": "object", "required": ["layout", "show_subject", "show_period"], "properties": {"layout": {"type": "string"}, "show_subject": {"type": "boolean"}, "show_period": {"type": "boolean"}}, "additionalProperties": false},
+    "tables": {"type": "object", "required": ["header_fill", "repeat_header", "dense"], "properties": {"header_fill": {"type": "string"}, "repeat_header": {"type": "boolean"}, "dense": {"type": "boolean"}}, "additionalProperties": false},
+    "charts": {"type": "object", "required": ["palette", "show_data_labels"], "properties": {"palette": {"type": "array", "items": {"type": "string"}, "minItems": 2}, "show_data_labels": {"type": "boolean"}}, "additionalProperties": false},
+    "footer": {"type": "object", "required": ["page_number", "draft_mark"], "properties": {"page_number": {"type": "boolean"}, "draft_mark": {"type": "boolean"}}, "additionalProperties": false}
+  }
+}

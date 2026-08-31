@@ -38,6 +38,7 @@ def serialize_hits(
     sources: Mapping[str, ChunkSource] | None = None,
     citation_indexes: Mapping[str, int] | None = None,
     include_content: bool = False,
+    include_score_explanations: bool = False,
 ) -> list[dict]:
     """序列化融合命中，并透出可验证来源与显式引用编号映射。
 
@@ -63,6 +64,9 @@ def serialize_hits(
         if include_content:
             source = sources.get(chunk_id) if sources is not None else None
             item["content"] = source.content if source is not None else ""
+        if include_score_explanations:
+            item["normalized_scores"] = hit.normalized_scores
+            item["weighted_contributions"] = hit.weighted_contributions
         result.append(item)
     return result
 

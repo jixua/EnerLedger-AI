@@ -10,6 +10,7 @@ retriever 与 storage facade，单例化主要是为了与 ``recall_pipeline`` �
 
 from __future__ import annotations
 
+import time
 from functools import lru_cache
 from typing import cast
 
@@ -37,19 +38,25 @@ from app.rag.core.pipeline.recall.protocols import (
     Retriever,
 )
 from app.rag.core.pipeline.rerank import PostRecallReranker
-from app.rag.core.preprocessor.ragflow_tokenizer import RagFlowTokenizer
+from app.rag.core.preprocessor.query_tokenizer_process import (
+    close_process_query_tokenizer,
+    get_process_query_tokenizer,
+)
 from app.rag.core.storage.bm25_backend import build_bm25_recall_backend
 from app.rag.core.storage.bm25_retriever import Bm25Retriever
 from app.rag.core.storage.vector import compose_vector_storage_facade
 from app.rag.core.storage.vector.dense_retriever import DenseRetriever
 from app.rag.core.storage.vector.sparse_retriever import SparseRetriever
+from app.rag.observability.logging import logger
 
 
-def _build_bm25_retriever() -> Retriever:
+@lru_cache(maxsize=1)
+def _get_bm25_retriever() -> Bm25Retriever:
     # BM25 统一由 Manticore 提供。
     return Bm25Retriever(
         backend=build_bm25_recall_backend(),
-        tokenizer=RagFlowTokenizer(),
+        async_tokenizer=get_process_query_tokenizer(),
+        tokenize_timeout_seconds=settings.BM25_QUERY_TOKENIZE_TIMEOUT_SECONDS,
     )
 
 
@@ -77,7 +84,7 @@ def _build_dense_retriever() -> Retriever:
 # source 名 → 装配函数。新增召回路在此登记即可。未登记的 source 出现在配置中
 # 视为运维配置错误，装配期显式失败（不静默跳过）。
 _BUILDERS = {
-    SOURCE_BM25: _build_bm25_retriever,
+    SOURCE_BM25: _get_bm25_retriever,
     SOURCE_SPARSE: _build_sparse_retriever,
     SOURCE_DENSE: _build_dense_retriever,
 }
@@ -205,12 +212,32 @@ def get_recall_pipeline() -> RecallPipeline:
     return _build_pipeline()
 
 
+async def prewarm_recall_pipeline() -> None:
+    """在 API 接收流量前装配召回管线并预热 BM25 分词器。"""
+
+    started_at = time.monotonic()
+    get_recall_pipeline()
+    if SOURCE_BM25 in _enabled_sources():
+        try:
+            await _get_bm25_retriever().warmup()
+        except TimeoutError:
+            # 预热超时不应让整个 API 拒绝启动。实际请求仍会按
+            # 同一上限降级 BM25，Sparse/Dense 可继续提供召回。
+            logger.warning("[RecallPipeline] BM25 tokenizer startup warmup timed out")
+    logger.info(
+        "[RecallPipeline] startup prewarm completed elapsed_ms={}",
+        int((time.monotonic() - started_at) * 1000),
+    )
+
+
 async def close_recall_pipeline_resources() -> None:
     """释放召回单例持有的 Qdrant 客户端，并清空进程内装配缓存。"""
 
     if _get_vector_recall_facade.cache_info().currsize:
         await _get_vector_recall_facade().close()
     _get_vector_recall_facade.cache_clear()
+    _get_bm25_retriever.cache_clear()
+    await close_process_query_tokenizer()
     get_recall_pipeline.cache_clear()
     get_reranker.cache_clear()
 

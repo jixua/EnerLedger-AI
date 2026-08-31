@@ -14,12 +14,34 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Protocol
 
-from app.rag.core.llm.tokenizer import Tokenizer
 from app.rag.core.pipeline.chunk_content import fetch_chunk_contents
 from app.rag.core.pipeline.recall.models import RecallHit
 
 __all__ = ["fetch_chunk_contents", "ContextBlock", "AssembledContext", "assemble_context"]
+
+
+class _TokenCounter(Protocol):
+    def count_tokens(self, text: str) -> int: ...
+
+
+class _RecallTokenEstimator:
+    """召回在线路径的无状态 token 估算器。
+
+    上下文预算只需要保守上限，不应在首个用户请求中初始化
+    tiktoken BPE（冷启动可阻塞事件循环数十秒）。中文按 2 token/字、
+    其他字符按 0.25 token/字估算，与旧 Tokenizer 无 tiktoken 时的回退
+    口径一致，并对非空短文本至少计 1 token。
+    """
+
+    @staticmethod
+    def count_tokens(text: str) -> int:
+        if not text:
+            return 0
+        non_ascii = sum(1 for character in text if ord(character) > 127)
+        ascii_count = len(text) - non_ascii
+        return max(1, int(non_ascii * 2 + ascii_count * 0.25))
 
 
 @dataclass
@@ -51,7 +73,7 @@ def assemble_context(
     hits: list[RecallHit],
     contents: dict[str, str],
     token_budget: int,
-    tokenizer: Tokenizer | None = None,
+    tokenizer: _TokenCounter | None = None,
 ) -> AssembledContext:
     """按融合排序与 token 预算拼装上下文。
 
@@ -61,7 +83,7 @@ def assemble_context(
     - 累计 token 超 ``token_budget`` 时停止纳入，其余有正文的片段计入 ``truncated``。
     - 至少纳入第一个有正文的片段（即便其单片超预算），避免空上下文。
     """
-    tok = tokenizer or Tokenizer()
+    tok = tokenizer or _RecallTokenEstimator()
     result = AssembledContext()
     used_tokens = 0
 

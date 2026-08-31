@@ -10,6 +10,10 @@ from app.rag.core.mq.messages.document_ingestion import (
     DocumentIngestionPayload,
 )
 from app.rag.core.mq.messages.parse_task import ParseTaskMessage, ParseTaskPayload
+from app.rag.core.mq.messages.report_generation import (
+    ReportGenerationMessage,
+    ReportGenerationPayload,
+)
 from app.rag.core.mq.messages.token_usage import TokenUsageMessage, TokenUsagePayload
 
 __all__ = [
@@ -23,4 +27,6 @@ __all__ = [
     "DocumentDeleteMessage",
     "DocumentIngestionPayload",
     "DocumentIngestionMessage",
+    "ReportGenerationPayload",
+    "ReportGenerationMessage",
 ]

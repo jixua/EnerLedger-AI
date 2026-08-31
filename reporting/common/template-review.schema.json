@@ -1,0 +1,32 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://enerledger.local/schemas/template-review.schema.json",
+  "title": "Report template review",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["template_id", "template_version", "technical_review", "business_review"],
+  "properties": {
+    "template_id": {"type": "string"},
+    "template_version": {"type": "string"},
+    "technical_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status", "checks"],
+      "properties": {
+        "status": {"enum": ["PENDING", "PASSED", "FAILED"]},
+        "checks": {"type": "array", "items": {"type": "string"}}
+      }
+    },
+    "business_review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["status"],
+      "properties": {
+        "status": {"enum": ["PENDING", "APPROVED", "REJECTED"]},
+        "reviewer": {"type": ["string", "null"]},
+        "reviewed_at": {"type": ["string", "null"], "format": "date-time"},
+        "notes": {"type": ["string", "null"]}
+      }
+    }
+  }
+}

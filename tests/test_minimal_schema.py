@@ -9,7 +9,16 @@ from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VERSIONS_DIR = PROJECT_ROOT / "migrations" / "versions"
-CORE_TABLES = {"dataset", "document", "document_chunk", "document_folder", "llm_config"}
+CORE_TABLES = {
+    "dataset",
+    "document",
+    "document_chunk",
+    "document_folder",
+    "llm_config",
+    "report_run",
+    "report_question",
+    "report_artifact",
+}
 
 
 def test_importing_main_registers_current_core_tables() -> None:
@@ -20,7 +29,10 @@ import app.main
 from app.rag.models.db_models import Base
 
 actual = set(Base.metadata.tables)
-expected = {"dataset", "document", "document_chunk", "document_folder", "llm_config"}
+expected = {
+    "dataset", "document", "document_chunk", "document_folder", "llm_config",
+    "report_run", "report_question", "report_artifact",
+}
 if actual != expected:
     raise SystemExit(f"unexpected metadata tables: {sorted(actual)}")
 """
@@ -46,7 +58,10 @@ import app.rag.models.workflow
 from app.rag.models.db_models import Base
 
 actual = set(Base.metadata.tables)
-expected = {"dataset", "document", "document_chunk", "document_folder", "llm_config"}
+expected = {
+    "dataset", "document", "document_chunk", "document_folder", "llm_config",
+    "report_run", "report_question", "report_artifact",
+}
 if actual != expected:
     raise SystemExit(f"unexpected metadata tables: {sorted(actual)}")
 """
@@ -72,6 +87,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0007_crawler_document_review.py",
         "0007_document_folders.py",
         "0008_document_folder_hierarchy.py",
+        "0009_report_platform_foundation.py",
     ]
 
     root_revision = runpy.run_path(str(version_files[0]))
@@ -83,6 +99,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     crawler_review_revision = runpy.run_path(str(version_files[6]))
     folders_revision = runpy.run_path(str(version_files[7]))
     folder_hierarchy_revision = runpy.run_path(str(version_files[8]))
+    report_revision = runpy.run_path(str(version_files[9]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
@@ -104,6 +121,8 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0007_crawler_document_review",
         "0007_document_folders",
     )
+    assert report_revision["revision"] == "0009_report_platform_foundation"
+    assert report_revision["down_revision"] == "0008_document_folder_hierarchy"
 
 
 def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
@@ -137,6 +156,12 @@ def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
     assert "alter table document add column folder_id bigint unsigned" in sql
     assert "alter table document_folder add column parent_id bigint unsigned" in sql
     assert "idx_document_folder_parent" in sql
+    assert "alter table llm_config add column supports_tool_calling bool" in sql
+    assert "create table report_run" in sql
+    assert "template_snapshot json not null" in sql
+    assert "model_snapshot json not null" in sql
+    assert "document_manifest json not null" in sql
+    assert "analysis_coverage json" in sql
 
     legacy_tables = {
         "dataset_parse_config",
@@ -174,3 +199,5 @@ def test_readable_sql_snapshot_contains_current_chunk_structure_column() -> None
     assert "idx_document_folder" in sql
     assert "parent_id bigint unsigned null" in sql
     assert "idx_document_folder_parent" in sql
+    assert "template_snapshot json not null" in sql
+    assert "document_manifest json not null" in sql

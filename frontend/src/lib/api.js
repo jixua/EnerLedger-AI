@@ -380,6 +380,60 @@ export function getDocument(documentId, { signal } = {}) {
   return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}`, { signal });
 }
 
+export function listReportTemplates({ signal } = {}) {
+  return apiRequest("/api/v1/report-templates", { signal });
+}
+
+export function createDocumentReport(documentId, payload, { signal } = {}) {
+  return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}/reports`, {
+    method: "POST",
+    body: payload,
+    signal,
+  });
+}
+
+export function getReportRun(runId, { signal } = {}) {
+  return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}`, { signal });
+}
+
+export function listDocumentReportRuns(documentId, { limit = 20, signal } = {}) {
+  const path = appendQuery(
+    `/api/v1/documents/${encodeURIComponent(documentId)}/report-runs`,
+    { limit },
+  );
+  return apiRequest(path, { signal });
+}
+
+export function cancelReportRun(runId, { signal } = {}) {
+  return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}/cancel`, {
+    method: "POST",
+    signal,
+  });
+}
+
+export function retryReportRun(runId, { signal } = {}) {
+  return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}/retry`, {
+    method: "POST",
+    signal,
+  });
+}
+
+export function listReportQuestions(runId, { signal } = {}) {
+  return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}/questions`, { signal });
+}
+
+export function answerReportQuestions(runId, answers, { signal } = {}) {
+  return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}/answers`, {
+    method: "POST",
+    body: { answers },
+    signal,
+  });
+}
+
+export function getGeneratedReport(runId, { signal } = {}) {
+  return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}/report`, { signal });
+}
+
 export function analyzeDocument(documentId, { llmConfigId } = {}, { signal } = {}) {
   return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}/analysis`, {
     method: "POST",

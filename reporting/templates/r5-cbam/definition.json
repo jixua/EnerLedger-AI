@@ -1,0 +1,36 @@
+{
+  "template_id":"r5-cbam","report_type":"R5","version":"1.0.0","name":"CBAM 合规报告","status":"DRAFT","description":"基于指定报告期和产品材料形成 CBAM 数据报告草稿。",
+  "applicable_documents":["CBAM 进口产品数据","生产设施与嵌入排放资料","CBAM 沟通文件或季度报告材料"],"inapplicable_documents":["不涉及 CBAM 商品或缺少进口产品和生产设施身份的材料"],
+  "fields":[
+    {"id":"reporting_period","label":"报告期","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"pattern":"^[0-9]{4}-Q[1-4]$"},"formula_id":null},
+    {"id":"declarant_id","label":"授权申报人 ID","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"importer_name","label":"进口商名称","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"exporter_name","label":"出口商名称","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"cn_code","label":"产品 CN 编码","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"digits":8},"formula_id":null},
+    {"id":"product_category","label":"CBAM 产品类别","type":"enum","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["水泥","钢铁","铝","化肥","电力","氢"]},"formula_id":null},
+    {"id":"import_quantity","label":"进口数量","type":"number","required":true,"blocking":true,"unit":"tonne","source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"installation_name","label":"生产设施名称","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"installation_address","label":"生产设施地址","type":"string","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"country_required":true},"formula_id":null},
+    {"id":"calculation_method","label":"排放计算方法","type":"enum","required":true,"blocking":true,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{"enum":["真实值","默认值"]},"formula_id":null},
+    {"id":"direct_emissions","label":"直接排放","type":"number","required":true,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"indirect_emissions","label":"电力间接排放","type":"number","required":true,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"precursor_emissions","label":"前体材料排放","type":"number","required":false,"blocking":false,"unit":"tCO2e","source_types":["DOCUMENT","CALCULATION"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"embedded_emissions_total","label":"嵌入排放总量","type":"number","required":true,"blocking":false,"unit":"tCO2e","source_types":["CALCULATION"],"validation":{"minimum":0},"formula_id":"R5_EMBEDDED_TOTAL"},
+    {"id":"embedded_emissions_intensity","label":"单位产品嵌入排放","type":"number","required":true,"blocking":false,"unit":"tCO2e/tonne","source_types":["CALCULATION"],"validation":{"minimum":0},"formula_id":"R5_EMBEDDED_INTENSITY"},
+    {"id":"origin_carbon_price","label":"原产国已支付碳价","type":"number","required":true,"blocking":false,"unit":"EUR/tCO2e","source_types":["DOCUMENT","USER_INPUT"],"validation":{"minimum":0},"formula_id":null},
+    {"id":"regulation_version","label":"法规与实施规则版本","type":"string","required":true,"blocking":true,"unit":null,"source_types":["KNOWLEDGE_BASE","USER_INPUT"],"validation":{},"formula_id":null},
+    {"id":"verification_status","label":"核查状态","type":"string","required":true,"blocking":false,"unit":null,"source_types":["DOCUMENT","USER_INPUT"],"validation":{},"formula_id":null}
+  ],
+  "sections":[
+    {"id":"declaration_profile","title":"申报概况","required":true,"field_ids":["reporting_period","declarant_id","importer_name","exporter_name"],"allowed_blocks":["paragraph","table"]},
+    {"id":"goods_and_installation","title":"商品与生产设施","required":true,"field_ids":["cn_code","product_category","import_quantity","installation_name","installation_address"],"allowed_blocks":["table","paragraph"]},
+    {"id":"embedded_emissions","title":"嵌入排放","required":true,"field_ids":["calculation_method","direct_emissions","indirect_emissions","precursor_emissions","embedded_emissions_total","embedded_emissions_intensity"],"allowed_blocks":["table","metric_cards","bar_chart","paragraph"]},
+    {"id":"carbon_price_and_rules","title":"碳价与适用规则","required":true,"field_ids":["origin_carbon_price","regulation_version"],"allowed_blocks":["table","paragraph","callout"]},
+    {"id":"verification_and_limitations","title":"核查状态与限制","required":true,"field_ids":["verification_status"],"allowed_blocks":["paragraph","callout"]}
+  ],
+  "calculations":[
+    {"formula_id":"R5_EMBEDDED_TOTAL","version":"1","output_field_id":"embedded_emissions_total","input_field_ids":["direct_emissions","indirect_emissions","precursor_emissions"],"description":"直接、间接和适用前体排放求和。","operator":"SUM"},
+    {"formula_id":"R5_EMBEDDED_INTENSITY","version":"1","output_field_id":"embedded_emissions_intensity","input_field_ids":["embedded_emissions_total","import_quantity"],"description":"嵌入排放总量除以进口数量。","operator":"DIVIDE"}
+  ],
+  "disclaimers":["报告为数据编制草稿，不构成欧盟 CBAM 法律或申报合规意见。"],"render_profile":"r5-regulatory-document"
+}

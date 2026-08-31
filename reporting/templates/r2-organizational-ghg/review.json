@@ -1,0 +1,21 @@
+{
+  "$schema": "../../common/template-review.schema.json",
+  "template_id": "r2-organizational-ghg",
+  "template_version": "1.0.0",
+  "technical_review": {
+    "status": "PASSED",
+    "checks": [
+      "schema-valid",
+      "field-and-section-ids-unique",
+      "formula-dependencies-resolvable",
+      "skill-and-style-profile-consistent",
+      "scope2-method-separation-fixture-passing"
+    ]
+  },
+  "business_review": {
+    "status": "PENDING",
+    "reviewer": null,
+    "reviewed_at": null,
+    "notes": "需要业务负责人确认组织边界、Scope 2 双口径和 Scope 3 类别要求。"
+  }
+}

@@ -20,7 +20,7 @@ from app.rag.application.recall_errors import (
 from app.rag.config import settings
 from app.rag.core.pipeline.recall.document_readiness import MySqlDocumentReadinessGate
 from app.rag.core.pipeline.recall.models import RetrieverHit
-from app.rag.core.preprocessor.ragflow_tokenizer import RagFlowTokenizer
+from app.rag.core.preprocessor.query_tokenizer_process import get_process_query_tokenizer
 from app.rag.core.storage.bm25_backend import build_bm25_recall_backend
 from app.rag.core.storage.bm25_retriever import Bm25Retriever
 from app.rag.core.storage.wiki_tree.repository import WikiTreeRepository
@@ -1097,7 +1097,8 @@ def get_wiki_runtime() -> WikiRuntime:
         repository=WikiTreeRepository(),
         bm25_retriever=Bm25Retriever(
             backend=build_bm25_recall_backend(),
-            tokenizer=RagFlowTokenizer(),
+            async_tokenizer=get_process_query_tokenizer(),
+            tokenize_timeout_seconds=settings.BM25_QUERY_TOKENIZE_TIMEOUT_SECONDS,
         ),
         readiness_gate=MySqlDocumentReadinessGate(),
         cursor_codec=WikiCursorCodec(settings.RECALL_SESSION_JWT_SECRET),

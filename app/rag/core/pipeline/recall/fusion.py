@@ -52,9 +52,12 @@ def fuse_with_weighted_score(
         raise RecallValidationError("active source fusion weight sum must be > 0")
 
     accumulator: dict[str, _FusionEntry] = {}
+    effective_weights = {
+        source: weights[source] / active_weight_sum for source in active_sources
+    }
     for source in active_sources:
         normalized_by_chunk = _normalize_source_scores(source, per_source_hits[source])
-        normalized_weight = weights[source] / active_weight_sum
+        normalized_weight = effective_weights[source]
         for hit in per_source_hits[source]:
             entry = accumulator.get(hit.chunk_id)
             if entry is None:
@@ -64,10 +67,16 @@ def fuse_with_weighted_score(
                     dataset_id=hit.dataset_id,
                     fused_score=0.0,
                     scores={s: None for s in all_sources},
+                    normalized_scores={s: None for s in all_sources},
+                    weighted_contributions={s: 0.0 for s in all_sources},
                 )
                 accumulator[hit.chunk_id] = entry
-            entry.fused_score += normalized_by_chunk[hit.chunk_id] * normalized_weight
+            normalized_score = normalized_by_chunk[hit.chunk_id]
+            contribution = normalized_score * normalized_weight
+            entry.fused_score += contribution
             entry.scores[source] = hit.score
+            entry.normalized_scores[source] = normalized_score
+            entry.weighted_contributions[source] = contribution
 
     fused_hits = [
         RecallHit(
@@ -76,6 +85,8 @@ def fuse_with_weighted_score(
             dataset_id=entry.dataset_id,
             fused_score=entry.fused_score,
             scores=entry.scores,
+            normalized_scores=entry.normalized_scores,
+            weighted_contributions=entry.weighted_contributions,
         )
         for entry in accumulator.values()
     ]
@@ -121,7 +132,15 @@ def _transform_score(source: str, raw_score: float) -> float:
 class _FusionEntry:
     """累积期的可变中间态；最终转成 frozen ``RecallHit``。"""
 
-    __slots__ = ("chunk_id", "doc_id", "dataset_id", "fused_score", "scores")
+    __slots__ = (
+        "chunk_id",
+        "doc_id",
+        "dataset_id",
+        "fused_score",
+        "scores",
+        "normalized_scores",
+        "weighted_contributions",
+    )
 
     def __init__(
         self,
@@ -130,9 +149,13 @@ class _FusionEntry:
         dataset_id: int,
         fused_score: float,
         scores: dict[str, float | None],
+        normalized_scores: dict[str, float | None],
+        weighted_contributions: dict[str, float],
     ) -> None:
         self.chunk_id = chunk_id
         self.doc_id = doc_id
         self.dataset_id = dataset_id
         self.fused_score = fused_score
         self.scores = scores
+        self.normalized_scores = normalized_scores
+        self.weighted_contributions = weighted_contributions

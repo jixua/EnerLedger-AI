@@ -553,20 +553,27 @@ class VectorStorageFacade:
 
         # 按数据集绑定解析 query embedding pipeline（与写入侧同源），绑定缺失 / 无效 →
         # 翻成 VectorRetrievalUserConfigMissingError（上层据此硬失败，不做宽松降级）。
-        if resolved_model is not None:
-            from app.rag.core.splitter.factory import build_chunk_embedding_pipeline
-
-            embedding_pipeline = build_chunk_embedding_pipeline(resolved_model)
-        else:
-            embedding_pipeline = self._embedding_pipeline
-
         # ───────────────────── ④ query 向量化（异常翻译，与 sparse 字面差异点）──
         # aembed_query 内部不翻译异常（参考 splitter/embedding_pipeline.py 实现）；
         # facade 在此处统一捕获并翻成 VectorRetrievalEncodingError。
         # ValueError（空 query / 长度不一致）属于 caller 错误，由 ① / ② 段已拦下，
         # 不到这里。
         try:
-            dense_vector, _q_usage = await embedding_pipeline.aembed_query_detailed(query)
+            if resolved_model is not None:
+                from app.rag.core.storage.vector.query_embedding import aembed_dense_query
+
+                dense_vector, _q_usage = await aembed_dense_query(resolved_model, query)
+                embedding_model = resolved_model.model_name
+                embedding_provider_type = resolved_model.provider_type
+                embedding_config_id = int(resolved_model.config_id)
+            else:
+                embedding_pipeline = self._embedding_pipeline
+                dense_vector, _q_usage = await embedding_pipeline.aembed_query_detailed(query)
+                embedding_model = embedding_pipeline.embedding_model
+                embedding_provider_type = (
+                    getattr(embedding_pipeline.embedder, "provider_type", "") or ""
+                )
+                embedding_config_id = int(embedding_pipeline.embedder.config_id)
         except Exception as exc:
             # 包含 httpx.HTTPStatusError / httpx.TimeoutException / 其它远程错误。
             # ValueError 经 ① / ② 段后不会到这一步，但理论上仍会被吞——这是预期，
@@ -578,14 +585,14 @@ class VectorStorageFacade:
         if _q_usage is not None:
             report_usage_nowait(
                 user_id=user_id,
-                provider_type=getattr(embedding_pipeline.embedder, "provider_type", "") or "",
-                model_name=embedding_pipeline.embedding_model or "",
+                provider_type=embedding_provider_type,
+                model_name=embedding_model or "",
                 stage="recall",
                 operation="embed",
                 prompt_tokens=int(getattr(_q_usage, "prompt_tokens", 0) or 0),
                 completion_tokens=0,
                 total_tokens=int(getattr(_q_usage, "total_tokens", 0) or 0),
-                config_id=int(embedding_pipeline.embedder.config_id),
+                config_id=embedding_config_id,
             )
 
         # ───────────────────── ⑤ 构造 query_vector_spec 与 payload_filter ────────
@@ -619,7 +626,7 @@ class VectorStorageFacade:
             vector_name=self._dense_vector_name(),
             top_k=effective_top_k,
             score_threshold=effective_threshold,
-            model_name=embedding_pipeline.embedding_model,
+            model_name=embedding_model,
             vector_kind="dense",
         )
 
