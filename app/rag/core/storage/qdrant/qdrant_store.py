@@ -240,8 +240,14 @@ class QdrantIndexStore:
                     with_vectors=False,
                 ),
             )
-            existing_ids = {record.id for record in existing}
-            missing = [point for point in points if point.chunk_id not in existing_ids]
+            # qdrant-client 会把 UUID 形式的 point id 反序列化为
+            # ``uuid.UUID``，而业务层 ``chunk_id`` 始终是字符串。直接比较
+            # 会把已存在的 point 误判为缺失，随后用 ``vector={}``
+            # 重新 upsert；在 dense/sparse 并发写入时这会覆盖对方
+            # 刚写入的向量，并且放大 update_vectors 竞态。统一按
+            # Qdrant 的字符串表示比较，确保 ensure 真正幂等。
+            existing_ids = {str(record.id) for record in existing}
+            missing = [point for point in points if str(point.chunk_id) not in existing_ids]
             if not missing:
                 return
             await self._with_write_retry(
@@ -389,7 +395,7 @@ class QdrantIndexStore:
         payload_filter: Any,
         limit: int,
         score_threshold: float,
-    ) -> "list[VectorSearchHit]":
+    ) -> list[VectorSearchHit]:
         """向量类型无关的搜索底座（私有，仅供 facade 调用）。
 
         ``_`` 前缀显式表达"模块内可见、不对业务方暴露"的语义边界。本方法只吞两类
