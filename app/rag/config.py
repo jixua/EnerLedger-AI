@@ -725,6 +725,7 @@ class Settings(BaseSettings):
         ge=1,
     )
     PDF_MAX_SINGLE_IMAGE_BYTES: int = Field(default=20 * 1024 * 1024, ge=1)
+    PDF_MAX_SINGLE_OUTPUT_IMAGE_BYTES: int = Field(default=32 * 1024 * 1024, ge=1)
     PDF_MAX_TOTAL_IMAGE_BYTES: int = Field(default=200 * 1024 * 1024, ge=1)
     PDF_MAX_OUTPUT_FILES: int = Field(default=10_000, ge=1)
     PDF_MAX_OUTPUT_DIR_BYTES: int = Field(default=500 * 1024 * 1024, ge=1)
