@@ -51,6 +51,13 @@ _TRANSIENT_ERROR_MARKERS = (
 )
 
 
+def _exception_detail(exc: BaseException) -> str:
+    """Preserve SDK diagnostics when an exception exposes an empty ``str`` value."""
+
+    message = str(exc).strip()
+    return message if message else repr(exc)
+
+
 class QdrantIndexStore:
     """封装统一 Qdrant 业务 collection 的 dense/sparse 向量访问。"""
 
@@ -211,7 +218,7 @@ class QdrantIndexStore:
                 self._payload_index_ready_collections.add(collection_name)
         except Exception as exc:
             raise QdrantStoreError(
-                f"Failed to ensure Qdrant collection {collection_name}: {exc}"
+                f"Failed to ensure Qdrant collection {collection_name}: {_exception_detail(exc)}"
             ) from exc
 
     async def ensure_points(self, *, points: Sequence[IndexedPoint | SparseIndexedPoint]) -> None:
@@ -262,7 +269,9 @@ class QdrantIndexStore:
                 ),
             )
         except Exception as exc:
-            raise QdrantStoreError(f"Failed to ensure points in {collection_name}: {exc}") from exc
+            raise QdrantStoreError(
+                f"Failed to ensure points in {collection_name}: {_exception_detail(exc)}"
+            ) from exc
 
     async def upsert_points(self, *, points: Sequence[IndexedPoint]) -> None:
         """写入 dense named 向量到各 chunk 的 point（point 不存在则先建空点）。
@@ -297,7 +306,7 @@ class QdrantIndexStore:
             )
         except Exception as exc:
             raise QdrantStoreError(
-                f"Failed to upsert dense vectors into {collection_name}: {exc}"
+                f"Failed to upsert dense vectors into {collection_name}: {_exception_detail(exc)}"
             ) from exc
 
     async def ensure_sparse_vector_schema(self, *, vector_name: str) -> None:
@@ -339,7 +348,8 @@ class QdrantIndexStore:
             raise
         except Exception as exc:
             raise QdrantStoreError(
-                f"Failed to ensure sparse vector schema {vector_name} in {collection_name}: {exc}"
+                "Failed to ensure sparse vector schema "
+                f"{vector_name} in {collection_name}: {_exception_detail(exc)}"
             ) from exc
 
     async def upsert_sparse_vectors(
@@ -385,7 +395,7 @@ class QdrantIndexStore:
             )
         except Exception as exc:
             raise QdrantStoreError(
-                f"Failed to upsert sparse vectors into {collection_name}: {exc}"
+                f"Failed to upsert sparse vectors into {collection_name}: {_exception_detail(exc)}"
             ) from exc
 
     async def _search_chunks(
@@ -442,7 +452,8 @@ class QdrantIndexStore:
             collection_present = await client.collection_exists(collection_name=collection_name)
         except Exception as exc:
             raise QdrantStoreError(
-                f"Failed to check collection existence for search: {collection_name}: {exc}"
+                "Failed to check collection existence for search: "
+                f"{collection_name}: {_exception_detail(exc)}"
             ) from exc
         if not collection_present:
             logger.warning(
@@ -499,7 +510,9 @@ class QdrantIndexStore:
                     using,
                 )
                 return []
-            raise QdrantStoreError(f"Failed to query collection {collection_name}: {exc}") from exc
+            raise QdrantStoreError(
+                f"Failed to query collection {collection_name}: {_exception_detail(exc)}"
+            ) from exc
 
         # ScoredPoint → VectorSearchHit 字段映射；payload dict 在 store 层消化，
         # 不外泄给 facade 与调用方。score 已由 Qdrant 端按 limit / score_threshold
@@ -595,7 +608,8 @@ class QdrantIndexStore:
             ) or self._is_collection_or_point_missing_error(exc):
                 return presence
             raise QdrantStoreError(
-                f"Failed to inspect named vector {vector_name!r} in {collection_name}: {exc}"
+                "Failed to inspect named vector "
+                f"{vector_name!r} in {collection_name}: {_exception_detail(exc)}"
             ) from exc
 
         for record in records:
@@ -646,7 +660,8 @@ class QdrantIndexStore:
             ) or self._is_collection_or_point_missing_error(exc):
                 return
             raise QdrantStoreError(
-                f"Failed to delete named vector {vector_name!r} from {collection_name}: {exc}"
+                "Failed to delete named vector "
+                f"{vector_name!r} from {collection_name}: {_exception_detail(exc)}"
             ) from exc
 
     @staticmethod
@@ -685,7 +700,8 @@ class QdrantIndexStore:
             )
         except Exception as exc:
             raise QdrantStoreError(
-                f"Failed to check point existence in {collection_name}: {exc}"
+                "Failed to check point existence in "
+                f"{collection_name}: {_exception_detail(exc)}"
             ) from exc
 
         return bool(records)
@@ -710,7 +726,7 @@ class QdrantIndexStore:
             )
         except Exception as exc:
             raise QdrantStoreError(
-                f"Failed to delete points from {collection_name}: {exc}"
+                f"Failed to delete points from {collection_name}: {_exception_detail(exc)}"
             ) from exc
 
     async def close(self) -> None:

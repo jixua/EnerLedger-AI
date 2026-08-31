@@ -9,7 +9,7 @@ import pytest
 os.environ.setdefault("ADMIN_PASSWORD_HASH", "scrypt:test-only")
 
 from app.rag.core.storage.qdrant.models import IndexedPoint
-from app.rag.core.storage.qdrant.qdrant_store import QdrantIndexStore
+from app.rag.core.storage.qdrant.qdrant_store import QdrantIndexStore, _exception_detail
 
 
 class _FakeQdrantClient:
@@ -30,6 +30,16 @@ def _point(chunk_id: str) -> IndexedPoint:
         vector=[0.1, 0.2],
         payload={"user_id": 1, "set_id": 2, "doc_id": 3},
     )
+
+
+def test_exception_detail_falls_back_to_repr_for_empty_sdk_message() -> None:
+    class _EmptySdkError(Exception):
+        def __str__(self) -> str:
+            return ""
+
+    error = _EmptySdkError("raw-response")
+
+    assert _exception_detail(error) == "_EmptySdkError('raw-response')"
 
 
 @pytest.mark.asyncio
