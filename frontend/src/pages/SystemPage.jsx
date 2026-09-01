@@ -95,9 +95,8 @@ export function SystemPage() {
 
   return (
     <div className="page-shell system-page feature-page">
-      <header className="knowledge-hero">
+      <header className="knowledge-hero system-hero">
         <div className="knowledge-hero__copy">
-          <p className="eyebrow">System health overview</p>
           <h1>系统状态</h1>
           <p className="knowledge-hero__subtitle">服务与依赖</p>
         </div>
@@ -132,6 +131,12 @@ export function SystemPage() {
         </div>
 
         <div className="dependency-list">
+          <div className="dependency-list__header" aria-hidden="true">
+            <span>服务</span>
+            <span>用途</span>
+            <span>当前状态</span>
+            <span>验证状态</span>
+          </div>
           {COMPONENTS.map((component) => {
             const Icon = component.icon;
             const status = normalizeStatus(health.components?.[component.key] ?? health[component.key]);
@@ -140,11 +145,11 @@ export function SystemPage() {
               ?? component.detail;
             return (
               <article className={`dependency-row dependency-row--${status}`} key={component.key}>
-                <span className="dependency-row__icon"><Icon size={18} /></span>
-                <div className="dependency-row__identity">
+                <div className="dependency-row__main">
+                  <span className="dependency-row__icon"><Icon size={21} /></span>
                   <h3>{component.name}</h3>
-                  <p>{component.role}</p>
                 </div>
+                <span className="dependency-row__role">{component.role}</span>
                 <span className="dependency-row__detail">{liveDetail}</span>
                 <span className={`state-pill state-pill--${status}`}><i />{statusCopy(status)}</span>
               </article>

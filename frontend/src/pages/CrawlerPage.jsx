@@ -5,7 +5,6 @@ import {
   BookOpenText,
   Download,
   ExternalLink,
-  Globe2,
   LoaderCircle,
   Search,
   UploadCloud,
@@ -157,12 +156,10 @@ export function CrawlerPage() {
 
   return (
     <div className="page crawler-page">
-      <header className="crawler-hero">
-        <span className="crawler-hero__icon"><Globe2 size={22} /></span>
-        <div>
-          <p className="eyebrow">论文采集</p>
+      <header className="knowledge-hero crawler-page-hero">
+        <div className="knowledge-hero__copy">
           <h1>arXiv 论文采集</h1>
-          <p>按关键词检索 arXiv 论文，选择后导入指定知识库并进入解析队列。</p>
+          <p className="page-header__description">按关键词检索 arXiv 论文，选择后导入指定知识库并进入解析队列。</p>
         </div>
       </header>
 

@@ -149,15 +149,15 @@ export function DatasetsPage() {
         <div className="knowledge-hero__copy">
           <h1>碳知识库</h1>
           <p className="page-header__description">集中管理碳核算标准、方法与业务资料，为智能问答提供可靠依据。</p>
-          <div className="knowledge-hero__stats" aria-label="知识库统计">
-            <span><Database size={14} /><b>{datasets.length}</b> 个知识库</span>
-            <span><FileText size={14} /><b>{libraryStats.documents}</b> 份文档</span>
-            <span><Search size={14} /><b>{libraryStats.searchable}</b> 份可检索</span>
-          </div>
         </div>
       </header>
 
       <section className="knowledge-toolbar" aria-label="知识库筛选">
+        <div className="knowledge-toolbar__stats" aria-label="知识库统计">
+          <span><Database size={14} /><b>{datasets.length}</b> 个知识库</span>
+          <span><FileText size={14} /><b>{libraryStats.documents}</b> 份文档</span>
+          <span><Search size={14} /><b>{libraryStats.searchable}</b> 份可检索</span>
+        </div>
         <label className="search-field">
           <Search size={16} aria-hidden="true" />
           <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索知识库名称或描述" />

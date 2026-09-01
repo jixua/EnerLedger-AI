@@ -86,8 +86,10 @@ test("arXiv collection and crawler review have independent routes and navigation
   assert.match(appSource, /path="crawler\/review"/);
 });
 
-test("crawler review filter and refresh action stay in one row", () => {
-  assert.match(crawlerReviewPageSource, /crawler-results__actions crawler-review__actions/);
-  assert.match(pageStyles, /\.crawler-review__actions \{[^}]*flex-wrap: nowrap;/);
-  assert.match(pageStyles, /\.crawler-review__actions \.button \{[^}]*white-space: nowrap;/);
+test("crawler review status tabs and refresh action share one toolbar", () => {
+  assert.match(crawlerReviewPageSource, /crawler-review-toolbar/);
+  assert.match(crawlerReviewPageSource, /role="tablist"/);
+  assert.match(crawlerReviewPageSource, /aria-label="刷新审核队列"/);
+  assert.match(pageStyles, /\.crawler-review-toolbar \{[^}]*justify-content: space-between;/);
+  assert.match(pageStyles, /\.crawler-review-tabs \{[^}]*display: flex;/);
 });
