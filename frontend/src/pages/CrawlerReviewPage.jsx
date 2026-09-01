@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { createPortal } from "react-dom";
+import ReactMarkdown from "react-markdown";
+import remarkGfm from "remark-gfm";
 import {
   AlertCircle,
   BookOpenText,
   CheckCircle2,
   Download,
-  FileText,
-  Folder,
-  Globe2,
+  ExternalLink,
   LoaderCircle,
   RefreshCw,
+  ShieldCheck,
   XCircle,
 } from "lucide-react";
 import { formatBytes } from "../components/ui";
@@ -22,48 +23,21 @@ import { useApp } from "../state/AppContext";
 
 function formatDate(value) {
   if (!value) return "—";
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return String(value);
-  const now = new Date();
-  const isToday = date.getFullYear() === now.getFullYear()
-    && date.getMonth() === now.getMonth()
-    && date.getDate() === now.getDate();
-  if (isToday) {
-    return `今天 ${new Intl.DateTimeFormat("zh-CN", {
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).format(date)}`;
-  }
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}/${month}/${day}`;
+  return new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).format(new Date(value));
 }
 
-const REVIEW_TABS = [
-  { value: "PENDING", label: "待审核" },
-  { value: "APPROVED", label: "已通过" },
-  { value: "REJECTED", label: "已拒绝" },
-];
+const MARKDOWN_FILE_TYPES = new Set(["md", "markdown"]);
 
-function escapeHtml(value) {
-  return String(value)
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-    .replaceAll("'", "&#039;");
-}
-
-function buildTextPreview(content, contentType) {
-  const policy = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:\">";
-  if (contentType.startsWith("text/html")) {
-    return /<head(?:\s[^>]*)?>/i.test(content)
-      ? content.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${policy}`)
-      : `${policy}${content}`;
-  }
-  return `${policy}<style>body{margin:0;padding:28px;color:#243632;background:#fff;font:14px/1.75 ui-monospace,SFMono-Regular,Menlo,monospace}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}</style><pre>${escapeHtml(content)}</pre>`;
+function submissionPreviewKind(submission) {
+  const fileType = String(submission?.file_type || "").toLowerCase();
+  if (MARKDOWN_FILE_TYPES.has(fileType)) return "markdown";
+  if (fileType === "pdf") return "pdf";
+  if (["doc", "docx"].includes(fileType)) return "word";
+  return "download";
 }
 
 const DEMO_SUBMISSIONS = [
@@ -72,33 +46,36 @@ const DEMO_SUBMISSIONS = [
     dataset_id: 4,
     dataset_name: "测试报告",
     filename: "企业温室气体排放核算与报告指南.pdf",
+    file_type: "pdf",
     source_title: "企业温室气体排放核算与报告指南.pdf",
     file_size: 2936012,
     created_at: "2026-09-01T11:42:00+08:00",
     review_status: "PENDING",
-    source_metadata: { crawler_name: "external-crawler" },
+    source_metadata: { source_name: "external-client" },
   },
   {
     document_id: 9102,
     dataset_id: 3,
     dataset_name: "测试数据集2",
-    filename: "动力电池全生命周期碳足迹研究.pdf",
-    source_title: "动力电池全生命周期碳足迹研究.pdf",
-    file_size: 1677722,
+    filename: "供应链碳排放数据说明.md",
+    file_type: "md",
+    source_title: "供应链碳排放数据说明",
+    file_size: 18432,
     created_at: "2026-09-01T10:18:00+08:00",
     review_status: "PENDING",
-    source_metadata: { crawler_name: "arXiv" },
+    source_metadata: { source_name: "partner-system" },
   },
   {
     document_id: 9103,
     dataset_id: 2,
     dataset_name: "测试数据集",
-    filename: "ISO 14064-1 温室气体规范.pdf",
-    source_title: "ISO 14064-1 温室气体规范.pdf",
+    filename: "ISO 14064-1 温室气体规范.docx",
+    file_type: "docx",
+    source_title: "ISO 14064-1 温室气体规范",
     file_size: 3355443,
     created_at: "2026-08-31T16:06:00+08:00",
     review_status: "PENDING",
-    source_metadata: { crawler_name: "standard-importer" },
+    source_metadata: { source_name: "standard-importer" },
   },
 ];
 
@@ -111,7 +88,7 @@ export function CrawlerReviewPage() {
   const [reviewActionId, setReviewActionId] = useState(null);
   const [reviewError, setReviewError] = useState("");
   const [demoSubmissions, setDemoSubmissions] = useState(DEMO_SUBMISSIONS);
-  const [filePreview, setFilePreview] = useState(null);
+  const [preview, setPreview] = useState(null);
 
   const loadReviewQueue = useCallback(async (signal) => {
     setReviewsLoading(true);
@@ -146,16 +123,16 @@ export function CrawlerReviewPage() {
   }, [loadReviewQueue]);
 
   useEffect(() => {
-    if (!filePreview) return undefined;
-    const handleKeyDown = (event) => {
-      if (event.key === "Escape") setFilePreview(null);
-    };
-    window.addEventListener("keydown", handleKeyDown);
+    if (!preview) return undefined;
+    function handlePreviewKeyDown(event) {
+      if (event.key === "Escape") setPreview(null);
+    }
+    window.addEventListener("keydown", handlePreviewKeyDown);
     return () => {
-      window.removeEventListener("keydown", handleKeyDown);
-      URL.revokeObjectURL(filePreview.url);
+      window.removeEventListener("keydown", handlePreviewKeyDown);
+      if (preview.objectUrl) URL.revokeObjectURL(preview.objectUrl);
     };
-  }, [filePreview]);
+  }, [preview]);
 
   async function handleOpenSubmission(submission) {
     if (reviewActionId) return;
@@ -163,18 +140,19 @@ export function CrawlerReviewPage() {
     setReviewError("");
     try {
       const blob = isDemo
-        ? new Blob([`预览资料：${submission.source_title || submission.filename}`], { type: "text/plain;charset=utf-8" })
+        ? new Blob([
+          submission.file_type === "md"
+            ? `# ${submission.source_title}\n\n该文件用于审核流程演示，包含供应商范围一、范围二及运输环节的碳排放数据说明。`
+            : `预览资料：${submission.source_title || submission.filename}`,
+        ], { type: "text/markdown;charset=utf-8" })
         : await getCrawlerSubmissionFile(submission.document_id);
-      const contentType = blob.type || submission.content_type || "application/octet-stream";
-      const textDocument = contentType.startsWith("text/")
-        ? buildTextPreview(await blob.text(), contentType)
-        : null;
-      const url = URL.createObjectURL(blob);
-      setFilePreview({
+      const kind = isDemo ? "markdown" : submissionPreviewKind(submission);
+      setPreview({
         submission,
-        url,
-        contentType,
-        textDocument,
+        kind,
+        blob,
+        markdown: kind === "markdown" ? await blob.text() : null,
+        objectUrl: kind === "pdf" ? URL.createObjectURL(blob) : null,
       });
     } catch (requestError) {
       setReviewError(requestError?.message || "原文件打开失败");
@@ -215,110 +193,108 @@ export function CrawlerReviewPage() {
   }
 
   return (
-    <div className="page crawler-page crawler-review-page">
-      <header className="crawler-review-hero">
-        <h1>资料审核</h1>
-        <p>第三方资料通过审核后进入解析队列。</p>
+    <div className="page crawler-page">
+      <header className="crawler-hero">
+        <span className="crawler-hero__icon"><ShieldCheck size={22} /></span>
+        <div>
+          <p className="eyebrow">内容准入</p>
+          <h1>采集资料审核</h1>
+          <p>审核第三方爬虫上传的文章或论文；只有人工通过后，文件才会进入解析队列。</p>
+        </div>
       </header>
 
       <section className="crawler-review" aria-labelledby="crawler-review-title">
-        <h2 className="sr-only" id="crawler-review-title">资料审核队列</h2>
-        <div className="crawler-review-toolbar">
-          <nav className="crawler-review-tabs" role="tablist" aria-label="审核状态">
-            {REVIEW_TABS.map((tab) => (
-              <button
-                key={tab.value}
-                type="button"
-                role="tab"
-                aria-selected={reviewStatus === tab.value}
-                className={`crawler-review-tab${reviewStatus === tab.value ? " is-active" : ""}`}
-                onClick={() => setReviewStatus(tab.value)}
-              >
-                {tab.label}
-                {reviewStatus === tab.value ? <span>{submissionTotal}</span> : null}
-              </button>
-            ))}
-          </nav>
-          <button className="icon-button crawler-review-refresh" type="button" onClick={() => loadReviewQueue()} disabled={reviewsLoading} aria-label="刷新审核队列" title="刷新审核队列">
-            <RefreshCw className={reviewsLoading ? "spin" : ""} size={17} />
-          </button>
+        <div className="crawler-results__header">
+          <div>
+            <p className="eyebrow">人工审核</p>
+            <h2 id="crawler-review-title">第三方上传资料 · {submissionTotal} 项</h2>
+          </div>
+          <div className="crawler-results__actions crawler-review__actions">
+            <select
+              className="crawler-review__filter"
+              aria-label="审核状态"
+              value={reviewStatus}
+              onChange={(event) => setReviewStatus(event.target.value)}
+            >
+              <option value="PENDING">待审核</option>
+              <option value="APPROVED">已通过</option>
+              <option value="REJECTED">已拒绝</option>
+            </select>
+            <button className="button button--secondary" type="button" onClick={() => loadReviewQueue()} disabled={reviewsLoading}>
+              <RefreshCw className={reviewsLoading ? "spin" : ""} size={15} />刷新
+            </button>
+          </div>
         </div>
 
         {reviewError ? <div className="crawler-error" role="alert"><AlertCircle size={17} /><span>{reviewError}</span></div> : null}
-        <div className="crawler-review-list">
-          {submissions.length > 0 ? (
-            <header className="crawler-review-list__header" aria-hidden="true">
-              <span>资料</span><span>来源与目标</span><span>提交时间</span><span>操作</span>
-            </header>
-          ) : null}
-          {reviewsLoading ? (
-            <div className="crawler-review-list__state"><LoaderCircle className="spin" size={18} />正在加载审核队列</div>
-          ) : null}
-          {!reviewsLoading && submissions.length === 0 ? (
-            <div className="empty-state crawler-review__empty"><BookOpenText size={22} /><h3>当前没有{reviewStatus === "PENDING" ? "待审核" : "符合条件的"}资料</h3></div>
-          ) : null}
-          {submissions.map((submission) => {
-            const busy = reviewActionId === submission.document_id;
-            const source = submission.source_metadata?.crawler_name || "external-crawler";
-            const title = submission.source_title || submission.filename;
-            return (
-              <article className="crawler-review-row" key={submission.document_id}>
-                <div className="crawler-review-row__identity">
-                  <span className="crawler-review-row__icon"><FileText size={18} /></span>
-                  <span className="crawler-review-row__copy">
-                    <strong title={title}>{title}</strong>
-                    <small>{formatBytes(submission.file_size)}{title !== submission.filename ? ` · ${submission.filename}` : ""}</small>
-                    {submission.review_note ? <em>审核备注：{submission.review_note}</em> : null}
-                  </span>
+        {reviewsLoading ? (
+          <div className="panel crawler-review__loading"><LoaderCircle className="spin" size={18} />正在加载审核队列</div>
+        ) : null}
+        {!reviewsLoading && submissions.length === 0 ? (
+          <div className="empty-state crawler-review__empty"><BookOpenText size={24} /><h3>当前没有{reviewStatus === "PENDING" ? "待审核" : "符合条件的"}资料</h3><p>第三方通过上传接口提交后会显示在这里。</p></div>
+        ) : null}
+        {submissions.map((submission) => {
+          const busy = reviewActionId === submission.document_id;
+          return (
+            <article className="panel crawler-review-card" key={submission.document_id}>
+              <div className="crawler-review-card__body">
+                <div className="crawler-review-card__meta">
+                  <span>{submission.dataset_name}</span>
+                  <span>{formatBytes(submission.file_size)}</span>
+                  <span>{formatDate(submission.created_at)}</span>
+                  <span>{submission.source_metadata?.source_name || submission.source_metadata?.crawler_name || "external-client"}</span>
                 </div>
-                <div className="crawler-review-row__source">
-                  <span><Globe2 size={14} />{source}</span>
-                  <span><Folder size={14} />{submission.dataset_name}</span>
-                </div>
-                <time className="crawler-review-row__time">{formatDate(submission.created_at)}</time>
-                <div className="crawler-review-row__actions">
-                  <button className="button button--secondary" type="button" onClick={() => handleOpenSubmission(submission)} disabled={Boolean(reviewActionId)}>
-                    {busy ? <LoaderCircle className="spin" size={14} /> : <Download size={14} />}查看原文件
-                  </button>
-                  {submission.review_status === "PENDING" ? (
-                    <>
-                      <button className="crawler-review-row__reject" type="button" onClick={() => handleReview(submission, "REJECTED")} disabled={Boolean(reviewActionId)}><XCircle size={14} />拒绝</button>
-                      <button className="button button--primary" type="button" onClick={() => handleReview(submission, "APPROVED")} disabled={Boolean(reviewActionId)}><CheckCircle2 size={14} />通过并解析</button>
-                    </>
-                  ) : <span className={`crawler-review-row__decision crawler-review-row__decision--${submission.review_status.toLowerCase()}`}>{submission.review_status === "APPROVED" ? "已通过" : "已拒绝"}</span>}
-                </div>
-              </article>
-            );
-          })}
-        </div>
+                <h3>{submission.source_title || submission.filename}</h3>
+                <p>{submission.filename}</p>
+                {submission.source_url ? <a href={submission.source_url} target="_blank" rel="noreferrer">查看来源页面<ExternalLink size={13} /></a> : null}
+                {submission.review_note ? <small>审核备注：{submission.review_note}</small> : null}
+              </div>
+              <div className="crawler-review-card__actions">
+                <button className="button button--secondary" type="button" onClick={() => handleOpenSubmission(submission)} disabled={Boolean(reviewActionId)}>
+                  {busy ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}审核预览
+                </button>
+                {submission.review_status === "PENDING" ? (
+                  <>
+                    <button className="button button--danger" type="button" onClick={() => handleReview(submission, "REJECTED")} disabled={Boolean(reviewActionId)}><XCircle size={15} />拒绝</button>
+                    <button className="button button--primary" type="button" onClick={() => handleReview(submission, "APPROVED")} disabled={Boolean(reviewActionId)}><CheckCircle2 size={15} />通过并解析</button>
+                  </>
+                ) : null}
+              </div>
+            </article>
+          );
+        })}
       </section>
 
-      {filePreview ? createPortal(
-        <div className="dialog-backdrop crawler-preview-backdrop" role="presentation" onMouseDown={() => setFilePreview(null)}>
+      {preview ? createPortal(
+        <div className="dialog-backdrop crawler-preview-backdrop" role="presentation" onMouseDown={() => setPreview(null)}>
           <section
             className="dialog crawler-preview-dialog"
             role="dialog"
             aria-modal="true"
-            aria-label={filePreview.submission.source_title || filePreview.submission.filename}
+            aria-label={preview.submission.source_title || preview.submission.filename}
             onMouseDown={(event) => event.stopPropagation()}
           >
             <div className="crawler-preview-dialog__body">
-              {filePreview.contentType.startsWith("image/") ? (
-                <img src={filePreview.url} alt={filePreview.submission.source_title || filePreview.submission.filename} />
-              ) : filePreview.contentType === "application/pdf" || filePreview.contentType.startsWith("text/") ? (
-                <iframe
-                  src={filePreview.textDocument ? undefined : filePreview.url}
-                  srcDoc={filePreview.textDocument || undefined}
-                  title={filePreview.submission.source_title || filePreview.submission.filename}
-                  sandbox={filePreview.contentType.startsWith("text/") ? "" : undefined}
-                />
-              ) : (
-                <div className="crawler-preview-dialog__unsupported">
-                  <FileText size={34} />
-                  <h3>该格式暂不支持在线预览</h3>
-                  <p>可以下载原文件后使用本地应用查看，再返回此处完成审核。</p>
+              {preview.kind === "pdf" ? (
+                <iframe className="crawler-preview-dialog__pdf" src={preview.objectUrl} title={`预览 ${preview.submission.filename}`} />
+              ) : null}
+              {preview.kind === "markdown" ? (
+                <article className="document-reader-markdown crawler-preview-dialog__markdown">
+                  <ReactMarkdown
+                    remarkPlugins={[remarkGfm]}
+                    components={{
+                      img: ({ src, alt }) => <span className="crawler-preview-dialog__image-ref">[图片引用：{alt || src || "未命名"}]</span>,
+                    }}
+                  >{preview.markdown}</ReactMarkdown>
+                </article>
+              ) : null}
+              {["word", "download"].includes(preview.kind) ? (
+                <div className="crawler-preview-dialog__download">
+                  <BookOpenText size={28} />
+                  <h3>{preview.kind === "word" ? "Word 原文件需下载后审核" : "该原文件需下载后审核"}</h3>
+                  <p>{preview.kind === "word" ? "为确保审核通过前不执行文档解析，系统不会提前把 Word 转换为 HTML。请下载原文件并使用本地办公软件查看。" : "该格式不在页面内执行转换或解析，请下载原文件后使用可信的本地软件查看。"}</p>
                 </div>
-              )}
+              ) : null}
             </div>
           </section>
         </div>,

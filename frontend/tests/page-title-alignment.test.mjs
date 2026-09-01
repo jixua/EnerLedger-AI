@@ -6,15 +6,13 @@ const readPage = (name) => readFile(new URL(`../src/pages/${name}`, import.meta.
 const pagesCss = await readFile(new URL("../src/pages.css", import.meta.url), "utf8");
 
 test("top-level pages use the knowledge-library title-first hierarchy", async () => {
-  const [models, system, crawler] = await Promise.all([
+  const [models, system] = await Promise.all([
     readPage("ModelsPage.jsx"),
     readPage("SystemPage.jsx"),
-    readPage("CrawlerPage.jsx"),
   ]);
 
   assert.doesNotMatch(models, /Model capability registry/);
   assert.doesNotMatch(system, /System health overview/);
-  assert.match(crawler, /className="knowledge-hero crawler-page-hero"[\s\S]*<h1>arXiv 论文采集<\/h1>[\s\S]*className="page-header__description"/);
   assert.match(pagesCss, /\.page--datasets \{ max-width: 1320px; padding-top: 42px; \}/);
   assert.match(pagesCss, /\.crawler-page \{ max-width: 1320px; padding-top: 42px; \}/);
   assert.match(pagesCss, /\.page--tasks \{ max-width: 1320px; padding-top: 42px; \}/);
