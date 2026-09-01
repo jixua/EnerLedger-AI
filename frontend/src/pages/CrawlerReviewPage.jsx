@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import {
   AlertCircle,
   BookOpenText,
@@ -46,6 +47,25 @@ const REVIEW_TABS = [
   { value: "REJECTED", label: "已拒绝" },
 ];
 
+function escapeHtml(value) {
+  return String(value)
+    .replaceAll("&", "&amp;")
+    .replaceAll("<", "&lt;")
+    .replaceAll(">", "&gt;")
+    .replaceAll('"', "&quot;")
+    .replaceAll("'", "&#039;");
+}
+
+function buildTextPreview(content, contentType) {
+  const policy = "<meta http-equiv=\"Content-Security-Policy\" content=\"default-src 'none'; img-src data: blob:; style-src 'unsafe-inline'; font-src data:\">";
+  if (contentType.startsWith("text/html")) {
+    return /<head(?:\s[^>]*)?>/i.test(content)
+      ? content.replace(/<head(?:\s[^>]*)?>/i, (head) => `${head}${policy}`)
+      : `${policy}${content}`;
+  }
+  return `${policy}<style>body{margin:0;padding:28px;color:#243632;background:#fff;font:14px/1.75 ui-monospace,SFMono-Regular,Menlo,monospace}pre{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}</style><pre>${escapeHtml(content)}</pre>`;
+}
+
 const DEMO_SUBMISSIONS = [
   {
     document_id: 9101,
@@ -91,6 +111,7 @@ export function CrawlerReviewPage() {
   const [reviewActionId, setReviewActionId] = useState(null);
   const [reviewError, setReviewError] = useState("");
   const [demoSubmissions, setDemoSubmissions] = useState(DEMO_SUBMISSIONS);
+  const [filePreview, setFilePreview] = useState(null);
 
   const loadReviewQueue = useCallback(async (signal) => {
     setReviewsLoading(true);
@@ -124,6 +145,18 @@ export function CrawlerReviewPage() {
     return () => controller.abort();
   }, [loadReviewQueue]);
 
+  useEffect(() => {
+    if (!filePreview) return undefined;
+    const handleKeyDown = (event) => {
+      if (event.key === "Escape") setFilePreview(null);
+    };
+    window.addEventListener("keydown", handleKeyDown);
+    return () => {
+      window.removeEventListener("keydown", handleKeyDown);
+      URL.revokeObjectURL(filePreview.url);
+    };
+  }, [filePreview]);
+
   async function handleOpenSubmission(submission) {
     if (reviewActionId) return;
     setReviewActionId(submission.document_id);
@@ -132,13 +165,17 @@ export function CrawlerReviewPage() {
       const blob = isDemo
         ? new Blob([`预览资料：${submission.source_title || submission.filename}`], { type: "text/plain;charset=utf-8" })
         : await getCrawlerSubmissionFile(submission.document_id);
+      const contentType = blob.type || submission.content_type || "application/octet-stream";
+      const textDocument = contentType.startsWith("text/")
+        ? buildTextPreview(await blob.text(), contentType)
+        : null;
       const url = URL.createObjectURL(blob);
-      const anchor = document.createElement("a");
-      anchor.href = url;
-      anchor.target = "_blank";
-      anchor.rel = "noreferrer";
-      anchor.click();
-      setTimeout(() => URL.revokeObjectURL(url), 60_000);
+      setFilePreview({
+        submission,
+        url,
+        contentType,
+        textDocument,
+      });
     } catch (requestError) {
       setReviewError(requestError?.message || "原文件打开失败");
     } finally {
@@ -255,6 +292,38 @@ export function CrawlerReviewPage() {
           })}
         </div>
       </section>
+
+      {filePreview ? createPortal(
+        <div className="dialog-backdrop crawler-preview-backdrop" role="presentation" onMouseDown={() => setFilePreview(null)}>
+          <section
+            className="dialog crawler-preview-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={filePreview.submission.source_title || filePreview.submission.filename}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
+            <div className="crawler-preview-dialog__body">
+              {filePreview.contentType.startsWith("image/") ? (
+                <img src={filePreview.url} alt={filePreview.submission.source_title || filePreview.submission.filename} />
+              ) : filePreview.contentType === "application/pdf" || filePreview.contentType.startsWith("text/") ? (
+                <iframe
+                  src={filePreview.textDocument ? undefined : filePreview.url}
+                  srcDoc={filePreview.textDocument || undefined}
+                  title={filePreview.submission.source_title || filePreview.submission.filename}
+                  sandbox={filePreview.contentType.startsWith("text/") ? "" : undefined}
+                />
+              ) : (
+                <div className="crawler-preview-dialog__unsupported">
+                  <FileText size={34} />
+                  <h3>该格式暂不支持在线预览</h3>
+                  <p>可以下载原文件后使用本地应用查看，再返回此处完成审核。</p>
+                </div>
+              )}
+            </div>
+          </section>
+        </div>,
+        document.body,
+      ) : null}
     </div>
   );
 }
