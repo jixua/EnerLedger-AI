@@ -149,8 +149,16 @@ def get_user_id(
 
 def require_crawler_api_key(
     api_key: Annotated[str | None, Header(alias="X-Crawler-Api-Key")] = None,
+    submission_api_key: Annotated[
+        str | None,
+        Header(alias="X-Document-Submission-Key"),
+    ] = None,
 ) -> None:
-    """Authenticate the machine-to-machine crawler upload boundary."""
+    """Authenticate the external document upload boundary.
+
+    ``X-Crawler-Api-Key`` remains supported for existing integrations. New
+    clients should use the format-neutral ``X-Document-Submission-Key``.
+    """
 
     configured = settings.CRAWLER_UPLOAD_API_KEY.strip()
     if not configured:
@@ -158,11 +166,12 @@ def require_crawler_api_key(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail={
                 "code": "CRAWLER_UPLOAD_DISABLED",
-                "message": "第三方爬虫上传入口尚未配置",
+                "message": "外部文档提交入口尚未配置",
             },
         )
-    if api_key is None or not hmac.compare_digest(api_key, configured):
+    supplied = submission_api_key or api_key
+    if supplied is None or not hmac.compare_digest(supplied, configured):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
-            detail={"code": "INVALID_CRAWLER_API_KEY", "message": "爬虫上传凭证无效"},
+            detail={"code": "INVALID_CRAWLER_API_KEY", "message": "外部文档提交凭证无效"},
         )

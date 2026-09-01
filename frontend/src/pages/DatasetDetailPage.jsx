@@ -589,7 +589,7 @@ export function DatasetDetailPage() {
               {loadingDocuments && datasetDocuments.length === 0 ? (
             <div className="empty-state empty-state--loading"><Loader2 className="spin" size={20} /><p>正在读取文档…</p></div>
           ) : datasetDocuments.length === 0 ? (
-            <div className="empty-state"><FileText size={24} /><h3>还没有文档</h3><p>支持 PDF、DOCX、HTML 和 HTM；PDF 使用 OpenDataLoader 解析。</p><button type="button" className="button button--primary" onClick={() => setUploadOpen(true)}><Upload size={16} />上传文档</button></div>
+            <div className="empty-state"><FileText size={24} /><h3>还没有文档</h3><p>支持 PDF、Word、Markdown 和 HTML；PDF 使用 OpenDataLoader 解析。</p><button type="button" className="button button--primary" onClick={() => setUploadOpen(true)}><Upload size={16} />上传文档</button></div>
           ) : (
             <>
               <div className="document-toolbar">
@@ -689,7 +689,7 @@ export function DatasetDetailPage() {
           </form>
 
           <aside className="settings-aside">
-            <article className="panel execution-card"><h2>处理方式</h2><dl><div><dt><FileText size={14} />支持格式</dt><dd>PDF、DOCX、HTML、HTM</dd></div><div><dt><Layers3 size={14} />PDF 解析</dt><dd>OpenDataLoader</dd></div><div><dt><Database size={14} />检索索引</dt><dd>关键词 + 稀疏向量 + 稠密向量</dd></div><div><dt><Clock3 size={14} />任务处理</dt><dd>后台解析队列</dd></div></dl></article>
+            <article className="panel execution-card"><h2>处理方式</h2><dl><div><dt><FileText size={14} />支持格式</dt><dd>PDF、Word、Markdown、HTML</dd></div><div><dt><Layers3 size={14} />PDF 解析</dt><dd>OpenDataLoader</dd></div><div><dt><Database size={14} />检索索引</dt><dd>关键词 + 稀疏向量 + 稠密向量</dd></div><div><dt><Clock3 size={14} />任务处理</dt><dd>后台解析队列</dd></div></dl></article>
             <article className="panel danger-zone"><p className="eyebrow">谨慎操作</p><h2>删除数据集</h2><p>只有不包含文档的数据集才能删除。</p><button type="button" className="button button--danger" onClick={handleDeleteDataset} disabled={savingSettings || datasetDocuments.length > 0}><Trash2 size={15} />删除数据集</button>{datasetDocuments.length ? <small>请先删除当前 {datasetDocuments.length} 个文档。</small> : null}</article>
           </aside>
         </section>
