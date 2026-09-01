@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -10,7 +11,6 @@ import {
   LoaderCircle,
   RefreshCw,
   ShieldCheck,
-  X,
   XCircle,
 } from "lucide-react";
 import { formatBytes } from "../components/ui";
@@ -40,19 +40,66 @@ function submissionPreviewKind(submission) {
   return "download";
 }
 
+const DEMO_SUBMISSIONS = [
+  {
+    document_id: 9101,
+    dataset_id: 4,
+    dataset_name: "测试报告",
+    filename: "企业温室气体排放核算与报告指南.pdf",
+    file_type: "pdf",
+    source_title: "企业温室气体排放核算与报告指南.pdf",
+    file_size: 2936012,
+    created_at: "2026-09-01T11:42:00+08:00",
+    review_status: "PENDING",
+    source_metadata: { source_name: "external-client" },
+  },
+  {
+    document_id: 9102,
+    dataset_id: 3,
+    dataset_name: "测试数据集2",
+    filename: "供应链碳排放数据说明.md",
+    file_type: "md",
+    source_title: "供应链碳排放数据说明",
+    file_size: 18432,
+    created_at: "2026-09-01T10:18:00+08:00",
+    review_status: "PENDING",
+    source_metadata: { source_name: "partner-system" },
+  },
+  {
+    document_id: 9103,
+    dataset_id: 2,
+    dataset_name: "测试数据集",
+    filename: "ISO 14064-1 温室气体规范.docx",
+    file_type: "docx",
+    source_title: "ISO 14064-1 温室气体规范",
+    file_size: 3355443,
+    created_at: "2026-08-31T16:06:00+08:00",
+    review_status: "PENDING",
+    source_metadata: { source_name: "standard-importer" },
+  },
+];
+
 export function CrawlerReviewPage() {
-  const { actions = {} } = useApp();
+  const { actions = {}, isDemo = false } = useApp();
   const [reviewStatus, setReviewStatus] = useState("PENDING");
   const [submissions, setSubmissions] = useState([]);
   const [submissionTotal, setSubmissionTotal] = useState(0);
   const [reviewsLoading, setReviewsLoading] = useState(true);
   const [reviewActionId, setReviewActionId] = useState(null);
   const [reviewError, setReviewError] = useState("");
+  const [demoSubmissions, setDemoSubmissions] = useState(DEMO_SUBMISSIONS);
   const [preview, setPreview] = useState(null);
 
   const loadReviewQueue = useCallback(async (signal) => {
     setReviewsLoading(true);
     setReviewError("");
+    if (isDemo) {
+      const filtered = demoSubmissions.filter((submission) => submission.review_status === reviewStatus);
+      setSubmissions(filtered);
+      setSubmissionTotal(filtered.length);
+      setReviewsLoading(false);
+      return;
+    }
     try {
       const response = await listCrawlerSubmissions(
         { reviewStatus, limit: 100 },
@@ -67,7 +114,7 @@ export function CrawlerReviewPage() {
     } finally {
       if (!signal?.aborted) setReviewsLoading(false);
     }
-  }, [reviewStatus]);
+  }, [demoSubmissions, isDemo, reviewStatus]);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -92,8 +139,14 @@ export function CrawlerReviewPage() {
     setReviewActionId(submission.document_id);
     setReviewError("");
     try {
-      const blob = await getCrawlerSubmissionFile(submission.document_id);
-      const kind = submissionPreviewKind(submission);
+      const blob = isDemo
+        ? new Blob([
+          submission.file_type === "md"
+            ? `# ${submission.source_title}\n\n该文件用于审核流程演示，包含供应商范围一、范围二及运输环节的碳排放数据说明。`
+            : `预览资料：${submission.source_title || submission.filename}`,
+        ], { type: "text/markdown;charset=utf-8" })
+        : await getCrawlerSubmissionFile(submission.document_id);
+      const kind = isDemo ? "markdown" : submissionPreviewKind(submission);
       setPreview({
         submission,
         kind,
@@ -108,16 +161,6 @@ export function CrawlerReviewPage() {
     }
   }
 
-  function downloadPreview() {
-    if (!preview?.blob) return;
-    const objectUrl = URL.createObjectURL(preview.blob);
-    const anchor = document.createElement("a");
-    anchor.href = objectUrl;
-    anchor.download = preview.submission.filename;
-    anchor.click();
-    setTimeout(() => URL.revokeObjectURL(objectUrl), 0);
-  }
-
   async function handleReview(submission, decision) {
     if (reviewActionId) return;
     let note = null;
@@ -129,6 +172,14 @@ export function CrawlerReviewPage() {
     setReviewActionId(submission.document_id);
     setReviewError("");
     try {
+      if (isDemo) {
+        setDemoSubmissions((current) => current.map((item) => (
+          item.document_id === submission.document_id
+            ? { ...item, review_status: decision, review_note: note }
+            : item
+        )));
+        return;
+      }
       await reviewCrawlerSubmission(submission.document_id, { decision, note });
       await loadReviewQueue();
       if (decision === "APPROVED") {
@@ -214,17 +265,15 @@ export function CrawlerReviewPage() {
         })}
       </section>
 
-      {preview ? (
+      {preview ? createPortal(
         <div className="dialog-backdrop crawler-preview-backdrop" role="presentation" onMouseDown={() => setPreview(null)}>
-          <section className="dialog crawler-preview-dialog" role="dialog" aria-modal="true" aria-labelledby="crawler-preview-title" onMouseDown={(event) => event.stopPropagation()}>
-            <header className="dialog__header">
-              <div>
-                <p className="eyebrow">原文件审核</p>
-                <h2 id="crawler-preview-title">{preview.submission.source_title || preview.submission.filename}</h2>
-                <p className="dialog__subtitle">{preview.submission.filename} · {preview.submission.dataset_name}</p>
-              </div>
-              <button className="icon-button" type="button" aria-label="关闭审核预览" onClick={() => setPreview(null)}><X size={18} /></button>
-            </header>
+          <section
+            className="dialog crawler-preview-dialog"
+            role="dialog"
+            aria-modal="true"
+            aria-label={preview.submission.source_title || preview.submission.filename}
+            onMouseDown={(event) => event.stopPropagation()}
+          >
             <div className="crawler-preview-dialog__body">
               {preview.kind === "pdf" ? (
                 <iframe className="crawler-preview-dialog__pdf" src={preview.objectUrl} title={`预览 ${preview.submission.filename}`} />
@@ -247,12 +296,9 @@ export function CrawlerReviewPage() {
                 </div>
               ) : null}
             </div>
-            <footer className="dialog__footer crawler-preview-dialog__footer">
-              <button className="button button--secondary" type="button" onClick={downloadPreview}><Download size={15} />下载原文件</button>
-              <button className="button button--primary" type="button" onClick={() => setPreview(null)}>完成查看</button>
-            </footer>
           </section>
-        </div>
+        </div>,
+        document.body,
       ) : null}
     </div>
   );

@@ -523,7 +523,7 @@ export function DatasetDetailPage() {
       <header className="dataset-detail-header">
         <div className="dataset-detail-header__main">
           <Link className="icon-button" to="/datasets" aria-label="返回数据集列表"><ArrowLeft size={18} /></Link>
-          <div><p className="eyebrow">数据集 #{dataset.id}</p><h1>{dataset.name}</h1>{dataset.description ? <p>{dataset.description}</p> : null}</div>
+          <div><h1>{dataset.name}</h1><p>数据集 #{dataset.id}{dataset.description ? ` · ${dataset.description}` : ""}</p></div>
         </div>
         <div className="dataset-detail-header__actions">
           <Link className="button button--secondary" to="/tasks"><Clock3 size={16} />解析队列</Link>

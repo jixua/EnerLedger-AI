@@ -3,7 +3,6 @@ import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Activity,
   Bot,
-  CalendarDays,
   Database,
   Menu,
   MessageSquareText,
@@ -103,11 +102,6 @@ export function AppShell() {
   const { admin, logout } = useAuth();
   const breadcrumb = useMemo(() => getBreadcrumb(location.pathname), [location.pathname]);
   const isKnowledgeLibrary = location.pathname === "/datasets";
-  const todayLabel = useMemo(() => new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-  }).format(new Date()), []);
 
   useEffect(() => {
     document.documentElement.classList.remove("dark");
@@ -128,7 +122,6 @@ export function AppShell() {
             <strong>{breadcrumb}</strong>
           </div>
           <div className="topbar__actions">
-            <span className="topbar-date"><CalendarDays size={15} />{todayLabel}</span>
             <Button onClick={() => navigate(isKnowledgeLibrary ? `/datasets?create=${Date.now()}` : `/?new=${Date.now()}`)}>
               <Plus size={16} />{isKnowledgeLibrary ? "新建知识库" : "新建对话"}
             </Button>
