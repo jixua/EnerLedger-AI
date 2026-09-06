@@ -4,11 +4,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from sqlalchemy import delete as sa_delete
-from sqlalchemy import select, update
+from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.auth import get_user_id
+from app.domain.auth import get_shared_owner_user_id, get_user_id
 from app.domain.models import Dataset, Document, DocumentFolder
 from app.domain.schemas import (
     DatasetCreate,
@@ -88,7 +88,11 @@ async def _lock_and_validate_model_bindings(
             )
 
 
-def _dataset_response(dataset: Dataset) -> DatasetRead:
+def _dataset_response(
+    dataset: Dataset,
+    *,
+    retrieval_ready_document_count: int = 0,
+) -> DatasetRead:
     return DatasetRead(
         id=dataset.id,
         name=dataset.name,
@@ -98,6 +102,7 @@ def _dataset_response(dataset: Dataset) -> DatasetRead:
         sparse_embedding_config_id=dataset.sparse_embedding_config_id,
         chat_config_id=dataset.chat_config_id,
         vision_config_id=dataset.vision_config_id,
+        retrieval_ready_document_count=retrieval_ready_document_count,
         created_at=dataset.created_at,
         updated_at=dataset.updated_at,
     )
@@ -373,7 +378,7 @@ async def create_dataset(
 
 @router.get("", response_model=list[DatasetRead])
 async def list_datasets(
-    user_id: Annotated[int, Depends(get_user_id)],
+    user_id: Annotated[int, Depends(get_shared_owner_user_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[DatasetRead]:
     datasets = (
@@ -383,7 +388,26 @@ async def list_datasets(
             .order_by(Dataset.updated_at.desc(), Dataset.id.desc())
         )
     ).all()
-    return [_dataset_response(dataset) for dataset in datasets]
+    ready_counts = dict(
+        (
+            await db.execute(
+                select(Document.dataset_id, func.count(Document.id))
+                .where(
+                    Document.user_id == user_id,
+                    Document.status == DOCUMENT_STATUS_READY,
+                    Document.review_status.in_(("NOT_REQUIRED", "APPROVED")),
+                )
+                .group_by(Document.dataset_id)
+            )
+        ).all()
+    )
+    return [
+        _dataset_response(
+            dataset,
+            retrieval_ready_document_count=int(ready_counts.get(dataset.id, 0)),
+        )
+        for dataset in datasets
+    ]
 
 
 @router.get("/{dataset_id}", response_model=DatasetRead)

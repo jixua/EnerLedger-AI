@@ -266,17 +266,17 @@ async def test_crawler_upload_is_saved_for_review_without_dispatch(
     _active_dispatch_stub,
 ) -> None:
     storage = _FakeStorage()
-    source_path = tmp_path / "crawler.pdf"
-    source_path.write_bytes(b"%PDF-1.7\n")
+    source_path = tmp_path / "crawler.md"
+    source_path.write_text("# 待审核资料\n\n正文。\n", encoding="utf-8")
     dataset = _dataset()
     db = _FakeSession([dataset])
 
     document = await queue_document_from_path(
         dataset_id=9,
         user_id=11,
-        filename="crawler.pdf",
+        filename="crawler.md",
         source_path=source_path,
-        content_type="application/pdf",
+        content_type="text/markdown; charset=utf-8",
         db=db,
         storage=storage,
         ownership_checked=True,
@@ -292,7 +292,7 @@ async def test_crawler_upload_is_saved_for_review_without_dispatch(
     assert document.dispatch_status == "IDLE"
     assert document.available_at is None
     assert document.queued_at is None
-    assert storage.uploads[0][2] == b"%PDF-1.7\n"
+    assert storage.uploads[0][2] == "# 待审核资料\n\n正文。\n".encode()
     assert _active_dispatch_stub == []
 
 

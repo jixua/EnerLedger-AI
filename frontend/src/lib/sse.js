@@ -219,10 +219,6 @@ async function streamConversation(path, body, handlers = {}) {
   });
 }
 
-export function streamRag(payload, handlers = {}) {
-  return streamConversation("/api/v1/rag/stream", toRequestBody(payload), handlers);
-}
-
 export function streamAgent(payload, handlers = {}) {
   return streamConversation("/api/v1/agent/stream", toAgentRequestBody(payload), handlers);
 }

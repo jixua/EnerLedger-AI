@@ -229,7 +229,13 @@ Codex CLI，因此该模式默认面向本机直接启动的 API，不能把宿�
 Pi Agent 的信任边界、模型兼容、离线构建和服务令牌要求见
 [`docs/pi-agent.md`](docs/pi-agent.md)。
 
-除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。当前产品只配置一个管理员，不提供注册入口；管理员密码只以 scrypt 哈希保存在部署环境中。接口字段以运行中的 OpenAPI `/docs` 为准。
+除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。当前产品支持一个管理员和一个受限资料审核员，不提供注册入口；密码只以 scrypt 哈希保存在部署环境中。可用以下命令分别生成 `ADMIN_PASSWORD_HASH` 或 `REVIEWER_PASSWORD_HASH`：
+
+```bash
+uv run python -c 'from app.domain.auth import hash_admin_password; print(hash_admin_password("replace-me"))'
+```
+
+接口字段以运行中的 OpenAPI `/docs` 为准。
 
 SSE 示例：
 
@@ -242,21 +248,6 @@ curl -N http://127.0.0.1:8000/api/v1/rag/stream \
 ```
 
 可能返回的事件包括 `stream_started`、`recall_done`、`answer_delta`、`answer_done` 和 `error`；没有可用检索上下文时仍会依次返回 `recall_done`、固定说明文本和 `answer_done`，不会调用 Chat 模型。
-
-### arXiv AI 检索词优化
-
-资料采集页支持直接输入中文主题或两三个自然语言描述词。用户必须先选择目标数据集，搜索按钮才会启用；保持“AI 优化”开启后，服务使用该数据集绑定的 Chat 模型把主题翻译、收敛为 2-5 个英文科研术语，再将术语分别包装为 arXiv 全字段条件并用 `AND` 组合，避免把整段输入误作一个固定短语。响应同时返回原始输入、优化后的可读检索词、实际 arXiv 查询表达式、模型名和优化方式，页面会显式展示这些信息。搜索结果的导入目标固定为本次选择的数据集；切换数据集会清空旧结果，避免检索模型与导入目标不一致。
-
-数据集未绑定 Chat 模型或模型调用失败时，搜索不会被阻断：英文输入按单词拆分为多个 `AND` 条件，中文输入保留原文交给 arXiv 尝试匹配，并在响应和页面中明确标记规则回退原因。接口示例：
-
-```bash
-curl -G http://127.0.0.1:8000/api/v1/crawler/arxiv \
-  -H 'Authorization: Bearer <登录接口返回的 access_token>' \
-  --data-urlencode 'query=动力电池碳排' \
-  --data-urlencode 'dataset_id=7' \
-  --data-urlencode 'ai_optimize=true' \
-  --data-urlencode 'max_results=10'
-```
 
 ### 企业文档分析
 
@@ -292,35 +283,45 @@ curl -X POST http://127.0.0.1:8000/api/v1/documents/123/analysis \
 
 ## 文档状态
 
-- `PENDING_REVIEW`：第三方爬虫原文件已保存到 MinIO，等待管理员审核，不会投递解析任务。
+- `PENDING_REVIEW`：外部系统提交的原文件已保存到 MinIO，等待管理员或资料审核员审核，不会投递解析任务。
 - `QUEUED`：原文件已持久化，等待独立 `parse-worker` 领取。
 - `PROCESSING`：worker 已持有可续租 lease，正在解析、切分或写入索引。
 - `READY`：Markdown/资产、PDF 质量门禁与三路索引均完成，可以召回。
 - `FAILED`：自动退避重试耗尽后失败，原因记录在 `error_code/error_message`，不会参与召回。
-- `REJECTED`：第三方采集资料未通过人工审核，保留原文件和审核记录，但不会解析或召回。
+- `REJECTED`：外部提交资料未通过人工审核，保留原文件和审核记录，但不会解析或召回。
 
-## 第三方爬虫上传与审核
+## 外部文档上传与审核
 
-部署时为 API 配置独立的 `CRAWLER_UPLOAD_API_KEY`；留空会关闭外部上传入口。第三方服务使用
-`POST /api/v1/crawler/uploads` 提交 multipart 表单，其中 `dataset_id` 和 `file` 必填，
-`source_url`、`title`、`crawler_name` 与 JSON 对象字符串 `metadata` 可选：
+部署时为 API 配置独立的 `CRAWLER_UPLOAD_API_KEY`；留空会关闭外部上传入口。外部系统使用
+`POST /api/v1/document-submissions` 提交 multipart 表单，其中 `dataset_id` 和 `file` 必填，
+支持 PDF、Word（DOC/DOCX）和 UTF-8 Markdown（MD/MARKDOWN）；`source_url`、`title`、
+`source_name` 与 JSON 对象字符串 `metadata` 可选：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/crawler/uploads \
-  -H 'X-Crawler-Api-Key: <crawler_api_key>' \
+curl -X POST http://127.0.0.1:8000/api/v1/document-submissions \
+  -H 'X-Document-Submission-Key: <submission_api_key>' \
   -F 'dataset_id=1' \
   -F 'file=@article.pdf;type=application/pdf' \
   -F 'source_url=https://example.org/articles/1' \
   -F 'title=文章标题' \
-  -F 'crawler_name=partner-crawler' \
+  -F 'source_name=partner-system' \
   -F 'metadata={"external_id":"article-1"}'
 ```
 
-成功响应为 `201`，文档保持 `PENDING_REVIEW` 且 outbox 为 `IDLE`。管理员在前端“资料采集”
-页面查看原文件后执行通过或拒绝；通过操作调用
-`POST /api/v1/crawler/submissions/{document_id}/review`，在同一事务中将文档切为 `QUEUED`
+旧的 `POST /api/v1/crawler/uploads`、`X-Crawler-Api-Key` 和 `crawler_name` 参数继续兼容。
+成功响应为 `201`，文档保持 `PENDING_REVIEW` 且 outbox 为 `IDLE`。管理员或资料审核员在前端
+“资料审核”页面查看原文件、选择目标数据集后执行通过，或者填写原因后拒绝；通过操作调用
+`POST /api/v1/document-submissions/{document_id}/review`，在同一事务中将文档切为 `QUEUED`
 并创建待投递 outbox，随后才发送 RabbitMQ 解析消息。待审核和已拒绝资料不会出现在普通文档
 列表或解析队列中。
+
+受限资料审核员账号通过 `REVIEWER_USERNAME` 和 `REVIEWER_PASSWORD_HASH` 配置。
+密码哈希的生成方式与管理员一致；`REVIEWER_PASSWORD_HASH` 留空时该账号禁用。审核员仅可：
+
+- 读取待审资料、查看原文件、通过或拒绝，并在通过时选择入库数据集；
+- 读取对话所需的数据集可用状态和脱敏模型摘要，使用 AI 对话。
+
+数据集、文档、模型和系统配置的其他管理接口仍仅限管理员。
 
 RabbitMQ 负责主动投递，MySQL `document` 行同时保存解析 lease 和 outbox 投递状态。
 文档状态与待投递标记在一次事务内提交；API 随后尝试发布，后台补偿器会用

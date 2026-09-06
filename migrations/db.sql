@@ -22,6 +22,102 @@ CREATE TABLE llm_config (
     KEY idx_llm_config_owner_capability (owner_user_id, capability, is_active)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
+CREATE TABLE structured_asset (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    dataset_id BIGINT UNSIGNED NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    asset_code VARCHAR(128) NOT NULL,
+    name VARCHAR(255) NOT NULL,
+    asset_type VARCHAR(32) NOT NULL,
+    status VARCHAR(16) NOT NULL DEFAULT 'ACTIVE',
+    current_version_id BIGINT UNSIGNED NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_structured_asset_dataset_code (user_id, dataset_id, asset_code),
+    KEY idx_structured_asset_dataset (user_id, dataset_id, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE structured_asset_version (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    asset_id BIGINT UNSIGNED NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    dataset_id BIGINT UNSIGNED NOT NULL,
+    version_label VARCHAR(64) NOT NULL,
+    edition_year INT NULL,
+    template_code VARCHAR(64) NOT NULL,
+    state VARCHAR(24) NOT NULL,
+    content_hash VARCHAR(64) NOT NULL,
+    file_size BIGINT UNSIGNED NOT NULL,
+    raw_bucket VARCHAR(64) NOT NULL,
+    raw_object_key VARCHAR(512) NOT NULL,
+    profile JSON NULL,
+    row_count INT NOT NULL DEFAULT 0,
+    error_code VARCHAR(64) NULL,
+    error_message VARCHAR(1000) NULL,
+    published_at DATETIME NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_structured_version_hash (asset_id, content_hash),
+    KEY idx_structured_version_asset_state (asset_id, state, created_at),
+    KEY idx_structured_version_edition (asset_id, edition_year, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE structured_asset_alias (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    version_id BIGINT UNSIGNED NOT NULL,
+    filename VARCHAR(255) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_structured_alias_filename (version_id, filename)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE structured_table (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    version_id BIGINT UNSIGNED NOT NULL,
+    table_code VARCHAR(64) NOT NULL,
+    display_name VARCHAR(255) NOT NULL,
+    source_sheet VARCHAR(255) NOT NULL,
+    source_range VARCHAR(64) NULL,
+    object_bucket VARCHAR(64) NOT NULL,
+    object_key VARCHAR(512) NOT NULL,
+    content_hash VARCHAR(64) NOT NULL,
+    row_count INT NOT NULL,
+    schema_json JSON NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_structured_table_code (version_id, table_code),
+    KEY idx_structured_table_version (version_id, table_code)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE structured_term_alias (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    user_id BIGINT UNSIGNED NOT NULL,
+    dataset_id BIGINT UNSIGNED NOT NULL,
+    term VARCHAR(255) NOT NULL,
+    canonical_value VARCHAR(255) NOT NULL,
+    field_name VARCHAR(64) NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_structured_term_alias (user_id, dataset_id, term, canonical_value),
+    KEY idx_structured_term_lookup (user_id, dataset_id, term)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE structured_query_audit (
+    id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
+    user_id BIGINT UNSIGNED NOT NULL,
+    dataset_ids JSON NOT NULL,
+    request_payload JSON NOT NULL,
+    status VARCHAR(16) NOT NULL,
+    result_count INT NOT NULL DEFAULT 0,
+    error_message TEXT NULL,
+    elapsed_ms INT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_structured_query_user_created (user_id, created_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
 CREATE TABLE dataset (
     id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT,
     user_id BIGINT UNSIGNED NOT NULL,
@@ -102,6 +198,7 @@ CREATE TABLE document (
     created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     PRIMARY KEY (id),
+    UNIQUE KEY uk_document_user_dataset_filename (user_id, dataset_id, filename),
     KEY idx_document_dataset_created (dataset_id, created_at),
     KEY idx_document_user_status (user_id, status),
     KEY idx_document_queue_available (status, available_at, id),

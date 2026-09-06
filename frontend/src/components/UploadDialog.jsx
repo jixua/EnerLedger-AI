@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { AlertCircle, FileText, Loader2, UploadCloud, X } from 'lucide-react';
 
-const DEFAULT_ACCEPTED_SUFFIXES = ['pdf', 'doc', 'docx', 'html', 'htm'];
+const DEFAULT_ACCEPTED_SUFFIXES = ['pdf', 'doc', 'docx', 'html', 'htm', 'md', 'markdown'];
 const DEFAULT_MAX_FILE_BYTES = 128 * 1024 * 1024;
 
 function fileSuffix(filename) {
@@ -160,7 +160,7 @@ export function UploadDialog({
           >
             <UploadCloud size={28} aria-hidden="true" />
             <strong>拖拽多个文件到这里</strong>
-            <span>或点击选择 PDF、DOCX、HTML / HTM</span>
+            <span>或点击选择 PDF、Word、Markdown、HTML / HTM</span>
             <button type="button" className="button button--secondary" onClick={() => inputRef.current?.click()} disabled={busy}>
               选择文件
             </button>
