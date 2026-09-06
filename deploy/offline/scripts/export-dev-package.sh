@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-repo_root=$(git rev-parse --show-toplevel)
+script_dir=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+repo_root=${REPO_ROOT:-$(CDPATH= cd -- "$script_dir/../../.." && pwd)}
 source_compose_file=${SOURCE_COMPOSE_FILE:?请设置 SOURCE_COMPOSE_FILE}
 source_env_file=${SOURCE_ENV_FILE:?请设置 SOURCE_ENV_FILE}
 source_project_name=${SOURCE_PROJECT_NAME:?请设置 SOURCE_PROJECT_NAME}
@@ -195,7 +196,7 @@ archive_volume() {
   fi
   docker run --rm \
     -v "$volume:/source:ro" \
-    -v "$release_dir/data:/backup" \
+    -v "$release_dir/data:/backup:Z" \
     alpine:3.21 \
     sh -ec "cd /source && tar -czf /backup/$output ."
 }
@@ -230,7 +231,7 @@ runtime_env=
 trap - EXIT
 
 tar -C "$output_root" -czf "$release_dir.tar.gz" "$(basename "$release_dir")"
-sha256sum "$release_dir.tar.gz" >"$release_dir.tar.gz.sha256"
+(cd "$output_root" && sha256sum "$(basename "$release_dir").tar.gz" >"$(basename "$release_dir").tar.gz.sha256")
 echo "部署包目录: $release_dir"
 echo "部署包归档: $release_dir.tar.gz"
 echo "加密口令文件没有写入部署包，请通过独立安全渠道交付"

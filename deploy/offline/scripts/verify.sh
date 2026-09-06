@@ -16,8 +16,12 @@ compose() {
 
 compose ps
 compose exec -T api alembic current
-compose exec -T mysql sh -ec \
-  'mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -e "SELECT CONCAT(table_name,CHAR(9),table_rows) FROM information_schema.tables WHERE table_schema=DATABASE() ORDER BY table_name"'
+compose exec -T mysql sh -ec '
+  for table in $(mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -e "SHOW TABLES"); do
+    count=$(mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -e "SELECT COUNT(*) FROM \`$table\`")
+    printf "%s\t%s\n" "$table" "$count"
+  done
+'
 
 api_port=$(sed -n 's/^API_PORT=//p' "$env_file" | tail -n 1)
 api_port=${api_port:-8000}

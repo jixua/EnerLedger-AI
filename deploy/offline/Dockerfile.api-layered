@@ -1,0 +1,15 @@
+# syntax=docker/dockerfile:1.7
+
+# 仅用于从已验证 Dev API 镜像制作“同依赖、候选源码”离线包镜像。
+# 使用前必须确认 BASE_IMAGE 与候选版本的 pyproject.toml/uv.lock 无差异。
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+USER root
+RUN rm -rf /app/app /app/migrations /app/reporting
+COPY app /app/app
+COPY migrations /app/migrations
+COPY reporting /app/reporting
+COPY README.md /app/README.md
+RUN chown -R rag:rag /app/app /app/migrations /app/reporting /app/README.md
+USER rag

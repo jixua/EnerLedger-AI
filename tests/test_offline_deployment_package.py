@@ -2,7 +2,6 @@ from pathlib import Path
 
 import yaml
 
-
 ROOT = Path(__file__).resolve().parents[1]
 OFFLINE = ROOT / "deploy" / "offline"
 
@@ -27,6 +26,8 @@ def test_offline_compose_uses_archived_images_without_build_context() -> None:
     assert all("image" in service for service in compose["services"].values())
     assert all("build" not in service for service in compose["services"].values())
     assert compose["services"]["report-worker"]["profiles"] == ["reports"]
+    assert compose["services"]["parse-worker"]["healthcheck"] == {"disable": True}
+    assert compose["services"]["report-worker"]["healthcheck"] == {"disable": True}
 
 
 def test_business_datastores_use_named_persistent_volumes() -> None:
@@ -51,6 +52,13 @@ def test_restore_refuses_existing_volumes_and_placeholder_secrets() -> None:
     assert "拒绝覆盖" in restore
 
 
+def test_verification_uses_exact_mysql_counts() -> None:
+    verify = (OFFLINE / "scripts" / "verify.sh").read_text()
+
+    assert "SELECT COUNT(*)" in verify
+    assert "information_schema.tables" not in verify
+
+
 def test_export_encrypts_environment_and_excludes_rabbitmq_data() -> None:
     export = (OFFLINE / "scripts" / "export-dev-package.sh").read_text()
 
@@ -61,6 +69,17 @@ def test_export_encrypts_environment_and_excludes_rabbitmq_data() -> None:
     assert "mysqldump" in export
     assert "--single-transaction" in export
     assert "docker image save" in export
+
+
+def test_layered_api_image_replaces_runtime_source_without_dependencies() -> None:
+    dockerfile = (OFFLINE / "Dockerfile.api-layered").read_text()
+
+    assert "ARG BASE_IMAGE" in dockerfile
+    assert "RUN rm -rf /app/app /app/migrations /app/reporting" in dockerfile
+    assert "COPY app /app/app" in dockerfile
+    assert "COPY migrations /app/migrations" in dockerfile
+    assert "COPY pyproject.toml" not in dockerfile
+    assert "COPY uv.lock" not in dockerfile
 
 
 def test_package_documents_required_data_boundaries() -> None:
