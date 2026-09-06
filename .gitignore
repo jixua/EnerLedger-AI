@@ -8,6 +8,14 @@ node_modules/
 .env
 .env.local
 dist/
+deploy/offline/artifacts/
+deploy/offline/data/
+deploy/offline/images/
+deploy/offline/release/
+deploy/offline/secrets.env
+deploy/offline/*.tar
+deploy/offline/*.tar.gz
+deploy/offline/*.tar.zst
 app/logs/
 nltk_data/
 data/*.db
