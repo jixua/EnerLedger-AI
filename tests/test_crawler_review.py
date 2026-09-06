@@ -73,6 +73,7 @@ def _target_dataset(dataset_id: int = 9) -> Dataset:
 def test_source_metadata_requires_an_object_and_keeps_trusted_crawler_name() -> None:
     assert crawler_api._parse_source_metadata('{"lang":"zh","crawler_name":"spoofed"}', "real") == {
         "lang": "zh",
+        "source_name": "real",
         "crawler_name": "real",
     }
     with pytest.raises(HTTPException, match="metadata"):
@@ -90,6 +91,13 @@ def test_crawler_upload_key_fails_closed(monkeypatch) -> None:
         crawler_api.require_crawler_api_key("wrong")
     assert invalid.value.status_code == 401
     assert crawler_api.require_crawler_api_key("crawler-secret") is None
+    assert (
+        crawler_api.require_crawler_api_key(
+            None,
+            submission_api_key="crawler-secret",
+        )
+        is None
+    )
 
 
 @pytest.mark.asyncio

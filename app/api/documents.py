@@ -59,7 +59,7 @@ from app.services.document_queue import (
 
 router = APIRouter(prefix="/api/v1", tags=["文档解析"])
 
-SUPPORTED_FILE_TYPES = {"pdf", "doc", "docx", "html", "htm"}
+SUPPORTED_FILE_TYPES = {"pdf", "doc", "docx", "html", "htm", "md", "markdown"}
 _OLE_COMPOUND_FILE_MAGIC = b"\xd0\xcf\x11\xe0\xa1\xb1\x1a\xe1"
 _ZIP_MAGICS = (b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")
 DOCUMENT_STATUSES = {
@@ -187,6 +187,19 @@ def _validate_word_file_signature(path: Path, file_type: str) -> None:
     )
     if not valid:
         raise HTTPException(status_code=422, detail=f"文件内容不是有效的 {file_type.upper()} 文档")
+
+
+def _validate_markdown_file_encoding(path: Path, file_type: str) -> None:
+    """在保存待审核记录前拒绝无法可靠透传的非 UTF-8 Markdown。"""
+
+    if file_type not in {"md", "markdown"}:
+        return
+    try:
+        with path.open("r", encoding="utf-8-sig", errors="strict") as source:
+            while source.read(1024 * 1024):
+                pass
+    except UnicodeDecodeError as exc:
+        raise HTTPException(status_code=422, detail="Markdown 文件必须使用 UTF-8 编码") from exc
 
 
 _QUALITY_SUMMARY_FIELDS = (
@@ -789,6 +802,7 @@ async def queue_document_from_path(
             detail=f"文件超过上传上限 {settings.DOCUMENT_UPLOAD_MAX_BYTES} bytes",
         )
     _validate_word_file_signature(source_path, file_type)
+    _validate_markdown_file_encoding(source_path, file_type)
 
     storage = storage or StorageFactory.get_storage()
     object_key = object_key or (

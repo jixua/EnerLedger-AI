@@ -15,7 +15,6 @@ import {
   isDocumentPreviewAssetUrl,
   listDocumentChunks,
   getSystemStatus,
-  importArxivPapers,
   listAllDocuments,
   listDocumentFolders,
   listDocumentReportRuns,
@@ -23,13 +22,12 @@ import {
   listReportTemplates,
   retryReportRun,
   reviewCrawlerSubmission,
-  searchArxivPapers,
   updateDocument,
   updateDocumentFolder,
   updateDataset,
   uploadDocument,
 } from "../src/lib/api.js";
-import { streamAgent, streamRag } from "../src/lib/sse.js";
+import { streamAgent } from "../src/lib/sse.js";
 
 const originalFetch = globalThis.fetch;
 
@@ -318,54 +316,6 @@ test("system page reads the detailed backend status endpoint", async () => {
   assert.equal(result.components.mysql.status, "ready");
 });
 
-test("arXiv crawler requires the target dataset before AI-optimized search", async () => {
-  configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
-  let captured;
-  globalThis.fetch = async (url, init) => {
-    captured = { url, init };
-    return jsonResponse({ source: "arXiv", query: "carbon footprint", total_results: 0, items: [] });
-  };
-
-  await searchArxivPapers({
-    query: " 动力电池碳排 ",
-    maxResults: 5,
-    datasetId: 7,
-    aiOptimize: true,
-  });
-
-  assert.equal(
-    captured.url,
-    "http://api.local/api/v1/crawler/arxiv?query=%E5%8A%A8%E5%8A%9B%E7%94%B5%E6%B1%A0%E7%A2%B3%E6%8E%92&max_results=5&dataset_id=7&ai_optimize=true",
-  );
-  assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
-});
-
-test("arXiv import sends selected paper titles to the target dataset", async () => {
-  let captured;
-  globalThis.fetch = async (url, init) => {
-    captured = { url, init };
-    return jsonResponse({ dataset_id: 7, queued_count: 2, failed_count: 0, items: [] }, 202);
-  };
-
-  await importArxivPapers({
-    datasetId: "7",
-    papers: [
-      { arxiv_id: "2608.12345v1", title: "Carbon Accounting with AI" },
-      { arxiv_id: "2608.12346v1", title: "Lifecycle Emissions Analysis" },
-    ],
-  });
-
-  assert.equal(captured.url, "/api/v1/crawler/arxiv/import");
-  assert.equal(captured.init.method, "POST");
-  assert.deepEqual(JSON.parse(captured.init.body), {
-    dataset_id: 7,
-    papers: [
-      { arxiv_id: "2608.12345v1", title: "Carbon Accounting with AI" },
-      { arxiv_id: "2608.12346v1", title: "Lifecycle Emissions Analysis" },
-    ],
-  });
-});
-
 test("crawler review list and decision use the authenticated review contract", async () => {
   configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
   const requests = [];
@@ -403,34 +353,6 @@ test("crawler original file is fetched as a protected blob", async () => {
   assert.equal(captured.url, "http://api.local/api/v1/crawler/submissions/51/file");
   assert.equal(captured.init.headers.get("Authorization"), "Bearer token-7");
   assert.equal(blob.type, "application/pdf");
-});
-
-test("RAG stream sends snake_case payload and consumes terminal SSE event", async () => {
-  let captured;
-  const frames = [
-    'event: stream_started\ndata: {"request_id":"req-1"}\n\n',
-    'event: recall_done\ndata: {"request_id":"req-1","hits":[],"failed_sources":[]}\n\n',
-    'event: answer_delta\ndata: {"text":"无法"}\n\n',
-    'event: answer_done\ndata: {"request_id":"req-1","answer":"无法回答","hits":[],"failed_sources":[],"usage":{"total_tokens":8},"elapsed_ms":12}\n\n',
-  ].join("");
-  globalThis.fetch = async (url, init) => {
-    captured = { url, init };
-    return new Response(frames, {
-      status: 200,
-      headers: { "Content-Type": "text/event-stream", "X-Request-Id": "req-1" },
-    });
-  };
-
-  const result = await streamRag({ query: "问题", datasetIds: [2], llmConfigId: 9 });
-
-  assert.equal(captured.url, "/api/v1/rag/stream");
-  assert.deepEqual(JSON.parse(captured.init.body), {
-    query: "问题",
-    dataset_ids: [2],
-    llm_config_id: 9,
-  });
-  assert.equal(result.answer, "无法回答");
-  assert.equal(result.terminalEvent, "answer_done");
 });
 
 test("Pi Agent stream sends current-page history to the dedicated endpoint", async () => {

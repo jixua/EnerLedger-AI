@@ -12,7 +12,6 @@ const TasksPage = lazy(() => import("./pages/TasksPage").then((module) => ({ def
 const PlaygroundPage = lazy(() => import("./pages/PlaygroundPage").then((module) => ({ default: module.PlaygroundPage })));
 const ModelsPage = lazy(() => import("./pages/ModelsPage").then((module) => ({ default: module.ModelsPage })));
 const SystemPage = lazy(() => import("./pages/SystemPage").then((module) => ({ default: module.SystemPage })));
-const CrawlerPage = lazy(() => import("./pages/CrawlerPage").then((module) => ({ default: module.CrawlerPage })));
 const CrawlerReviewPage = lazy(() => import("./pages/CrawlerReviewPage").then((module) => ({ default: module.CrawlerReviewPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage").then((module) => ({ default: module.LoginPage })));
 
@@ -49,7 +48,6 @@ export function App() {
             <Route path="playground" element={<Navigate to="/" replace />} />
             <Route path="models" element={<AdminRoute><Suspense fallback={<PageLoader />}><ModelsPage /></Suspense></AdminRoute>} />
             <Route path="system" element={<AdminRoute><Suspense fallback={<PageLoader />}><SystemPage /></Suspense></AdminRoute>} />
-            <Route path="crawler" element={<AdminRoute><Suspense fallback={<PageLoader />}><CrawlerPage /></Suspense></AdminRoute>} />
             <Route path="crawler/review" element={<Suspense fallback={<PageLoader />}><CrawlerReviewPage /></Suspense>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

@@ -28,8 +28,8 @@ import {
   updateModelConfig,
   uploadDocument,
 } from "../lib/api";
-import { streamAgent as streamAgentRequest, streamRag as streamRagRequest } from "../lib/sse";
 import { useAuth } from "./AuthContext";
+import { streamAgent as streamAgentRequest } from "../lib/sse";
 import {
   PREVIEW_DATA_NOTICE,
   getMockDocumentAnalysis,
@@ -757,20 +757,13 @@ export function AppProvider({ children }) {
     }
   }, [isDemo]);
 
-  const streamRag = useCallback(async ({ query, datasetIds, llmConfigId, docIds, signal, onEvent }) => {
+  const streamAgent = useCallback(async ({ query, datasetIds, llmConfigId, docIds, history, signal, onEvent }) => {
     if (!isDemo) {
       try {
-        const result = await streamRagRequest({ query, datasetIds, llmConfigId, docIds }, {
+        return await streamAgentRequest({ query, datasetIds, llmConfigId, docIds, history }, {
           signal,
           onEvent: ({ event, data }) => onEvent?.(event, data),
         });
-        if (result.emptyRecall) {
-          const answer = "根据当前已解析的文档，暂时无法回答这个问题。请补充相关文档，或调整检索范围后重试。";
-          const done = { request_id: result.requestId, answer, hits: [], failed_sources: result.failedSources, usage: null, elapsed_ms: result.elapsedMs };
-          onEvent?.("answer_done", done);
-          return { ...result, answer, emptyRecall: true, terminalEvent: "answer_done" };
-        }
-        return result;
       } catch (error) {
         setLastError(normalizeMessage(error));
         throw error;
@@ -794,21 +787,6 @@ export function AppProvider({ children }) {
     onEvent?.("answer_done", done);
     return { requestId, answer: partial, hits, failedSources: [], usage: done.usage, elapsedMs: done.elapsed_ms, emptyRecall: false, terminalEvent: "answer_done" };
   }, [isDemo]);
-
-  const streamAgent = useCallback(async ({ query, datasetIds, llmConfigId, docIds, history, signal, onEvent }) => {
-    if (isDemo) {
-      return streamRag({ query, datasetIds, llmConfigId, docIds, signal, onEvent });
-    }
-    try {
-      return await streamAgentRequest({ query, datasetIds, llmConfigId, docIds, history }, {
-        signal,
-        onEvent: ({ event, data }) => onEvent?.(event, data),
-      });
-    } catch (error) {
-      setLastError(normalizeMessage(error));
-      throw error;
-    }
-  }, [isDemo, streamRag]);
 
   const connectionMode = isDemo ? "PREVIEW" : apiReachable ? "LIVE API" : "OFFLINE";
   const actions = useMemo(() => ({
@@ -871,9 +849,8 @@ export function AppProvider({ children }) {
     deleteDocument: removeDocument,
     recall,
     streamAgent,
-    streamRag,
     actions,
-  }), [actions, allDocuments, analyzeDocument, apiReachable, connectionMode, createDataset, createModel, datasets, documents, downloadDocumentAnalysisDocx, health, healthLoading, isDemo, lastError, loadAllDocuments, loadDocument, loadDocumentAnalysis, loadDocumentAnalysisStatus, loadDocumentChunks, loadDocumentPreview, loadDocuments, loading, models, recall, refreshAll, refreshHealth, refreshing, removeDataset, removeDocument, removeModel, reparseDocument, retryDocument, streamAgent, streamRag, updateDataset, updateDocument, updateModel, uploadDocuments, userId]);
+  }), [actions, allDocuments, analyzeDocument, apiReachable, connectionMode, createDataset, createModel, datasets, documents, downloadDocumentAnalysisDocx, health, healthLoading, isDemo, lastError, loadAllDocuments, loadDocument, loadDocumentAnalysis, loadDocumentAnalysisStatus, loadDocumentChunks, loadDocumentPreview, loadDocuments, loading, models, recall, refreshAll, refreshHealth, refreshing, removeDataset, removeDocument, removeModel, reparseDocument, retryDocument, streamAgent, updateDataset, updateDocument, updateModel, uploadDocuments, userId]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

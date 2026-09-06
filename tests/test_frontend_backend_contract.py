@@ -8,12 +8,14 @@ def test_openapi_contains_every_frontend_runtime_endpoint() -> None:
         ("post", "/api/v1/auth/login"),
         ("get", "/api/v1/auth/me"),
         ("get", "/api/v1/system/status"),
-        ("get", "/api/v1/crawler/arxiv"),
-        ("post", "/api/v1/crawler/arxiv/import"),
         ("post", "/api/v1/crawler/uploads"),
         ("get", "/api/v1/crawler/submissions"),
         ("get", "/api/v1/crawler/submissions/{document_id}/file"),
         ("post", "/api/v1/crawler/submissions/{document_id}/review"),
+        ("post", "/api/v1/document-submissions"),
+        ("get", "/api/v1/document-submissions"),
+        ("get", "/api/v1/document-submissions/{document_id}/file"),
+        ("post", "/api/v1/document-submissions/{document_id}/review"),
         ("get", "/api/v1/llm/configs"),
         ("post", "/api/v1/llm/configs"),
         ("patch", "/api/v1/llm/configs/{config_id}"),
@@ -52,6 +54,13 @@ def test_openapi_contains_every_frontend_runtime_endpoint() -> None:
     )
 
     assert missing == []
+
+
+def test_backend_does_not_expose_removed_arxiv_collection_endpoints() -> None:
+    paths = app.openapi()["paths"]
+
+    assert "/api/v1/crawler/arxiv" not in paths
+    assert "/api/v1/crawler/arxiv/import" not in paths
 
 
 def test_backend_does_not_expose_registration_endpoint() -> None:
