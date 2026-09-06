@@ -103,6 +103,8 @@ class Settings(BaseSettings):
     )
     ADMIN_USERNAME: str = "root"
     ADMIN_PASSWORD_HASH: str = ""
+    REVIEWER_USERNAME: str = "reviewer"
+    REVIEWER_PASSWORD_HASH: str = ""
     JWT_SECRET: str = ""
     JWT_ISSUER: str = "energy-carbon-rag"
     JWT_AUDIENCE: str = "energy-carbon-web"
@@ -762,6 +764,13 @@ class Settings(BaseSettings):
             raise ValueError("ADMIN_USERNAME must not be empty")
         if not self.ADMIN_PASSWORD_HASH.startswith("scrypt:"):
             raise ValueError("ADMIN_PASSWORD_HASH must be a generated scrypt hash")
+        if self.REVIEWER_PASSWORD_HASH:
+            if not self.REVIEWER_USERNAME.strip():
+                raise ValueError("REVIEWER_USERNAME must not be empty when reviewer is enabled")
+            if self.REVIEWER_USERNAME == self.ADMIN_USERNAME:
+                raise ValueError("REVIEWER_USERNAME must differ from ADMIN_USERNAME")
+            if not self.REVIEWER_PASSWORD_HASH.startswith("scrypt:"):
+                raise ValueError("REVIEWER_PASSWORD_HASH must be a generated scrypt hash")
         if self.DOCUMENT_QUEUE_HEARTBEAT_SECONDS >= self.DOCUMENT_QUEUE_LEASE_SECONDS:
             raise ValueError(
                 "DOCUMENT_QUEUE_HEARTBEAT_SECONDS must be less than DOCUMENT_QUEUE_LEASE_SECONDS"

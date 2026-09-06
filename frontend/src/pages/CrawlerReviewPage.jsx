@@ -28,7 +28,7 @@ function formatDate(value) {
 }
 
 export function CrawlerReviewPage() {
-  const { actions = {} } = useApp();
+  const { actions = {}, datasets = [] } = useApp();
   const [reviewStatus, setReviewStatus] = useState("PENDING");
   const [submissions, setSubmissions] = useState([]);
   const [submissionTotal, setSubmissionTotal] = useState(0);
@@ -92,10 +92,18 @@ export function CrawlerReviewPage() {
     setReviewActionId(submission.document_id);
     setReviewError("");
     try {
-      await reviewCrawlerSubmission(submission.document_id, { decision, note });
+      const datasetId = Number(submission.target_dataset_id || submission.dataset_id);
+      if (decision === "APPROVED" && !datasetId) {
+        throw new Error("请先选择文档要存入的数据集");
+      }
+      await reviewCrawlerSubmission(submission.document_id, {
+        decision,
+        note,
+        datasetId: decision === "APPROVED" ? datasetId : undefined,
+      });
       await loadReviewQueue();
       if (decision === "APPROVED") {
-        void Promise.resolve(actions.loadDocuments?.(submission.dataset_id)).catch(() => {});
+        void Promise.resolve(actions.loadDocuments?.(datasetId)).catch(() => {});
       }
     } catch (requestError) {
       setReviewError(requestError?.message || "审核操作失败");
@@ -162,6 +170,24 @@ export function CrawlerReviewPage() {
                 {submission.review_note ? <small>审核备注：{submission.review_note}</small> : null}
               </div>
               <div className="crawler-review-card__actions">
+                {submission.review_status === "PENDING" ? (
+                  <label className="crawler-review-card__dataset">
+                    <span>存入数据集</span>
+                    <select
+                      aria-label={`选择 ${submission.source_title || submission.filename} 的目标数据集`}
+                      value={String(submission.target_dataset_id || submission.dataset_id || "")}
+                      onChange={(event) => setSubmissions((current) => current.map((item) => (
+                        item.document_id === submission.document_id
+                          ? { ...item, target_dataset_id: Number(event.target.value) }
+                          : item
+                      )))}
+                      disabled={Boolean(reviewActionId)}
+                    >
+                      <option value="" disabled>请选择</option>
+                      {datasets.map((dataset) => <option key={dataset.id} value={dataset.id}>{dataset.name}</option>)}
+                    </select>
+                  </label>
+                ) : null}
                 <button className="button button--secondary" type="button" onClick={() => handleOpenSubmission(submission)} disabled={Boolean(reviewActionId)}>
                   {busy ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}查看原文件
                 </button>

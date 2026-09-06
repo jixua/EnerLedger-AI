@@ -31,7 +31,13 @@ from app.api.documents import (
     _validate_word_file_signature,
     queue_document_from_path,
 )
-from app.domain.auth import ADMIN_USER_ID, get_user_id, require_crawler_api_key
+from app.domain.auth import (
+    ADMIN_USER_ID,
+    get_actor_user_id,
+    get_shared_owner_user_id,
+    get_user_id,
+    require_crawler_api_key,
+)
 from app.domain.models import Dataset, Document
 from app.domain.schemas import (
     ArxivImportItem,
@@ -182,7 +188,7 @@ async def list_crawler_submissions(
     review_status: Literal["PENDING", "APPROVED", "REJECTED"] | None = Query(default="PENDING"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
-    user_id: int = Depends(get_user_id),
+    user_id: int = Depends(get_shared_owner_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     filters = [
@@ -215,7 +221,7 @@ async def list_crawler_submissions(
 @router.get("/submissions/{document_id}/file")
 async def download_crawler_submission_file(
     document_id: int,
-    user_id: int = Depends(get_user_id),
+    user_id: int = Depends(get_shared_owner_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> FileResponse:
     document = await db.scalar(
@@ -264,7 +270,8 @@ async def review_crawler_submission(
     document_id: int,
     payload: CrawlerReviewRequest,
     response: Response,
-    user_id: int = Depends(get_user_id),
+    user_id: int = Depends(get_shared_owner_user_id),
+    actor_user_id: int = Depends(get_actor_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     document = await db.scalar(
@@ -284,15 +291,18 @@ async def review_crawler_submission(
             detail={"code": "SUBMISSION_ALREADY_REVIEWED", "message": "该资料已完成审核"},
         )
 
-    dataset_name = await db.scalar(select(Dataset.name).where(Dataset.id == document.dataset_id))
-    if dataset_name is None:
-        raise HTTPException(status_code=409, detail="目标数据集已不存在，无法完成审核")
+    target_dataset_id = (
+        payload.dataset_id if payload.decision == "APPROVED" else document.dataset_id
+    )
+    dataset = await _owned_dataset(db, target_dataset_id, user_id)
 
     document.review_status = payload.decision
     document.review_note = payload.note
-    document.reviewed_by_user_id = user_id
+    document.reviewed_by_user_id = actor_user_id
     document.reviewed_at = utc_now()
     if payload.decision == "APPROVED":
+        document.dataset_id = dataset.id
+        document.folder_id = None
         reset_document_for_queue(document, reparse=False)
         response.status_code = status.HTTP_202_ACCEPTED
     else:
@@ -308,7 +318,7 @@ async def review_crawler_submission(
     if payload.decision == "APPROVED":
         await _dispatch_document(db, document)
         response.headers["Location"] = f"/api/v1/documents/{document.id}"
-    return _submission_payload(document, dataset_name)
+    return _submission_payload(document, dataset.name)
 
 
 @router.get("/arxiv", response_model=ArxivSearchResponse)

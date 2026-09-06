@@ -1327,6 +1327,9 @@
 .crawler-results__actions { display: flex; flex-wrap: wrap; gap: 8px; }
 .crawler-review__actions { flex-wrap: nowrap; }
 .crawler-review__actions .button { white-space: nowrap; }
+.crawler-review-card__dataset { display: grid; gap: 6px; min-width: 190px; }
+.crawler-review-card__dataset span { color: var(--muted); font-size: 10px; font-weight: 650; }
+.crawler-review-card__dataset select { width: 100%; min-width: 0; background: var(--panel); }
 .crawler-import { display: flex; align-items: center; justify-content: space-between; gap: 18px; margin-bottom: 12px; padding: 16px 18px; border-color: color-mix(in srgb, var(--primary) 22%, var(--hairline)); background: color-mix(in srgb, var(--primary-soft) 48%, var(--surface)); }
 .crawler-import__copy { display: flex; align-items: center; gap: 11px; min-width: 0; }
 .crawler-import__icon { width: 36px; height: 36px; flex: 0 0 auto; display: grid; place-items: center; border-radius: 9px; background: var(--surface); color: var(--primary); }

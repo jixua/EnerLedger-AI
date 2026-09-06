@@ -76,6 +76,14 @@ test("crawler review gates parsing behind an explicit approval action", () => {
   assert.match(crawlerReviewPageSource, /decision === "APPROVED"/);
   assert.match(crawlerReviewPageSource, /通过并解析/);
   assert.match(crawlerReviewPageSource, /查看原文件/);
+  assert.match(crawlerReviewPageSource, /存入数据集/);
+  assert.match(crawlerReviewPageSource, /datasetId: decision === "APPROVED"/);
+});
+
+test("reviewer navigation only exposes chat and document review", () => {
+  assert.match(appShellSource, /admin\?\.role === "reviewer"/);
+  assert.match(appShellSource, /to === "\/" \|\| to === "\/crawler\/review"/);
+  assert.match(appSource, /function AdminRoute/);
 });
 
 test("arXiv collection and crawler review have independent routes and navigation", () => {

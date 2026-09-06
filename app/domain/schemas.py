@@ -37,7 +37,7 @@ class AuthToken(BaseModel):
 class CurrentAdmin(BaseModel):
     user_id: int
     username: str
-    role: Literal["admin"] = "admin"
+    role: Literal["admin", "reviewer"]
 
 
 class ArxivPaper(BaseModel):
@@ -199,6 +199,7 @@ class DatasetRead(BaseModel):
     sparse_embedding_config_id: int
     chat_config_id: int | None
     vision_config_id: int | None
+    retrieval_ready_document_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -340,6 +341,7 @@ class CrawlerSubmissionPage(BaseModel):
 
 class CrawlerReviewRequest(BaseModel):
     decision: Literal["APPROVED", "REJECTED"]
+    dataset_id: int | None = Field(default=None, gt=0)
     note: str | None = Field(default=None, max_length=1000)
 
     @field_validator("note")
@@ -349,6 +351,12 @@ class CrawlerReviewRequest(BaseModel):
             return None
         stripped = value.strip()
         return stripped or None
+
+    @model_validator(mode="after")
+    def require_approval_dataset(self) -> Self:
+        if self.decision == "APPROVED" and self.dataset_id is None:
+            raise ValueError("审核通过时必须选择目标数据集")
+        return self
 
 
 class DocumentChunkRead(BaseModel):
