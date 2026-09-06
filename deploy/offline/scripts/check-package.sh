@@ -11,10 +11,13 @@ for path in \
   docs/数据迁移手册.md \
   docs/接口文档.md \
   openapi.json \
+  secrets.env.enc \
+  initial-reviewer-password.txt.enc \
   images/docker-images.tar.gz \
   data/mysql.sql.gz \
   data/mysql-table-counts.tsv \
   data/qdrant-collections.json \
+  data/manticore-table-counts.json \
   data/minio-data.tar.gz \
   data/qdrant-data.tar.gz \
   data/manticore-data.tar.gz \

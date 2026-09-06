@@ -22,4 +22,11 @@ openssl enc -d -aes-256-cbc -pbkdf2 \
   -out "$package_dir/.env" \
   -pass "file:$passphrase_file"
 chmod 600 "$package_dir/.env"
-echo "已解密为 $package_dir/.env；请先核对端口和外部地址，再执行恢复"
+if [ -f "$package_dir/initial-reviewer-password.txt.enc" ]; then
+  openssl enc -d -aes-256-cbc -pbkdf2 \
+    -in "$package_dir/initial-reviewer-password.txt.enc" \
+    -out "$package_dir/initial-reviewer-password.txt" \
+    -pass "file:$passphrase_file"
+  chmod 600 "$package_dir/initial-reviewer-password.txt"
+fi
+echo "已解密 .env 和审核员初始密码；请先核对端口和外部地址，再执行恢复"

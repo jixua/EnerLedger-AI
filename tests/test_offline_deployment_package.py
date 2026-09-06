@@ -12,6 +12,7 @@ def test_offline_compose_uses_archived_images_without_build_context() -> None:
     expected = {
         "mysql",
         "minio",
+        "minio-init",
         "qdrant",
         "manticore",
         "rabbitmq",
@@ -55,6 +56,7 @@ def test_export_encrypts_environment_and_excludes_rabbitmq_data() -> None:
 
     assert "openssl enc -aes-256-cbc -pbkdf2 -salt" in export
     assert "PACKAGE_PASSPHRASE_FILE" in export
+    assert "initial-reviewer-password.txt.enc" in export
     assert "rabbitmq-data.tar.gz" not in export
     assert "mysqldump" in export
     assert "--single-transaction" in export

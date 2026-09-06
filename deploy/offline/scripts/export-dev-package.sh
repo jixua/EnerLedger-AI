@@ -6,6 +6,9 @@ source_compose_file=${SOURCE_COMPOSE_FILE:?请设置 SOURCE_COMPOSE_FILE}
 source_env_file=${SOURCE_ENV_FILE:?请设置 SOURCE_ENV_FILE}
 source_project_name=${SOURCE_PROJECT_NAME:?请设置 SOURCE_PROJECT_NAME}
 passphrase_file=${PACKAGE_PASSPHRASE_FILE:?请设置 PACKAGE_PASSPHRASE_FILE}
+package_api_image=${PACKAGE_API_IMAGE:?请设置 PACKAGE_API_IMAGE}
+package_frontend_image=${PACKAGE_FRONTEND_IMAGE:?请设置 PACKAGE_FRONTEND_IMAGE}
+package_pi_image=${PACKAGE_PI_IMAGE:?请设置 PACKAGE_PI_IMAGE}
 output_root=${OUTPUT_ROOT:-$repo_root/deploy/offline/artifacts}
 release_id=${RELEASE_ID:-$(date -u +%Y%m%dT%H%M%SZ)}
 release_dir="$output_root/enerledger-offline-$release_id"
@@ -76,28 +79,54 @@ minio_volume=$(volume_for_mount minio /data)
 qdrant_volume=$(volume_for_mount qdrant /qdrant/storage)
 manticore_volume=$(volume_for_mount manticore /var/lib/manticore)
 
-api_source_image=$(docker inspect -f '{{.Config.Image}}' "$api_id")
-frontend_source_image=$(docker inspect -f '{{.Config.Image}}' "$frontend_id")
-pi_source_image=$(docker inspect -f '{{.Config.Image}}' "$pi_id")
-docker image tag "$api_source_image" enerledger/api:offline
-docker image tag "$frontend_source_image" enerledger/frontend:offline
-docker image tag "$pi_source_image" enerledger/pi-agent:offline
+data_source_api_image=$(docker inspect -f '{{.Config.Image}}' "$api_id")
+data_source_frontend_image=$(docker inspect -f '{{.Config.Image}}' "$frontend_id")
+data_source_pi_image=$(docker inspect -f '{{.Config.Image}}' "$pi_id")
+for image in "$package_api_image" "$package_frontend_image" "$package_pi_image"; do
+  docker image inspect "$image" >/dev/null
+done
+docker image tag "$package_api_image" enerledger/api:offline
+docker image tag "$package_frontend_image" enerledger/frontend:offline
+docker image tag "$package_pi_image" enerledger/pi-agent:offline
 
 mysql_image=$(docker inspect -f '{{.Config.Image}}' "$mysql_id")
 minio_image=$(docker inspect -f '{{.Config.Image}}' "$minio_id")
 qdrant_image=$(docker inspect -f '{{.Config.Image}}' "$qdrant_id")
 manticore_image=$(docker inspect -f '{{.Config.Image}}' "$manticore_id")
 rabbitmq_image=$(docker inspect -f '{{.Config.Image}}' "$rabbitmq_id")
+minio_mc_image=${MINIO_MC_IMAGE:-minio/mc:latest}
+docker image inspect "$minio_mc_image" >/dev/null 2>&1 || docker pull "$minio_mc_image"
 docker image inspect alpine:3.21 >/dev/null 2>&1 || docker pull alpine:3.21
 
 docker image save \
   enerledger/api:offline \
   enerledger/frontend:offline \
   enerledger/pi-agent:offline \
-  "$mysql_image" "$minio_image" "$qdrant_image" "$manticore_image" "$rabbitmq_image" \
+  "$mysql_image" "$minio_image" "$minio_mc_image" "$qdrant_image" "$manticore_image" "$rabbitmq_image" \
   alpine:3.21 | gzip -1 >"$release_dir/images/docker-images.tar.gz"
 
-docker exec "$api_id" python -c \
+reviewer_username=${REVIEWER_USERNAME:-reviewer}
+reviewer_password=$(openssl rand -hex 16)
+reviewer_hash=$(REVIEWER_BOOTSTRAP_PASSWORD="$reviewer_password" python3 -c 'import base64,hashlib,os,secrets; password=os.environ["REVIEWER_BOOTSTRAP_PASSWORD"].encode(); salt=secrets.token_bytes(16); derived=hashlib.scrypt(password,salt=salt,n=2**14,r=8,p=1,dklen=32); enc=lambda value: base64.urlsafe_b64encode(value).decode().rstrip("="); print(f"scrypt:16384:8:1:{enc(salt)}:{enc(derived)}")')
+runtime_env=$(mktemp)
+chmod 600 "$runtime_env"
+grep -v -E '^(COMPOSE_PROJECT_NAME|API_IMAGE|FRONTEND_IMAGE|PI_AGENT_IMAGE|MYSQL_IMAGE|MINIO_IMAGE|MINIO_MC_IMAGE|QDRANT_IMAGE|MANTICORE_IMAGE|RABBITMQ_IMAGE|REVIEWER_USERNAME|REVIEWER_PASSWORD_HASH)=' "$source_env_file" >"$runtime_env"
+{
+  printf 'COMPOSE_PROJECT_NAME=enerledger-offline\n'
+  printf 'API_IMAGE=enerledger/api:offline\n'
+  printf 'FRONTEND_IMAGE=enerledger/frontend:offline\n'
+  printf 'PI_AGENT_IMAGE=enerledger/pi-agent:offline\n'
+  printf 'MYSQL_IMAGE=%s\n' "$mysql_image"
+  printf 'MINIO_IMAGE=%s\n' "$minio_image"
+  printf 'MINIO_MC_IMAGE=%s\n' "$minio_mc_image"
+  printf 'QDRANT_IMAGE=%s\n' "$qdrant_image"
+  printf 'MANTICORE_IMAGE=%s\n' "$manticore_image"
+  printf 'RABBITMQ_IMAGE=%s\n' "$rabbitmq_image"
+  printf 'REVIEWER_USERNAME=%s\n' "$reviewer_username"
+  printf 'REVIEWER_PASSWORD_HASH=%s\n' "$reviewer_hash"
+} >>"$runtime_env"
+
+docker run --rm --env-file "$runtime_env" "$package_api_image" python -c \
   'import json; from app.main import app; print(json.dumps(app.openapi(), ensure_ascii=False, indent=2))' \
   >"$release_dir/openapi.json"
 docker exec "$mysql_id" sh -ec '
@@ -107,13 +136,22 @@ docker exec "$mysql_id" sh -ec '
   done
 ' >"$release_dir/data/mysql-table-counts.tsv"
 docker exec "$api_id" python -c \
-  'import urllib.request; print(urllib.request.urlopen("http://qdrant:6333/collections", timeout=10).read().decode())' \
+  'import json,urllib.request; base="http://qdrant:6333"; listing=json.load(urllib.request.urlopen(base+"/collections",timeout=10)); names=[item["name"] for item in listing["result"]["collections"]]; print(json.dumps({"collections":{name:json.load(urllib.request.urlopen(base+"/collections/"+name,timeout=10))["result"] for name in names}},ensure_ascii=False,indent=2))' \
   >"$release_dir/data/qdrant-collections.json"
+docker exec "$api_id" python -c \
+  'import json,pymysql; c=pymysql.connect(host="manticore",port=9306,user="",password="",autocommit=True); q=c.cursor(); q.execute("SHOW TABLES"); tables=[r[0] for r in q.fetchall()]; counts={}; [(q.execute("SELECT COUNT(*) FROM `"+table+"`"),counts.__setitem__(table,q.fetchone()[0])) for table in tables]; print(json.dumps(counts,ensure_ascii=False,indent=2))' \
+  >"$release_dir/data/manticore-table-counts.json"
 
 openssl enc -aes-256-cbc -pbkdf2 -salt \
-  -in "$source_env_file" \
+  -in "$runtime_env" \
   -out "$release_dir/secrets.env.enc" \
   -pass "file:$passphrase_file"
+printf 'username=%s\npassword=%s\n' "$reviewer_username" "$reviewer_password" | \
+  openssl enc -aes-256-cbc -pbkdf2 -salt \
+    -out "$release_dir/initial-reviewer-password.txt.enc" \
+    -pass "file:$passphrase_file"
+reviewer_password=
+reviewer_hash=
 
 stopped_services=()
 restart_source() {
@@ -121,7 +159,11 @@ restart_source() {
     compose start "${stopped_services[@]}" >/dev/null || true
   fi
 }
-trap restart_source EXIT
+cleanup() {
+  restart_source
+  rm -f "${runtime_env:-}"
+}
+trap cleanup EXIT
 
 for service in frontend api parse-worker report-worker pi-agent; do
   if compose ps -q "$service" 2>/dev/null | grep -q .; then
@@ -166,11 +208,15 @@ archive_volume "$manticore_volume" manticore-data.tar.gz
   printf 'release_id=%s\n' "$release_id"
   printf 'exported_at_utc=%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)"
   printf 'source_project=%s\n' "$source_project_name"
-  printf 'source_git_sha=%s\n' "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$api_id" 2>/dev/null || true)"
+  printf 'data_source_git_sha=%s\n' "$(docker inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$api_id" 2>/dev/null || true)"
+  printf 'package_git_sha=%s\n' "$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$package_api_image" 2>/dev/null || true)"
   printf 'alembic_revision=%s\n' "$(docker exec "$mysql_id" sh -ec 'mysql -N -uroot -p"$MYSQL_ROOT_PASSWORD" "$MYSQL_DATABASE" -e "SELECT version_num FROM alembic_version ORDER BY version_num"' | paste -sd, -)"
-  printf 'api_source_image=%s\n' "$api_source_image"
-  printf 'frontend_source_image=%s\n' "$frontend_source_image"
-  printf 'pi_source_image=%s\n' "$pi_source_image"
+  printf 'data_source_api_image=%s\n' "$data_source_api_image"
+  printf 'data_source_frontend_image=%s\n' "$data_source_frontend_image"
+  printf 'data_source_pi_image=%s\n' "$data_source_pi_image"
+  printf 'package_api_image=%s\n' "$package_api_image"
+  printf 'package_frontend_image=%s\n' "$package_frontend_image"
+  printf 'package_pi_image=%s\n' "$package_pi_image"
   for id in "$api_id" "$frontend_id" "$pi_id" "$mysql_id" "$minio_id" "$qdrant_id" "$manticore_id" "$rabbitmq_id"; do
     docker inspect -f 'image={{.Config.Image}} image_id={{.Image}} container={{.Name}}' "$id"
   done
@@ -179,6 +225,8 @@ archive_volume "$manticore_volume" manticore-data.tar.gz
 (cd "$release_dir" && find . -type f ! -name SHA256SUMS -print0 | sort -z | xargs -0 sha256sum >SHA256SUMS)
 restart_source
 stopped_services=()
+rm -f "$runtime_env"
+runtime_env=
 trap - EXIT
 
 tar -C "$output_root" -czf "$release_dir.tar.gz" "$(basename "$release_dir")"

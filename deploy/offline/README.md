@@ -4,7 +4,7 @@
 
 ## 交付物
 
-- `docker-compose.yml`：离线部署编排，包含 MySQL、MinIO、Qdrant、Manticore、RabbitMQ、API、Parse Worker、Pi Agent、前端，可选 Report Worker。
+- `docker-compose.yml`：离线部署编排，包含 MySQL、MinIO/初始化器、Qdrant、Manticore、RabbitMQ、API、Parse Worker、Pi Agent、前端，可选 Report Worker。
 - `images/docker-images.tar.gz`：当前 Dev 使用的全部镜像，包含固定版本中间件和 `alpine:3.21` 恢复工具镜像。
 - `data/mysql.sql.gz`：MySQL schema、Alembic 版本和业务数据全量逻辑备份。
 - `data/minio-data.tar.gz`：原文件及私有解析产物。
@@ -12,6 +12,7 @@
 - `data/manticore-data.tar.gz`：BM25 索引。
 - `openapi.json`：从实际 Dev API 镜像导出的完整 OpenAPI 规范。
 - `secrets.env.enc`：源环境配置的 AES-256 加密副本；解密口令不放入部署包。
+- `initial-reviewer-password.txt.enc`：新审核员账号的初始密码，和环境文件使用同一离线口令加密。
 - `MANIFEST.txt`、`SHA256SUMS`：源环境版本、镜像 ID、Alembic revision 和文件完整性记录。
 
 ## 最短部署流程
