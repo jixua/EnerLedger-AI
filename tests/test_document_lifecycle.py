@@ -135,6 +135,22 @@ def test_document_payload_repairs_legacy_mojibake_error_message() -> None:
     assert _document_payload(document)["error_message"] == original
 
 
+def test_document_payload_hides_legacy_html_page_count() -> None:
+    document = _document(status="READY")
+    document.filename = "IEA能源效率.md.html"
+    document.file_type = "html"
+    document.page_count = 8
+
+    assert _document_payload(document)["page_count"] is None
+
+
+def test_document_payload_preserves_pdf_page_count() -> None:
+    document = _document(status="READY")
+    document.page_count = 8
+
+    assert _document_payload(document)["page_count"] == 8
+
+
 def test_document_payload_marks_naive_database_timestamps_as_utc() -> None:
     document = _document(status="PROCESSING")
     naive_utc = datetime(2026, 9, 7, 5, 46, 41)

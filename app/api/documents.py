@@ -367,7 +367,12 @@ def _document_payload(document: Document, *, quality_detail: bool = True) -> dic
         "error_code": document.error_code,
         "error_message": repair_legacy_mojibake(document.error_message),
         "reparse_requested": document.reparse_requested,
-        "page_count": document.page_count,
+        # HTML 本身没有固定页面；同时屏蔽旧版按字符数折算后已入库的伪页数。
+        "page_count": (
+            None
+            if str(document.file_type or "").strip().lower() in {"html", "htm"}
+            else document.page_count
+        ),
         "chunk_count": document.chunk_count,
         "parse_time_ms": _document_parse_time_ms(document),
         "parse_quality_status": document.parse_quality_status,
