@@ -28,13 +28,14 @@ function formatDate(value) {
 }
 
 export function CrawlerReviewPage() {
-  const { actions = {} } = useApp();
+  const { datasets = [], actions = {} } = useApp();
   const [reviewStatus, setReviewStatus] = useState("PENDING");
   const [submissions, setSubmissions] = useState([]);
   const [submissionTotal, setSubmissionTotal] = useState(0);
   const [reviewsLoading, setReviewsLoading] = useState(true);
   const [reviewActionId, setReviewActionId] = useState(null);
   const [reviewError, setReviewError] = useState("");
+  const [targetDatasetIds, setTargetDatasetIds] = useState({});
 
   const loadReviewQueue = useCallback(async (signal) => {
     setReviewsLoading(true);
@@ -44,8 +45,12 @@ export function CrawlerReviewPage() {
         { reviewStatus, limit: 100 },
         { signal },
       );
-      setSubmissions(response.items || []);
+      const items = response.items || [];
+      setSubmissions(items);
       setSubmissionTotal(Number(response.total || 0));
+      setTargetDatasetIds(Object.fromEntries(
+        items.map((submission) => [submission.document_id, String(submission.dataset_id)]),
+      ));
     } catch (requestError) {
       if (requestError?.name !== "AbortError") {
         setReviewError(requestError?.message || "审核队列加载失败");
@@ -92,10 +97,20 @@ export function CrawlerReviewPage() {
     setReviewActionId(submission.document_id);
     setReviewError("");
     try {
-      await reviewCrawlerSubmission(submission.document_id, { decision, note });
+      const targetDatasetId = Number(
+        targetDatasetIds[submission.document_id] ?? submission.dataset_id,
+      );
+      if (decision === "APPROVED" && (!Number.isSafeInteger(targetDatasetId) || targetDatasetId <= 0)) {
+        throw new Error("请选择目标数据集");
+      }
+      await reviewCrawlerSubmission(submission.document_id, {
+        decision,
+        note,
+        ...(decision === "APPROVED" ? { datasetId: targetDatasetId } : {}),
+      });
       await loadReviewQueue();
       if (decision === "APPROVED") {
-        void Promise.resolve(actions.loadDocuments?.(submission.dataset_id)).catch(() => {});
+        void Promise.resolve(actions.loadDocuments?.(targetDatasetId)).catch(() => {});
       }
     } catch (requestError) {
       setReviewError(requestError?.message || "审核操作失败");
@@ -151,26 +166,45 @@ export function CrawlerReviewPage() {
             <article className="panel crawler-review-card" key={submission.document_id}>
               <div className="crawler-review-card__body">
                 <div className="crawler-paper__meta">
-                  <span>{submission.dataset_name}</span>
                   <span>{formatBytes(submission.file_size)}</span>
                   <span>{formatDate(submission.created_at)}</span>
                   <span>{submission.source_metadata?.crawler_name || "external-crawler"}</span>
                 </div>
-                <h3>{submission.source_title || submission.filename}</h3>
-                <p>{submission.filename}</p>
+                <div className="crawler-review-card__headline">
+                  <div className="crawler-review-card__identity">
+                    <h3>{submission.source_title || submission.filename}</h3>
+                    <p>{submission.filename}</p>
+                  </div>
+                  <div className="crawler-review-card__actions">
+                    <button className="button button--secondary" type="button" onClick={() => handleOpenSubmission(submission)} disabled={Boolean(reviewActionId)}>
+                      {busy ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}查看原文件
+                    </button>
+                    {submission.review_status === "PENDING" ? (
+                      <>
+                        <button className="button button--danger" type="button" onClick={() => handleReview(submission, "REJECTED")} disabled={Boolean(reviewActionId)}><XCircle size={15} />拒绝</button>
+                        <button className="button button--primary" type="button" onClick={() => handleReview(submission, "APPROVED")} disabled={Boolean(reviewActionId) || datasets.length === 0}><CheckCircle2 size={15} />通过并解析</button>
+                      </>
+                    ) : null}
+                  </div>
+                </div>
+                <label className="crawler-review-card__target">
+                  <span>目标数据集</span>
+                  {submission.review_status === "PENDING" ? (
+                    <select
+                      aria-label={`${submission.source_title || submission.filename}的目标数据集`}
+                      value={targetDatasetIds[submission.document_id] ?? String(submission.dataset_id)}
+                      onChange={(event) => setTargetDatasetIds((current) => ({
+                        ...current,
+                        [submission.document_id]: event.target.value,
+                      }))}
+                      disabled={Boolean(reviewActionId)}
+                    >
+                      {datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name}</option>)}
+                    </select>
+                  ) : <strong>{submission.dataset_name}</strong>}
+                </label>
                 {submission.source_url ? <a href={submission.source_url} target="_blank" rel="noreferrer">查看来源页面<ExternalLink size={13} /></a> : null}
                 {submission.review_note ? <small>审核备注：{submission.review_note}</small> : null}
-              </div>
-              <div className="crawler-review-card__actions">
-                <button className="button button--secondary" type="button" onClick={() => handleOpenSubmission(submission)} disabled={Boolean(reviewActionId)}>
-                  {busy ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}查看原文件
-                </button>
-                {submission.review_status === "PENDING" ? (
-                  <>
-                    <button className="button button--danger" type="button" onClick={() => handleReview(submission, "REJECTED")} disabled={Boolean(reviewActionId)}><XCircle size={15} />拒绝</button>
-                    <button className="button button--primary" type="button" onClick={() => handleReview(submission, "APPROVED")} disabled={Boolean(reviewActionId)}><CheckCircle2 size={15} />通过并解析</button>
-                  </>
-                ) : null}
               </div>
             </article>
           );

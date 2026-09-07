@@ -76,6 +76,8 @@ test("crawler review gates parsing behind an explicit approval action", () => {
   assert.match(crawlerReviewPageSource, /decision === "APPROVED"/);
   assert.match(crawlerReviewPageSource, /通过并解析/);
   assert.match(crawlerReviewPageSource, /查看原文件/);
+  assert.match(crawlerReviewPageSource, />目标数据集</);
+  assert.match(crawlerReviewPageSource, /datasetId: targetDatasetId/);
 });
 
 test("arXiv collection and crawler review have independent routes and navigation", () => {
@@ -90,4 +92,19 @@ test("crawler review filter and refresh action stay in one row", () => {
   assert.match(crawlerReviewPageSource, /crawler-results__actions crawler-review__actions/);
   assert.match(pageStyles, /\.crawler-review__actions \{[^}]*flex-wrap: nowrap;/);
   assert.match(pageStyles, /\.crawler-review__actions \.button \{[^}]*white-space: nowrap;/);
+});
+
+test("crawler review actions sit to the right of the submission title on wide screens", () => {
+  assert.match(
+    pageStyles,
+    /\.crawler-review-card__headline \{[^}]*grid-template-columns: minmax\(0, 1fr\) auto;[^}]*align-items: start;/,
+  );
+  assert.match(
+    pageStyles,
+    /\.crawler-review-card__actions \{[^}]*justify-content: flex-end;[^}]*flex-wrap: nowrap;/,
+  );
+  assert.match(
+    pageStyles,
+    /@media \(max-width: 760px\) \{[\s\S]*?\.crawler-review-card__headline \{[^}]*grid-template-columns: 1fr;/,
+  );
 });

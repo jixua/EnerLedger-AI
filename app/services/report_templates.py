@@ -11,7 +11,7 @@ from typing import Any
 
 
 class ReportTemplateError(ValueError):
-    """Raised when a template is missing, inconsistent, or not selectable."""
+    """Raised when a template is missing or inconsistent."""
 
     def __init__(self, message: str, *, code: str = "REPORT_TEMPLATE_INVALID") -> None:
         super().__init__(message)
@@ -32,17 +32,6 @@ class ReportTemplate:
     report_skill: str
     asset_hash: str
 
-    @property
-    def selectable(self) -> bool:
-        if self.status != "ACTIVE":
-            return False
-        if self.review is None:
-            return False
-        return (
-            self.review.get("technical_review", {}).get("status") == "PASSED"
-            and self.review.get("business_review", {}).get("status") == "APPROVED"
-        )
-
     def to_public_dict(self) -> dict[str, Any]:
         fields = self.definition.get("fields") or []
         sections = self.definition.get("sections") or []
@@ -52,7 +41,9 @@ class ReportTemplate:
             "template_version": self.version,
             "name": self.name,
             "status": self.status,
-            "selectable": self.selectable,
+            # Kept for API compatibility. Template status and review metadata are
+            # informational and do not gate report creation.
+            "selectable": True,
             "applicable_document_types": self.definition.get("applicable_document_types", []),
             "required_field_count": sum(bool(field.get("required")) for field in fields),
             "blocking_field_count": sum(bool(field.get("blocking")) for field in fields),
@@ -177,7 +168,7 @@ class ReportTemplateRegistry:
             templates.append(ReportTemplate.from_snapshot(snapshot))
         return templates
 
-    def get(self, report_type: str, *, require_selectable: bool = False) -> ReportTemplate:
+    def get(self, report_type: str) -> ReportTemplate:
         normalized = report_type.strip().upper()
         template = next(
             (item for item in self.list() if item.report_type == normalized),
@@ -186,11 +177,6 @@ class ReportTemplateRegistry:
         if template is None:
             raise ReportTemplateError(
                 f"未知报告类型：{normalized}", code="REPORT_TEMPLATE_NOT_FOUND"
-            )
-        if require_selectable and not template.selectable:
-            raise ReportTemplateError(
-                "该报告模板尚未完成业务评审，暂不能创建报告",
-                code="REPORT_TEMPLATE_NOT_ACTIVE",
             )
         return template
 
