@@ -100,6 +100,8 @@ class HtmlParseService:
             "table_split_count": renderer.table_split_count,
             "image_count": renderer.image_count,
             "image_upload_count": renderer.image_upload_count,
+            "flat_text_paragraph_count": renderer.flat_text_paragraph_count,
+            "flat_text_block_count": renderer.flat_text_block_count,
             "content_located": True,
             "content_locator_fallback": fallback,
             "comment_removed_count": comment_removed,
@@ -207,7 +209,7 @@ class HtmlParseService:
         return body, "full_body"
 
     def _assert_content_valid(self, root: Tag | None) -> None:
-        """trafilatura 判无正文 / 渲染根正文过少 → 抛异常（经 pipeline 映射 PARSE_ENGINE_FAILED）。"""
+        """正文缺失或渲染根正文过少时抛出解析异常。"""
         if root is None:
             raise ParseBaseException("HTML 解析失败：未定位到正文主内容")
         if len(root.get_text(" ", strip=True)) < MIN_CONTENT_CHARS:

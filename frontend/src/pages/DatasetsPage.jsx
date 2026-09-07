@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowRight, Database, FileText, Loader2, Pencil, Plus, Search, ShieldCheck, Trash2, X } from 'lucide-react';
+import { ArrowRight, Database, FileText, Loader2, Plus, Search, Settings2, X } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
 import { isDocumentRetrievalReady } from '../lib/parse-quality';
 import { useApp } from '../state/AppContext';
@@ -26,7 +26,11 @@ function datasetDocuments(documents, datasetId) {
 function formatDate(value) {
   if (!value) return '刚刚';
   const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleDateString('zh-CN');
+  if (Number.isNaN(date.getTime())) return String(value);
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, '0');
+  const day = String(date.getDate()).padStart(2, '0');
+  return `${year}/${month}/${day}`;
 }
 
 function LoadingCard() {
@@ -47,7 +51,6 @@ export function DatasetsPage() {
   const [submitting, setSubmitting] = useState(false);
   const [formError, setFormError] = useState('');
   const [pageError, setPageError] = useState('');
-  const [deletingId, setDeletingId] = useState(null);
   const [form, setForm] = useState({
     name: '',
     description: '',
@@ -138,44 +141,27 @@ export function DatasetsPage() {
     }
   }
 
-  async function handleDelete(dataset) {
-    const items = datasetDocuments(documents, dataset.id);
-    if (items.length || !actions.deleteDataset) return;
-    if (!window.confirm(`确认删除知识库“${dataset.name}”吗？`)) return;
-    setDeletingId(dataset.id);
-    setPageError('');
-    try {
-      await actions.deleteDataset(dataset.id);
-    } catch (error) {
-      setPageError(error instanceof Error ? error.message : '知识库删除失败');
-    } finally {
-      setDeletingId(null);
-    }
-  }
-
   const isLoading = typeof loading === 'boolean' ? loading : Boolean(loading.datasets || loading.initial);
 
   return (
     <div className="page page--datasets">
       <header className="knowledge-hero">
         <div className="knowledge-hero__copy">
-          <p className="eyebrow">Carbon knowledge infrastructure</p>
           <h1>碳知识库</h1>
-          <p className="knowledge-hero__subtitle">标准与核算资料</p>
-          <p className="page-header__description">沉淀碳核算方法、政策标准与权威资料，支撑有出处的检索、问答与分析。</p>
+          <p className="page-header__description">集中管理碳核算标准、方法与业务资料，为智能问答提供可靠依据。</p>
         </div>
       </header>
 
       <section className="knowledge-toolbar" aria-label="知识库筛选">
+        <div className="knowledge-toolbar__stats" aria-label="知识库统计">
+          <span><Database size={14} /><b>{datasets.length}</b> 个知识库</span>
+          <span><FileText size={14} /><b>{libraryStats.documents}</b> 份文档</span>
+          <span><Search size={14} /><b>{libraryStats.searchable}</b> 份可检索</span>
+        </div>
         <label className="search-field">
           <Search size={16} aria-hidden="true" />
-          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索标准、方法、来源或描述" />
+          <input value={keyword} onChange={(event) => setKeyword(event.target.value)} placeholder="搜索知识库名称或描述" />
         </label>
-        <div className="knowledge-toolbar__stats" aria-label="知识库统计">
-          <span><Database size={14} />{filteredDatasets.length} 个知识库</span>
-          <span><FileText size={14} />{libraryStats.documents} 份文档</span>
-          <span><Search size={14} />{libraryStats.searchable} 份可检索</span>
-        </div>
       </section>
 
       {pageError ? <div className="notice notice--error"><Database size={16} /><p>{pageError}</p></div> : null}
@@ -205,11 +191,12 @@ export function DatasetsPage() {
       ) : (
         <section className="knowledge-list" aria-label="知识库列表">
           <header className="knowledge-list__header" aria-hidden="true">
-            <span>名称</span><span>状态</span><span>文档数</span><span>可检索</span><span>更新时间</span><span>操作</span>
+            <span>名称</span><span>文档健康</span><span>更新时间</span><span>操作</span>
           </header>
           {filteredDatasets.map((dataset) => {
             const items = datasetDocuments(documents, dataset.id);
             const readyCount = items.filter(isDocumentRetrievalReady).length;
+            const retrievalRate = items.length ? Math.round((readyCount / items.length) * 100) : 0;
             return (
               <article className="knowledge-row" key={dataset.id}>
                 <Link className="knowledge-row__identity" to={`/datasets/${dataset.id}`}>
@@ -218,15 +205,15 @@ export function DatasetsPage() {
                     <strong>{dataset.name}</strong>
                     <small>{dataset.description || '进入知识库上传标准、方法学与核算资料。'}</small>
                   </span>
-                  <ArrowRight className="knowledge-row__arrow" size={16} />
                 </Link>
-                <span className="knowledge-row__state"><ShieldCheck size={13} />{String(dataset.status || 'ACTIVE').toUpperCase() === 'ACTIVE' ? '已启用' : dataset.status}</span>
-                <span className="knowledge-row__metric"><b>{items.length}</b><small>份</small></span>
-                <span className="knowledge-row__metric knowledge-row__metric--ready"><b>{readyCount}</b><small>份</small></span>
+                <span className={`knowledge-row__health${retrievalRate < 100 ? ' knowledge-row__health--partial' : ''}`}>
+                  <span><b>{readyCount}</b> / {items.length} 可检索</span>
+                  {items.length && retrievalRate < 100 ? <progress max="100" value={retrievalRate} aria-label={`${dataset.name} 可检索进度 ${retrievalRate}%`} /> : null}
+                </span>
                 <time className="knowledge-row__date">{formatDate(dataset.updated_at ?? dataset.updatedAt)}</time>
                 <span className="knowledge-row__actions">
-                  <button type="button" className="icon-button icon-button--quiet" onClick={() => navigate(`/datasets/${dataset.id}?tab=settings`)} aria-label={`编辑 ${dataset.name}`}><Pencil size={13} /></button>
-                  <button type="button" className="icon-button icon-button--quiet icon-button--danger" onClick={() => handleDelete(dataset)} disabled={items.length > 0 || deletingId === dataset.id} title={items.length ? '请先删除知识库中的文档' : '删除知识库'} aria-label={`删除 ${dataset.name}`}>{deletingId === dataset.id ? <Loader2 className="spin" size={13} /> : <Trash2 size={13} />}</button>
+                  <Link className="knowledge-row__manage" to={`/datasets/${dataset.id}`}>管理资料<ArrowRight size={14} /></Link>
+                  <button type="button" className="icon-button icon-button--quiet" onClick={() => navigate(`/datasets/${dataset.id}?tab=settings`)} aria-label={`设置 ${dataset.name}`}><Settings2 size={14} /></button>
                 </span>
               </article>
             );

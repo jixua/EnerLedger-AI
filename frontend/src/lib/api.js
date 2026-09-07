@@ -198,33 +198,6 @@ export function getSystemStatus({ signal } = {}) {
   return apiRequest("/api/v1/system/status", { signal });
 }
 
-export function searchArxivPapers(
-  { query, maxResults = 10, datasetId, aiOptimize = true },
-  { signal } = {},
-) {
-  const path = appendQuery("/api/v1/crawler/arxiv", {
-    query: String(query || "").trim(),
-    max_results: maxResults,
-    dataset_id: Number(datasetId),
-    ai_optimize: aiOptimize,
-  });
-  return apiRequest(path, { signal });
-}
-
-export function importArxivPapers(
-  { datasetId, papers },
-  { signal } = {},
-) {
-  return apiRequest("/api/v1/crawler/arxiv/import", {
-    method: "POST",
-    body: {
-      dataset_id: Number(datasetId),
-      papers,
-    },
-    signal,
-  });
-}
-
 export function listCrawlerSubmissions(
   { reviewStatus = "PENDING", offset = 0, limit = 50 } = {},
   { signal } = {},

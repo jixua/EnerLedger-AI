@@ -470,7 +470,7 @@ class MinerUBackend(BasePdfBackend):
             (
                 member
                 for member in image_members
-                if member.file_size > self._limits.max_single_image_bytes
+                if member.file_size > self._limits.max_single_output_image_bytes
             ),
             None,
         )

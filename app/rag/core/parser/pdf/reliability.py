@@ -89,6 +89,7 @@ class PdfReliabilityLimits:
     max_total_image_pixels: int = 750_000_000
     max_total_decoded_image_bytes: int = 3 * 1024 * 1024 * 1024
     max_single_image_bytes: int = 20 * 1024 * 1024
+    max_single_output_image_bytes: int = 32 * 1024 * 1024
     max_total_image_bytes: int = 200 * 1024 * 1024
     max_output_files: int = 10_000
     max_output_dir_bytes: int = 500 * 1024 * 1024
@@ -102,6 +103,7 @@ class PdfReliabilityLimits:
             "max_total_image_pixels",
             "max_total_decoded_image_bytes",
             "max_single_image_bytes",
+            "max_single_output_image_bytes",
             "max_total_image_bytes",
             "max_output_files",
             "max_output_dir_bytes",
@@ -118,6 +120,7 @@ class PdfReliabilityLimits:
             "max_total_image_pixels": self.max_total_image_pixels,
             "max_total_decoded_image_bytes": self.max_total_decoded_image_bytes,
             "max_single_image_bytes": self.max_single_image_bytes,
+            "max_single_output_image_bytes": self.max_single_output_image_bytes,
             "max_total_image_bytes": self.max_total_image_bytes,
             "max_output_files": self.max_output_files,
             "max_output_dir_bytes": self.max_output_dir_bytes,
@@ -668,7 +671,7 @@ def enforce_output_limits(
         ),
         (
             stats.largest_image_bytes,
-            limits.max_single_image_bytes,
+            limits.max_single_output_image_bytes,
             "ODL_SINGLE_IMAGE_BYTES_EXCEEDED",
             "OpenDataLoader 单张输出图片超过字节限制",
         ),
@@ -1131,26 +1134,38 @@ def _run_odl_worker(arguments: argparse.Namespace) -> int:
         )
         return 20
 
+    legacy_sort_option = "-Djava.util.Arrays.useLegacyMergeSort=true"
+    previous_java_tool_options = os.environ.get("JAVA_TOOL_OPTIONS")
+    java_tool_options = (previous_java_tool_options or "").split()
+    if legacy_sort_option not in java_tool_options:
+        java_tool_options.append(legacy_sort_option)
+    os.environ["JAVA_TOOL_OPTIONS"] = " ".join(java_tool_options)
     try:
-        opendataloader_pdf.convert(
-            input_path=[arguments.input],
-            output_dir=arguments.output_dir,
-            format="markdown-with-images",
-            table_method=arguments.table_method,
-            markdown_with_html=arguments.markdown_with_html,
-            markdown_page_separator=arguments.page_marker_template,
-            image_output="external",
-            image_dir=arguments.image_dir,
-            quiet=True,
-        )
-    except Exception as exc:
-        error_code, retryable = _classify_odl_conversion_error(exc)
-        _emit_worker_error(
-            error_code=error_code,
-            message=f"OpenDataLoader 转换失败: {type(exc).__name__}: {exc}",
-            retryable=retryable,
-        )
-        return 30
+        try:
+            opendataloader_pdf.convert(
+                input_path=[arguments.input],
+                output_dir=arguments.output_dir,
+                format="markdown-with-images",
+                table_method=arguments.table_method,
+                markdown_with_html=arguments.markdown_with_html,
+                markdown_page_separator=arguments.page_marker_template,
+                image_output="external",
+                image_dir=arguments.image_dir,
+                quiet=True,
+            )
+        except Exception as exc:
+            error_code, retryable = _classify_odl_conversion_error(exc)
+            _emit_worker_error(
+                error_code=error_code,
+                message=f"OpenDataLoader 转换失败: {type(exc).__name__}: {exc}",
+                retryable=retryable,
+            )
+            return 30
+    finally:
+        if previous_java_tool_options is None:
+            os.environ.pop("JAVA_TOOL_OPTIONS", None)
+        else:
+            os.environ["JAVA_TOOL_OPTIONS"] = previous_java_tool_options
     return 0
 
 

@@ -98,9 +98,8 @@ export function DocumentAnalysisPage() {
           <Link className="icon-button" to={previewPath} aria-label="返回文档预览"><ArrowLeft size={18} /></Link>
           <span className="document-detail-file-icon" aria-hidden="true"><BrainCircuit size={22} /></span>
           <div className="document-detail-header__identity">
-            <p className="eyebrow">分析报告 · {dataset?.name || `数据集 #${datasetId}`}</p>
             <div className="document-detail-title-line"><h1>{document.filename || `文档 #${targetDocumentId}`}</h1></div>
-            <p>文档版本 v{document.version ?? 1} · 更新于 {formatTime(document.updated_at)} · 报告独立保存于 MinIO</p>
+            <p>分析报告 · {dataset?.name || `数据集 #${datasetId}`} · 文档版本 v{document.version ?? 1} · 更新于 {formatTime(document.updated_at)} · 报告独立保存于 MinIO</p>
           </div>
         </div>
         <div className="document-detail-header__actions">

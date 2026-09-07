@@ -462,9 +462,8 @@ export function DocumentDetailPage() {
           <Link className="icon-button" to={`/datasets/${datasetId}`} aria-label="返回数据集"><ArrowLeft size={18} /></Link>
           <span className="document-detail-file-icon" aria-hidden="true"><FileText size={22} /></span>
           <div className="document-detail-header__identity">
-            <p className="eyebrow">文档详情 · {dataset?.name || `数据集 #${datasetId}`}</p>
             <div className="document-detail-title-line"><h1>{document.filename || `文档 #${targetDocumentId}`}</h1><StatusPill document={document} /></div>
-            <p>{String(document.file_type || "").toUpperCase()} · {formatBytes(document.file_size)} · {document.parser_backend || "—"} · 更新于 {formatTime(document.updated_at)}</p>
+            <p>文档详情 · {dataset?.name || `数据集 #${datasetId}`} · {String(document.file_type || "").toUpperCase()} · {formatBytes(document.file_size)} · {document.parser_backend || "—"} · 更新于 {formatTime(document.updated_at)}</p>
           </div>
         </div>
         <div className="document-detail-header__actions">
