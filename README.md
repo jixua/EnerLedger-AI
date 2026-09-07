@@ -381,9 +381,10 @@ Markdown，并在 `X-Document-Version` 响应头中返回版本；`preview/map` 
 需先使用当前 API 身份头 `fetch` 该地址，再将返回的 Blob URL 交给 `<img>`；浏览器
 原生 `<img src>` 不会自动携带自定义请求头。
 
-`boundary_precision=line` 表示默认 `noop` 结构边界可靠；`approximate_line` 表示经过
-`semantic_depth_window` 语义细分，在尚未持久化字符 offset 时仅能近似到行、
-因此 `map_reliable=false`；`legacy_line` 表示历史分片缺少结构元数据。
+`boundary_precision=line` 表示分片边界与 Markdown 行边界对齐；
+`approximate_line` 表示切分点落在行内，在尚未持久化字符 offset 时只能近似到行、
+因此 `map_reliable=false`。语义细分若沿换行切开仍属于精确行边界；
+`legacy_line` 表示历史分片缺少结构元数据。
 历史数据只在 `chunk_index` 严格递增、行范围合法且互不重叠时返回降级边界，
 同时标记 `map_reliable=false` 和 `reparse_required=true`；不满足条件时不猜测边界。
 预览接口只允许读取当前租户的 `READY` 文档，不暴露 MinIO bucket 或 object key。

@@ -408,7 +408,8 @@ class DocumentPreviewMap(BaseModel):
     document_version: int
     boundary_precision: Literal["line", "approximate_line", "legacy_line"] = Field(
         description=(
-            "line=精确行边界；approximate_line=语义细分仅有近似行位置；legacy_line=历史数据降级位置"
+            "line=精确行边界；approximate_line=分片边界落在行内，仅有近似行位置；"
+            "legacy_line=历史数据降级位置"
         )
     )
     map_reliable: bool = Field(
