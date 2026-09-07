@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 
 import pytest
@@ -133,6 +133,26 @@ def test_document_payload_repairs_legacy_mojibake_error_message() -> None:
     document.error_message = original.encode("utf-8").decode("latin1")
 
     assert _document_payload(document)["error_message"] == original
+
+
+def test_document_payload_marks_naive_database_timestamps_as_utc() -> None:
+    document = _document(status="PROCESSING")
+    naive_utc = datetime(2026, 9, 7, 5, 46, 41)
+    document.queued_at = naive_utc
+    document.processing_started_at = naive_utc
+    document.lease_expires_at = naive_utc
+
+    payload = _document_payload(document)
+
+    for field_name in (
+        "created_at",
+        "updated_at",
+        "queued_at",
+        "processing_started_at",
+        "lease_expires_at",
+    ):
+        assert payload[field_name].tzinfo is UTC
+        assert payload[field_name].utcoffset() == timedelta(0)
 
 
 def test_document_retrieval_ready_matches_pdf_quality_gate() -> None:
