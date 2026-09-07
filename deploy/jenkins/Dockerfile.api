@@ -47,19 +47,19 @@ RUN --mount=type=cache,id=enerledger-pip,target=/root/.cache/pip,sharing=locked 
 # 避免 jsDelivr 在当前网络环境下重定向到不可达的 GitHub 原始内容站点。
 RUN mkdir -p "${NLTK_DATA}/tokenizers" "${NLTK_DATA}/corpora" \
     && curl -fsSL \
-        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 120 \
+        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 \
         -o /tmp/punkt.zip \
         https://www.nltk.org/nltk_data/packages/tokenizers/punkt.zip \
     && curl -fsSL \
-        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 120 \
+        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 \
         -o /tmp/punkt_tab.zip \
         https://www.nltk.org/nltk_data/packages/tokenizers/punkt_tab.zip \
     && curl -fsSL \
-        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 120 \
+        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 \
         -o /tmp/stopwords.zip \
         https://www.nltk.org/nltk_data/packages/corpora/stopwords.zip \
     && curl -fsSL \
-        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 120 \
+        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 \
         -o /tmp/wordnet.zip \
         https://www.nltk.org/nltk_data/packages/corpora/wordnet.zip \
     && python -c "import zipfile; [zipfile.ZipFile('/tmp/' + name + '.zip').extractall('${NLTK_DATA}/' + target) for name, target in [('punkt', 'tokenizers'), ('punkt_tab', 'tokenizers'), ('stopwords', 'corpora'), ('wordnet', 'corpora')]]" \
