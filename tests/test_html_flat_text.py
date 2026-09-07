@@ -29,6 +29,14 @@ def test_short_multiline_paragraph_keeps_original_paragraph_semantics() -> None:
     assert renderer.flat_text_block_count == 0
 
 
+def test_short_html_document_is_not_rejected_by_character_count() -> None:
+    body = "简短但有效的公告正文。"
+
+    result = HtmlParseService().parse(f"<html><body><p>{body}</p></body></html>")
+
+    assert result.markdown == body
+
+
 def test_flat_text_html_accepts_br_as_the_only_line_separator_tag() -> None:
     lines = [f"第 {index} 行内容" for index in range(1, 10)]
     markdown, renderer = _render(f"<p>{'<br>'.join(lines)}</p>")
