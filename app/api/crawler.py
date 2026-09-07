@@ -281,9 +281,27 @@ async def review_crawler_submission(
             detail={"code": "SUBMISSION_ALREADY_REVIEWED", "message": "该资料已完成审核"},
         )
 
-    dataset_name = await db.scalar(select(Dataset.name).where(Dataset.id == document.dataset_id))
-    if dataset_name is None:
-        raise HTTPException(status_code=409, detail="目标数据集已不存在，无法完成审核")
+    dataset_name: str | None
+    if (
+        payload.decision == "APPROVED"
+        and payload.dataset_id is not None
+        and payload.dataset_id != document.dataset_id
+    ):
+        target_dataset = await _owned_dataset(
+            db,
+            payload.dataset_id,
+            user_id,
+            for_update=True,
+        )
+        document.dataset_id = target_dataset.id
+        document.folder_id = None
+        dataset_name = target_dataset.name
+    else:
+        dataset_name = await db.scalar(
+            select(Dataset.name).where(Dataset.id == document.dataset_id)
+        )
+        if dataset_name is None:
+            raise HTTPException(status_code=409, detail="目标数据集已不存在，无法完成审核")
 
     document.review_status = payload.decision
     document.review_note = payload.note

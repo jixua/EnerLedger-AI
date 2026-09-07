@@ -257,6 +257,7 @@ class CrawlerSubmissionPage(BaseModel):
 
 class CrawlerReviewRequest(BaseModel):
     decision: Literal["APPROVED", "REJECTED"]
+    dataset_id: int | None = Field(default=None, gt=0)
     note: str | None = Field(default=None, max_length=1000)
 
     @field_validator("note")

@@ -212,12 +212,20 @@ export function listCrawlerSubmissions(
 
 export function reviewCrawlerSubmission(
   documentId,
-  { decision, note = null },
+  { decision, datasetId, note = null },
   { signal } = {},
 ) {
   return apiRequest(
     `/api/v1/crawler/submissions/${encodeURIComponent(documentId)}/review`,
-    { method: "POST", body: { decision, note }, signal },
+    {
+      method: "POST",
+      body: {
+        decision,
+        note,
+        ...(datasetId == null ? {} : { dataset_id: Number(datasetId) }),
+      },
+      signal,
+    },
   );
 }
 

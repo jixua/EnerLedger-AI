@@ -308,7 +308,7 @@ test("crawler review list and decision use the authenticated review contract", a
   };
 
   await listCrawlerSubmissions({ reviewStatus: "PENDING" });
-  await reviewCrawlerSubmission(51, { decision: "APPROVED", note: null });
+  await reviewCrawlerSubmission(51, { decision: "APPROVED", datasetId: 8, note: null });
 
   assert.equal(
     requests[0].url,
@@ -317,7 +317,11 @@ test("crawler review list and decision use the authenticated review contract", a
   assert.equal(requests[0].init.headers.get("Authorization"), "Bearer token-7");
   assert.equal(requests[1].url, "http://api.local/api/v1/crawler/submissions/51/review");
   assert.equal(requests[1].init.method, "POST");
-  assert.deepEqual(JSON.parse(requests[1].init.body), { decision: "APPROVED", note: null });
+  assert.deepEqual(JSON.parse(requests[1].init.body), {
+    decision: "APPROVED",
+    note: null,
+    dataset_id: 8,
+  });
 });
 
 test("crawler original file is fetched as a protected blob", async () => {
