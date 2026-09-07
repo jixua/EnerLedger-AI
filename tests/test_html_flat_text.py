@@ -19,6 +19,7 @@ def test_flat_text_html_restores_newline_delimited_blocks() -> None:
     assert result.markdown == "\n\n".join(lines)
     assert result.metadata["flat_text_paragraph_count"] == 1
     assert result.metadata["flat_text_block_count"] == len(lines)
+    assert result.metadata["pages_or_length"] is None
 
 
 def test_short_multiline_paragraph_keeps_original_paragraph_semantics() -> None:

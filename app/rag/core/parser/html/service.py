@@ -88,7 +88,8 @@ class HtmlParseService:
             raise ParseBaseException("HTML 解析失败：DOM 中没有有效内容")
 
         metadata = {
-            "pages_or_length": (len(markdown) // 500) + 1,
+            # HTML 没有稳定的分页语义；字符数折算的“页数”会被误认为源文档真实页数。
+            "pages_or_length": None,
             "table_count": renderer.table_count,
             "record_table_count": renderer.record_table_count,
             "table_failure_count": renderer.table_failure_count,
