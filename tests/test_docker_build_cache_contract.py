@@ -69,6 +69,7 @@ def test_jenkins_api_dockerfile_uses_only_required_reachable_nltk_assets() -> No
         assert f"https://www.nltk.org/nltk_data/{asset}" in dockerfile
 
     assert dockerfile.count("--retry-all-errors") == len(required_assets)
+    assert dockerfile.count("--max-time 900") == len(required_assets)
     assert "cdn.jsdelivr.net" not in dockerfile
     assert "raw.githubusercontent.com" not in dockerfile
     assert "gh-proxy.com" not in dockerfile
