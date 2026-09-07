@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.auth import get_user_id
+from app.domain.auth import get_shared_owner_user_id
 from app.domain.models import Dataset
 from app.rag.application.recall_pipeline_provider import (
     aresolve_recall_execution,
@@ -311,7 +311,7 @@ async def _event_stream(
 async def rag_stream(
     body: RagStreamBody,
     request: Request,
-    user_id: int = Depends(get_user_id),
+    user_id: int = Depends(get_shared_owner_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     """执行 BM25/Sparse/Dense 融合，并将命中上下文交给 LLM 流式作答。"""

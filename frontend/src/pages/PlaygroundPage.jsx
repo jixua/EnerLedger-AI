@@ -128,7 +128,10 @@ export function PlaygroundPage() {
   const activeDatasets = useMemo(
     () => datasets.filter((dataset) => (
       String(dataset.status || "ACTIVE").toUpperCase() !== "DELETED"
-      && retrievalReadyCounts.has(Number(dataset.id))
+      && (
+        retrievalReadyCounts.has(Number(dataset.id))
+        || Number(dataset.retrieval_ready_document_count || 0) > 0
+      )
     )),
     [datasets, retrievalReadyCounts],
   );

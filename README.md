@@ -229,7 +229,13 @@ Codex CLI，因此该模式默认面向本机直接启动的 API，不能把宿�
 Pi Agent 的信任边界、模型兼容、离线构建和服务令牌要求见
 [`docs/pi-agent.md`](docs/pi-agent.md)。
 
-除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。当前产品只配置一个管理员，不提供注册入口；管理员密码只以 scrypt 哈希保存在部署环境中。接口字段以运行中的 OpenAPI `/docs` 为准。
+除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。当前产品支持一个管理员和一个受限资料审核员，不提供注册入口；密码只以 scrypt 哈希保存在部署环境中。可用以下命令分别生成 `ADMIN_PASSWORD_HASH` 或 `REVIEWER_PASSWORD_HASH`：
+
+```bash
+uv run python -c 'from app.domain.auth import hash_admin_password; print(hash_admin_password("replace-me"))'
+```
+
+接口字段以运行中的 OpenAPI `/docs` 为准。
 
 SSE 示例：
 
@@ -277,7 +283,7 @@ curl -X POST http://127.0.0.1:8000/api/v1/documents/123/analysis \
 
 ## 文档状态
 
-- `PENDING_REVIEW`：外部系统提交的原文件已保存到 MinIO，等待管理员审核，不会投递解析任务。
+- `PENDING_REVIEW`：外部系统提交的原文件已保存到 MinIO，等待管理员或资料审核员审核，不会投递解析任务。
 - `QUEUED`：原文件已持久化，等待独立 `parse-worker` 领取。
 - `PROCESSING`：worker 已持有可续租 lease，正在解析、切分或写入索引。
 - `READY`：Markdown/资产、PDF 质量门禁与三路索引均完成，可以召回。
@@ -303,11 +309,19 @@ curl -X POST http://127.0.0.1:8000/api/v1/document-submissions \
 ```
 
 旧的 `POST /api/v1/crawler/uploads`、`X-Crawler-Api-Key` 和 `crawler_name` 参数继续兼容。
-成功响应为 `201`，文档保持 `PENDING_REVIEW` 且 outbox 为 `IDLE`。管理员在前端“资料审核”
-页面查看原文件后执行通过或拒绝；通过操作调用
+成功响应为 `201`，文档保持 `PENDING_REVIEW` 且 outbox 为 `IDLE`。管理员或资料审核员在前端
+“资料审核”页面查看原文件、选择目标数据集后执行通过，或者填写原因后拒绝；通过操作调用
 `POST /api/v1/document-submissions/{document_id}/review`，在同一事务中将文档切为 `QUEUED`
 并创建待投递 outbox，随后才发送 RabbitMQ 解析消息。待审核和已拒绝资料不会出现在普通文档
 列表或解析队列中。
+
+受限资料审核员账号通过 `REVIEWER_USERNAME` 和 `REVIEWER_PASSWORD_HASH` 配置。
+密码哈希的生成方式与管理员一致；`REVIEWER_PASSWORD_HASH` 留空时该账号禁用。审核员仅可：
+
+- 读取待审资料、查看原文件、通过或拒绝，并在通过时选择入库数据集；
+- 读取对话所需的数据集可用状态和脱敏模型摘要，使用 AI 对话。
+
+数据集、文档、模型和系统配置的其他管理接口仍仅限管理员。
 
 RabbitMQ 负责主动投递，MySQL `document` 行同时保存解析 lease 和 outbox 投递状态。
 文档状态与待投递标记在一次事务内提交；API 随后尝试发布，后台补偿器会用

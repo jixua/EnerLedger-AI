@@ -59,6 +59,23 @@ test("document queue list uses real global endpoint and bearer token", async () 
   assert.equal(result[0].document_id, 19);
 });
 
+test("approval sends the reviewer-selected target dataset", async () => {
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return jsonResponse({ document_id: 19, dataset_id: 8, review_status: "APPROVED" }, 202);
+  };
+
+  await reviewCrawlerSubmission(19, { decision: "APPROVED", datasetId: 8 });
+
+  assert.equal(captured.url, "/api/v1/crawler/submissions/19/review");
+  assert.deepEqual(JSON.parse(captured.init.body), {
+    decision: "APPROVED",
+    note: null,
+    dataset_id: 8,
+  });
+});
+
 test("document rename sends the backend PATCH contract", async () => {
   let captured;
   globalThis.fetch = async (url, init) => {

@@ -28,6 +28,7 @@ import {
   updateModelConfig,
   uploadDocument,
 } from "../lib/api";
+import { useAuth } from "./AuthContext";
 import { streamAgent as streamAgentRequest } from "../lib/sse";
 import {
   PREVIEW_DATA_NOTICE,
@@ -72,6 +73,8 @@ function groupDocuments(items) {
 
 export function AppProvider({ children }) {
   const forcedDemo = import.meta.env.VITE_DEMO_MODE === "true";
+  const { admin } = useAuth();
+  const isReviewer = admin?.role === "reviewer";
   const userId = 1;
   const [datasets, setDatasets] = useState([]);
   const [models, setModels] = useState([]);
@@ -150,9 +153,9 @@ export function AppProvider({ children }) {
     try {
       const [nextDatasets, nextModels, nextDocuments, nextHealth] = await Promise.all([
         listDatasets(),
-        listModelConfigs({ includeInactive: true }),
-        listAllDocuments(),
-        getSystemStatus(),
+        listModelConfigs({ includeInactive: !isReviewer }),
+        isReviewer ? Promise.resolve([]) : listAllDocuments(),
+        isReviewer ? Promise.resolve({ status: "restricted" }) : getSystemStatus(),
       ]);
       if (!mounted.current) return;
       setDatasets(nextDatasets);
@@ -167,7 +170,7 @@ export function AppProvider({ children }) {
         setLoading(false);
       }
     }
-  }, [activatePreview, forcedDemo, markBackendUnavailable]);
+  }, [activatePreview, forcedDemo, isReviewer, markBackendUnavailable]);
 
   useEffect(() => {
     mounted.current = true;

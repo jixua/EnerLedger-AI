@@ -56,6 +56,20 @@ def _pending_submission() -> Document:
     )
 
 
+def _target_dataset(dataset_id: int = 9) -> Dataset:
+    now = utc_now()
+    return Dataset(
+        id=dataset_id,
+        user_id=1,
+        name="审核入库库",
+        status="ACTIVE",
+        dense_embedding_config_id=2,
+        sparse_embedding_config_id=3,
+        created_at=now,
+        updated_at=now,
+    )
+
+
 def test_source_metadata_requires_an_object_and_keeps_trusted_crawler_name() -> None:
     assert crawler_api._parse_source_metadata('{"lang":"zh","crawler_name":"spoofed"}', "real") == {
         "lang": "zh",
@@ -89,7 +103,7 @@ def test_crawler_upload_key_fails_closed(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_approval_is_the_only_transition_that_dispatches_parse(monkeypatch) -> None:
     document = _pending_submission()
-    db = _FakeSession([document, "能碳论文"])
+    db = _FakeSession([document, _target_dataset()])
     response = Response()
     dispatched: list[int] = []
 
@@ -99,9 +113,10 @@ async def test_approval_is_the_only_transition_that_dispatches_parse(monkeypatch
     monkeypatch.setattr(crawler_api, "_dispatch_document", fake_dispatch)
     result = await crawler_api.review_crawler_submission(
         document_id=51,
-        payload=CrawlerReviewRequest(decision="APPROVED"),
+        payload=CrawlerReviewRequest(decision="APPROVED", dataset_id=9),
         response=response,
         user_id=1,
+        actor_user_id=2,
         db=db,
     )
 
@@ -110,6 +125,8 @@ async def test_approval_is_the_only_transition_that_dispatches_parse(monkeypatch
     assert result["review_status"] == "APPROVED"
     assert document.status == "QUEUED"
     assert document.dispatch_status == "PENDING"
+    assert document.dataset_id == 9
+    assert document.reviewed_by_user_id == 2
     assert isinstance(document.reviewed_at, datetime)
     assert dispatched == [51]
 
@@ -145,7 +162,7 @@ async def test_approval_can_change_the_target_dataset_before_dispatch(monkeypatc
 @pytest.mark.asyncio
 async def test_rejection_keeps_the_file_out_of_the_parse_outbox(monkeypatch) -> None:
     document = _pending_submission()
-    db = _FakeSession([document, "能碳论文"])
+    db = _FakeSession([document, _target_dataset(7)])
     response = Response()
 
     async def unexpected_dispatch(_db, _value):
@@ -157,6 +174,7 @@ async def test_rejection_keeps_the_file_out_of_the_parse_outbox(monkeypatch) -> 
         payload=CrawlerReviewRequest(decision="REJECTED", note="来源不可靠"),
         response=response,
         user_id=1,
+        actor_user_id=2,
         db=db,
     )
 
@@ -180,7 +198,13 @@ async def test_review_cannot_be_repeated() -> None:
             payload=CrawlerReviewRequest(decision="REJECTED"),
             response=Response(),
             user_id=1,
+            actor_user_id=2,
             db=db,
         )
 
     assert exc_info.value.status_code == 409
+
+
+def test_approval_requires_an_explicit_target_dataset() -> None:
+    with pytest.raises(ValueError, match="目标数据集"):
+        CrawlerReviewRequest(decision="APPROVED")

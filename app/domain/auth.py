@@ -1,4 +1,4 @@
-"""Single-administrator JWT authentication boundary."""
+"""Configuration-backed JWT identities and role boundaries."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ import hashlib
 import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Annotated
+from typing import Annotated, Literal, TypedDict
 
 import jwt
 from fastapi import Depends, Header, HTTPException, status
@@ -17,8 +17,15 @@ from jwt import InvalidTokenError
 from app.rag.config import settings
 
 ADMIN_USER_ID = 1
+REVIEWER_USER_ID = 2
 _SCHEME = "scrypt"
 _bearer = HTTPBearer(auto_error=False)
+
+
+class AuthIdentity(TypedDict):
+    user_id: int
+    username: str
+    role: Literal["admin", "reviewer"]
 
 
 def hash_admin_password(password: str, *, salt: bytes | None = None) -> str:
@@ -73,6 +80,26 @@ def authenticate_admin(username: str, password: str) -> bool:
     return username_matches and password_matches
 
 
+def authenticate_user(username: str, password: str) -> AuthIdentity | None:
+    """Authenticate one of the explicitly configured interactive accounts."""
+
+    if authenticate_admin(username, password):
+        return {"user_id": ADMIN_USER_ID, "username": settings.ADMIN_USERNAME, "role": "admin"}
+
+    reviewer_hash = settings.REVIEWER_PASSWORD_HASH.strip()
+    if not reviewer_hash:
+        return None
+    username_matches = hmac.compare_digest(username, settings.REVIEWER_USERNAME)
+    password_matches = verify_admin_password(password, reviewer_hash)
+    if not username_matches or not password_matches:
+        return None
+    return {
+        "user_id": REVIEWER_USER_ID,
+        "username": settings.REVIEWER_USERNAME,
+        "role": "reviewer",
+    }
+
+
 def _jwt_secret() -> bytes:
     configured = settings.JWT_SECRET.strip()
     if configured:
@@ -84,14 +111,23 @@ def _jwt_secret() -> bytes:
     ).digest()
 
 
-def create_access_token(*, now: datetime | None = None) -> tuple[str, datetime]:
+def create_access_token(
+    *,
+    identity: AuthIdentity | None = None,
+    now: datetime | None = None,
+) -> tuple[str, datetime]:
     issued_at = now or datetime.now(UTC)
     expires_at = issued_at + timedelta(minutes=settings.JWT_ACCESS_TOKEN_EXPIRE_MINUTES)
+    authenticated = identity or {
+        "user_id": ADMIN_USER_ID,
+        "username": settings.ADMIN_USERNAME,
+        "role": "admin",
+    }
     token = jwt.encode(
         {
-            "sub": str(ADMIN_USER_ID),
-            "username": settings.ADMIN_USERNAME,
-            "role": "admin",
+            "sub": str(authenticated["user_id"]),
+            "username": authenticated["username"],
+            "role": authenticated["role"],
             "iat": issued_at,
             "exp": expires_at,
             "iss": settings.JWT_ISSUER,
@@ -119,15 +155,19 @@ def decode_access_token(token: str) -> dict[str, object]:
             detail={"code": "INVALID_ACCESS_TOKEN", "message": "登录状态无效或已过期"},
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
-    if payload.get("sub") != str(ADMIN_USER_ID) or payload.get("role") != "admin":
+    expected_subject = {
+        "admin": str(ADMIN_USER_ID),
+        "reviewer": str(REVIEWER_USER_ID),
+    }.get(str(payload.get("role")))
+    if expected_subject is None or payload.get("sub") != expected_subject:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail={"code": "ADMIN_REQUIRED", "message": "需要管理员权限"},
+            detail={"code": "ROLE_INVALID", "message": "账号角色无效"},
         )
     return payload
 
 
-def get_current_admin(
+def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
 ) -> dict[str, object]:
     if credentials is None or credentials.scheme.lower() != "bearer":
@@ -139,12 +179,48 @@ def get_current_admin(
     return decode_access_token(credentials.credentials)
 
 
+def _require_role(principal: dict[str, object], allowed_roles: set[str]) -> None:
+    if principal.get("role") not in allowed_roles:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail={"code": "PERMISSION_DENIED", "message": "当前账号无权执行此操作"},
+        )
+
+
+def get_current_admin(
+    principal: Annotated[dict[str, object], Depends(get_current_user)],
+) -> dict[str, object]:
+    """Retain the admin-only dependency used by management endpoints."""
+
+    _require_role(principal, {"admin"})
+    return principal
+
+
 def get_user_id(
     admin: Annotated[dict[str, object], Depends(get_current_admin)],
 ) -> int:
     """Map the authenticated administrator to the existing data ownership boundary."""
 
+    _require_role(admin, {"admin"})
     return int(admin["sub"])
+
+
+def get_shared_owner_user_id(
+    principal: Annotated[dict[str, object], Depends(get_current_user)],
+) -> int:
+    """Map admin and reviewer reads/chat to the administrator-owned data boundary."""
+
+    _require_role(principal, {"admin", "reviewer"})
+    return ADMIN_USER_ID
+
+
+def get_actor_user_id(
+    principal: Annotated[dict[str, object], Depends(get_current_user)],
+) -> int:
+    """Return the authenticated actor for immutable audit attribution."""
+
+    _require_role(principal, {"admin", "reviewer"})
+    return int(principal["sub"])
 
 
 def require_crawler_api_key(

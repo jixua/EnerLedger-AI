@@ -33,6 +33,12 @@ test("crawler review gates parsing behind an explicit approval action", () => {
   assert.match(crawlerReviewPageSource, /datasetId: targetDatasetId/);
 });
 
+test("reviewer navigation only exposes chat and document review", () => {
+  assert.match(appShellSource, /admin\?\.role === "reviewer"/);
+  assert.match(appShellSource, /to === "\/" \|\| to === "\/crawler\/review"/);
+  assert.match(appSource, /function AdminRoute/);
+});
+
 test("review preview renders PDF and Markdown without parsing Word before approval", () => {
   assert.match(crawlerReviewPageSource, /submissionPreviewKind/);
   assert.match(crawlerReviewPageSource, /preview\.kind === "pdf"/);
