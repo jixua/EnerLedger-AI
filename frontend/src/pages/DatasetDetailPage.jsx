@@ -39,6 +39,7 @@ import {
   folderDescendantIds,
   folderPath,
 } from "../lib/folder-tree";
+import { hasDocumentPageCount } from "../lib/document-metadata";
 import { isDocumentRetrievalReady } from "../lib/parse-quality";
 import { mockDocumentFoldersByDataset } from "../lib/mock-data";
 import { documentErrorMessage } from "../lib/text";
@@ -618,7 +619,7 @@ export function DatasetDetailPage() {
                         <div className="document-row__identity" role="cell"><span className="file-icon"><FileText size={16} /></span><span><Link className="document-name-link" to={`/datasets/${datasetId}/documents/${id}`}>{document.filename || `文档 #${id}`}</Link><small>{String(document.file_type || "").toUpperCase()} · {formatBytes(document.file_size)} · {folderPath(folders.find((folder) => Number(folder.id) === Number(document.folder_id)), folders)}</small></span></div>
                         <div className="document-row__status" role="cell" data-label="状态"><StatusPill document={document} />{Number(document.attempt_count) > 0 ? <small>尝试 {document.attempt_count} 次</small> : null}</div>
                         <div className="document-row__result" role="cell" data-label="解析结果">
-                          {status === "FAILED" ? <p className="document-error">{documentErrorMessage(document)}</p> : <><strong>{document.chunk_count ?? 0} 个分片 · {document.page_count ?? "—"} 页</strong><small>{status === "READY" ? `耗时 ${formatDuration(document.parse_time_ms)}` : status === "QUEUED" ? `可用时间 ${formatTime(document.available_at || document.queued_at)}` : `开始于 ${formatTime(document.processing_started_at)}`}</small></>}
+                          {status === "FAILED" ? <p className="document-error">{documentErrorMessage(document)}</p> : <><strong>{document.chunk_count ?? 0} 个分片{hasDocumentPageCount(document) ? ` · ${document.page_count} 页` : ""}</strong><small>{status === "READY" ? `耗时 ${formatDuration(document.parse_time_ms)}` : status === "QUEUED" ? `可用时间 ${formatTime(document.available_at || document.queued_at)}` : `开始于 ${formatTime(document.processing_started_at)}`}</small></>}
                         </div>
                         <time className="document-row__time" role="cell" data-label="更新时间">{formatTime(document.updated_at)}</time>
                         <div className="document-row__actions" role="cell" data-label="操作">

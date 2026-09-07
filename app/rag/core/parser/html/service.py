@@ -8,11 +8,6 @@ from app.rag.core.parser.exceptions import ParseBaseException
 from .models import HtmlParseOptions, HtmlParseResult
 from .renderer import HtmlMarkdownRenderer
 
-# 正文有效字符数下限。trafilatura 判无正文(None)是主判据，本常量只做保守兜底，
-# 取低值以“宁漏拦不误杀”。经 blog/ 6 个真实样本校准：真实文章正文数千字以上，
-# 远高于该阈值；纯空壳由 trafilatura 直接 None；静态骨架 SPA 残留小，按原则放行。
-MIN_CONTENT_CHARS = 100
-
 # 文本重合度置信阈值：trafilatura 正文文本被候选容器覆盖比例 ≥ 此值才算定位命中。
 # 低于则走分级回退。经 blog/ 校准，0.6 能稳定命中真实文章主体容器。
 OVERLAP_CONF = 0.6
@@ -93,13 +88,16 @@ class HtmlParseService:
             raise ParseBaseException("HTML 解析失败：DOM 中没有有效内容")
 
         metadata = {
-            "pages_or_length": (len(markdown) // 500) + 1,
+            # HTML 没有稳定的分页语义；字符数折算的“页数”会被误认为源文档真实页数。
+            "pages_or_length": None,
             "table_count": renderer.table_count,
             "record_table_count": renderer.record_table_count,
             "table_failure_count": renderer.table_failure_count,
             "table_split_count": renderer.table_split_count,
             "image_count": renderer.image_count,
             "image_upload_count": renderer.image_upload_count,
+            "flat_text_paragraph_count": renderer.flat_text_paragraph_count,
+            "flat_text_block_count": renderer.flat_text_block_count,
             "content_located": True,
             "content_locator_fallback": fallback,
             "comment_removed_count": comment_removed,
@@ -207,11 +205,9 @@ class HtmlParseService:
         return body, "full_body"
 
     def _assert_content_valid(self, root: Tag | None) -> None:
-        """trafilatura 判无正文 / 渲染根正文过少 → 抛异常（经 pipeline 映射 PARSE_ENGINE_FAILED）。"""
+        """正文定位完全失败时抛出解析异常，不以正文长度阻断短文档。"""
         if root is None:
             raise ParseBaseException("HTML 解析失败：未定位到正文主内容")
-        if len(root.get_text(" ", strip=True)) < MIN_CONTENT_CHARS:
-            raise ParseBaseException("HTML 解析失败：正文内容过少")
 
     def _clean_soup(self, soup: BeautifulSoup) -> int:
         """移除噪声标签、隐藏节点与全部 HTML 注释，返回删除的注释节点数。

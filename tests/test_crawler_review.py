@@ -132,6 +132,34 @@ async def test_approval_is_the_only_transition_that_dispatches_parse(monkeypatch
 
 
 @pytest.mark.asyncio
+async def test_approval_can_change_the_target_dataset_before_dispatch(monkeypatch) -> None:
+    document = _pending_submission()
+    target_dataset = Dataset(id=9, user_id=1, name="政策法规", status="ACTIVE")
+    db = _FakeSession([document, target_dataset])
+    response = Response()
+    dispatched: list[tuple[int, int]] = []
+
+    async def fake_dispatch(_db, value):
+        dispatched.append((value.id, value.dataset_id))
+
+    monkeypatch.setattr(crawler_api, "_dispatch_document", fake_dispatch)
+    result = await crawler_api.review_crawler_submission(
+        document_id=51,
+        payload=CrawlerReviewRequest(decision="APPROVED", dataset_id=9),
+        response=response,
+        user_id=1,
+        db=db,
+    )
+
+    assert response.status_code == 202
+    assert result["dataset_id"] == 9
+    assert result["dataset_name"] == "政策法规"
+    assert document.dataset_id == 9
+    assert document.folder_id is None
+    assert dispatched == [(51, 9)]
+
+
+@pytest.mark.asyncio
 async def test_rejection_keeps_the_file_out_of_the_parse_outbox(monkeypatch) -> None:
     document = _pending_submission()
     db = _FakeSession([document, _target_dataset(7)])

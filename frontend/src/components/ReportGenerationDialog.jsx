@@ -26,13 +26,7 @@ const RUN_LABELS = {
 };
 
 function templateReviewMessage(template) {
-  if (template?.selectable) return "模板已启用，可创建报告。";
-  const technical = template?.review?.technical_review?.status;
-  const business = template?.review?.business_review?.status;
-  if (technical === "PASSED" && business === "PENDING") {
-    return "技术检查已通过，仍需业务负责人确认后启用。";
-  }
-  return "模板尚未完成启用评审。";
+  return template ? "模板可用，可创建报告。" : "";
 }
 
 function isAnswerMissing(question, value) {
@@ -89,8 +83,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
         setTemplates(nextTemplates || []);
         const toolModels = (nextModels || []).filter((model) => model.supports_tool_calling);
         setModels(toolModels);
-        const firstSelectable = (nextTemplates || []).find((template) => template.selectable);
-        setReportType((current) => current || firstSelectable?.report_type || nextTemplates?.[0]?.report_type || "");
+        setReportType((current) => current || nextTemplates?.[0]?.report_type || "");
         setModelId((current) => current || String(toolModels?.[0]?.id || ""));
         setRunHistory(nextRuns || []);
         setRun((current) => current || nextRuns?.[0] || null);
@@ -173,7 +166,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
 
   async function handleSubmit(event) {
     event.preventDefault();
-    if (!selectedTemplate?.selectable || !modelId || submitting) return;
+    if (!selectedTemplate || !modelId || submitting) return;
     setSubmitting(true);
     setError("");
     try {
@@ -373,7 +366,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
                   <select value={reportType} onChange={(event) => setReportType(event.target.value)} disabled={loading}>
                     {templates.map((template) => (
                       <option key={template.report_type} value={template.report_type}>
-                        {template.report_type} · {template.name}{template.selectable ? "" : "（待启用）"}
+                        {template.report_type} · {template.name}
                       </option>
                     ))}
                   </select>
@@ -399,7 +392,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
                 <textarea rows="4" maxLength="2000" value={instructions} onChange={(event) => setInstructions(event.target.value)} placeholder="可选，例如：重点展示 Scope 3。" />
               </label>
               {selectedTemplate ? (
-                <div className={`report-template-summary${selectedTemplate.selectable ? "" : " report-template-summary--pending"}`}>
+                <div className="report-template-summary">
                   <div><strong>{selectedTemplate.name}</strong><span>{selectedTemplate.required_field_count} 个必填字段 · {selectedTemplate.blocking_field_count} 个阻塞字段</span></div>
                   <p>{templateReviewMessage(selectedTemplate)}</p>
                   <small>章节：{selectedTemplate.sections?.map((section) => section.title).join("、") || "待配置"}</small>
@@ -410,7 +403,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
             </div>
             <footer className="dialog__footer">
               <button type="button" className="button button--ghost" onClick={onClose} disabled={submitting}>取消</button>
-              <button type="submit" className="button button--primary" disabled={submitting || loading || !selectedTemplate?.selectable || !modelId}>
+              <button type="submit" className="button button--primary" disabled={submitting || loading || !selectedTemplate || !modelId}>
                 {submitting ? <Loader2 className="spin" size={16} /> : <FileOutput size={16} />}
                 {submitting ? "正在创建" : "创建报告任务"}
               </button>

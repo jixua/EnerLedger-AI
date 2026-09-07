@@ -222,7 +222,7 @@ export function reviewCrawlerSubmission(
       body: {
         decision,
         note,
-        ...(datasetId ? { dataset_id: Number(datasetId) } : {}),
+        ...(datasetId == null ? {} : { dataset_id: Number(datasetId) }),
       },
       signal,
     },

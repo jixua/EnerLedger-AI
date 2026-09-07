@@ -287,18 +287,33 @@ async def review_crawler_submission(
             detail={"code": "SUBMISSION_ALREADY_REVIEWED", "message": "该资料已完成审核"},
         )
 
-    target_dataset_id = (
-        payload.dataset_id if payload.decision == "APPROVED" else document.dataset_id
-    )
-    dataset = await _owned_dataset(db, target_dataset_id, user_id)
+    dataset_name: str | None
+    if (
+        payload.decision == "APPROVED"
+        and payload.dataset_id is not None
+        and payload.dataset_id != document.dataset_id
+    ):
+        target_dataset = await _owned_dataset(
+            db,
+            payload.dataset_id,
+            user_id,
+            for_update=True,
+        )
+        document.dataset_id = target_dataset.id
+        document.folder_id = None
+        dataset_name = target_dataset.name
+    else:
+        dataset_name = await db.scalar(
+            select(Dataset.name).where(Dataset.id == document.dataset_id)
+        )
+        if dataset_name is None:
+            raise HTTPException(status_code=409, detail="目标数据集已不存在，无法完成审核")
 
     document.review_status = payload.decision
     document.review_note = payload.note
     document.reviewed_by_user_id = actor_user_id
     document.reviewed_at = utc_now()
     if payload.decision == "APPROVED":
-        document.dataset_id = dataset.id
-        document.folder_id = None
         reset_document_for_queue(document, reparse=False)
         response.status_code = status.HTTP_202_ACCEPTED
     else:
@@ -314,4 +329,4 @@ async def review_crawler_submission(
     if payload.decision == "APPROVED":
         await _dispatch_document(db, document)
         response.headers["Location"] = f"/api/v1/documents/{document.id}"
-    return _submission_payload(document, dataset.name)
+    return _submission_payload(document, dataset_name)

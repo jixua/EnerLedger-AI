@@ -344,6 +344,16 @@ def _document_parse_time_ms(document: Document) -> int | None:
     return document.parse_time_ms
 
 
+def _document_timestamp(value: datetime | None) -> datetime | None:
+    """Expose MySQL's naive UTC document timestamps as timezone-aware UTC values."""
+
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value.replace(tzinfo=UTC)
+    return value.astimezone(UTC)
+
+
 def _document_payload(document: Document, *, quality_detail: bool = True) -> dict:
     parse_quality = (
         document.parse_quality
@@ -362,15 +372,20 @@ def _document_payload(document: Document, *, quality_detail: bool = True) -> dic
         "status": document.status,
         "version": document.version,
         "attempt_count": document.attempt_count,
-        "available_at": document.available_at,
-        "queued_at": document.queued_at,
-        "processing_started_at": document.processing_started_at,
-        "lease_expires_at": document.lease_expires_at,
-        "finished_at": document.finished_at,
+        "available_at": _document_timestamp(document.available_at),
+        "queued_at": _document_timestamp(document.queued_at),
+        "processing_started_at": _document_timestamp(document.processing_started_at),
+        "lease_expires_at": _document_timestamp(document.lease_expires_at),
+        "finished_at": _document_timestamp(document.finished_at),
         "error_code": document.error_code,
         "error_message": repair_legacy_mojibake(document.error_message),
         "reparse_requested": document.reparse_requested,
-        "page_count": document.page_count,
+        # HTML 本身没有固定页面；同时屏蔽旧版按字符数折算后已入库的伪页数。
+        "page_count": (
+            None
+            if str(document.file_type or "").strip().lower() in {"html", "htm"}
+            else document.page_count
+        ),
         "chunk_count": document.chunk_count,
         "parse_time_ms": _document_parse_time_ms(document),
         "parse_quality_status": document.parse_quality_status,
@@ -381,10 +396,10 @@ def _document_payload(document: Document, *, quality_detail: bool = True) -> dic
         "source_metadata": document.source_metadata,
         "review_status": document.review_status or "NOT_REQUIRED",
         "review_note": document.review_note,
-        "reviewed_at": document.reviewed_at,
+        "reviewed_at": _document_timestamp(document.reviewed_at),
         "retrieval_ready": _document_retrieval_ready(document),
-        "created_at": document.created_at,
-        "updated_at": document.updated_at,
+        "created_at": _document_timestamp(document.created_at),
+        "updated_at": _document_timestamp(document.updated_at),
     }
 
 
@@ -660,15 +675,15 @@ def _preview_boundary_map(
         or not str(record.structure_metadata.get("split_strategy") or "").strip()
         for record in source_records
     )
-    strategies = [
-        str(record.structure_metadata.get("split_strategy") or "").lower()
+    has_approximate_line = any(
+        isinstance(record.structure_metadata, dict)
+        and record.structure_metadata.get("line_span_approx") is True
         for record in source_records
-        if isinstance(record.structure_metadata, dict)
-    ]
+    )
     precision: Literal["line", "approximate_line", "legacy_line"]
     if has_legacy_record:
         precision = "legacy_line"
-    elif any("semantic_depth_window" in strategy for strategy in strategies):
+    elif has_approximate_line:
         precision = "approximate_line"
     else:
         precision = "line"
@@ -688,9 +703,8 @@ def _preview_boundary_map(
         for boundary_index, boundary in enumerate(boundaries)
     ]
     has_source_boundaries = bool(source_records) and resolved_boundaries is not None
-    # semantic_depth_window 可以在同一 Markdown 行内用 token 级边界切分；
-    # 当前数据模型没有字符 offset，因此只能给出近似行位置，不得
-    # 声称 map_reliable=true。
+    # 只有确实落在 Markdown 行内的边界才标为近似；语义切分若恰好
+    # 沿换行切开，现有 start_line/end_line 足以提供可靠定位。
     structurally_reliable = (
         not has_legacy_record and has_source_boundaries and precision == "line"
     )
