@@ -185,20 +185,51 @@ class _AtomBuilder:
             if view.metadata.get(META_STRUCTURAL_HEADING) is True
             else self._score_text_of(view.element_type, view.semantic_text, display)
         )
+        start_line, end_line, line_span_approx = self._source_line_span(
+            content, start, end, view
+        )
+        metadata = dict(view.metadata)
+        if line_span_approx:
+            metadata["partial"] = True
         return _Atom(
             kind="text",
             element_type=view.element_type,
             source_element_index=view.element_index,
             heading_trail=list(view.heading_trail),
-            start_line=view.start_line,
-            end_line=view.end_line,
+            start_line=start_line,
+            end_line=end_line,
             content_start=start,
             content_end=end,
             token_count=self._count(display),
             element_id=None,
             score_text=score_text,
-            metadata=dict(view.metadata),
+            metadata=metadata,
         )
+
+    @staticmethod
+    def _source_line_span(
+        content: str,
+        start: int,
+        end: int,
+        view: ElementView,
+    ) -> tuple[int, int, bool]:
+        """Map an atom's character span back to its source Markdown lines.
+
+        Line-aligned fallback splits are exact. Only boundaries inside a source
+        line are approximate because the persisted chunk schema has no character
+        offsets yet.
+        """
+
+        relative_start = content.count("\n", view.content_start, start)
+        last_character = max(start, end - 1)
+        relative_end = content.count("\n", view.content_start, last_character)
+        start_line = min(view.end_line, view.start_line + relative_start)
+        end_line = min(view.end_line, view.start_line + relative_end)
+        starts_inside_line = start > view.content_start and content[start - 1] != "\n"
+        ends_inside_line = end < view.content_end and (
+            end <= start or content[end - 1] != "\n"
+        )
+        return start_line, end_line, starts_inside_line or ends_inside_line
 
     @staticmethod
     def _score_text_of(element_type: str, semantic_text: str, display_text: str) -> str | None:
@@ -226,12 +257,7 @@ class _AtomBuilder:
         if self._count(content[start:end]) <= self.max_chunk_tokens:
             return [self._text_atom(content, start, end, view)]
         line_spans = self._unit_spans(content, start, end, self._line_cut_points)
-        atoms = self._pack_units(content, line_spans, view, finer="sentence")
-        if len(atoms) > 1:
-            # 同一 element 被拆成多个 atom：行号只能精确到 element 粒度，标记 partial。
-            for atom in atoms:
-                atom.metadata["partial"] = True
-        return atoms
+        return self._pack_units(content, line_spans, view, finer="sentence")
 
     def _pack_units(
         self,

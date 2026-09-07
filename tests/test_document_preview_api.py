@@ -79,8 +79,17 @@ def _chunk(
     role: str = "mixed",
     strategy: str = "candidate_boundary + noop",
     legacy: bool = False,
+    line_span_approx: bool = False,
 ) -> ChunkRecordDB:
-    structure = None if legacy else {"chunk_role": role, "split_strategy": strategy}
+    structure = (
+        None
+        if legacy
+        else {
+            "chunk_role": role,
+            "split_strategy": strategy,
+            "line_span_approx": line_span_approx,
+        }
+    )
     return ChunkRecordDB(
         id=100 + chunk_index,
         chunk_id=f"chunk-{chunk_index}",
@@ -210,6 +219,7 @@ async def test_preview_map_marks_semantic_depth_boundaries_as_approximate() -> N
             end_line=9,
             content="语义细分片",
             strategy="candidate_boundary + semantic_depth_window",
+            line_span_approx=True,
         )
     ]
     db = _FakeSession(scalar_values=[_document()], scalar_lists=[records])
@@ -218,6 +228,33 @@ async def test_preview_map_marks_semantic_depth_boundaries_as_approximate() -> N
 
     assert response["boundary_precision"] == "approximate_line"
     assert response["map_reliable"] is False
+    assert response["reparse_required"] is False
+
+
+@pytest.mark.asyncio
+async def test_preview_map_accepts_line_aligned_semantic_boundaries_as_exact() -> None:
+    records = [
+        _chunk(
+            chunk_index=0,
+            start_line=0,
+            end_line=9,
+            content="语义细分片一",
+            strategy="candidate_boundary + semantic_depth_window",
+        ),
+        _chunk(
+            chunk_index=1,
+            start_line=10,
+            end_line=19,
+            content="语义细分片二",
+            strategy="candidate_boundary + semantic_depth_window",
+        ),
+    ]
+    db = _FakeSession(scalar_values=[_document()], scalar_lists=[records])
+
+    response = await get_document_preview_map(91, user_id=11, db=db)
+
+    assert response["boundary_precision"] == "line"
+    assert response["map_reliable"] is True
     assert response["reparse_required"] is False
 
 

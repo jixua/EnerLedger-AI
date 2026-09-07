@@ -660,15 +660,15 @@ def _preview_boundary_map(
         or not str(record.structure_metadata.get("split_strategy") or "").strip()
         for record in source_records
     )
-    strategies = [
-        str(record.structure_metadata.get("split_strategy") or "").lower()
+    has_approximate_line = any(
+        isinstance(record.structure_metadata, dict)
+        and record.structure_metadata.get("line_span_approx") is True
         for record in source_records
-        if isinstance(record.structure_metadata, dict)
-    ]
+    )
     precision: Literal["line", "approximate_line", "legacy_line"]
     if has_legacy_record:
         precision = "legacy_line"
-    elif any("semantic_depth_window" in strategy for strategy in strategies):
+    elif has_approximate_line:
         precision = "approximate_line"
     else:
         precision = "line"
@@ -688,9 +688,8 @@ def _preview_boundary_map(
         for boundary_index, boundary in enumerate(boundaries)
     ]
     has_source_boundaries = bool(source_records) and resolved_boundaries is not None
-    # semantic_depth_window 可以在同一 Markdown 行内用 token 级边界切分；
-    # 当前数据模型没有字符 offset，因此只能给出近似行位置，不得
-    # 声称 map_reliable=true。
+    # 只有确实落在 Markdown 行内的边界才标为近似；语义切分若恰好
+    # 沿换行切开，现有 start_line/end_line 足以提供可靠定位。
     structurally_reliable = (
         not has_legacy_record and has_source_boundaries and precision == "line"
     )
