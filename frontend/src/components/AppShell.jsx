@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
-  Activity,
   Bot,
   CalendarDays,
   Database,
+  FileChartColumn,
   Globe2,
   Menu,
   MessageSquareText,
@@ -26,8 +26,8 @@ const navigation = [
   { to: "/crawler/review", label: "资料审核", icon: ShieldCheck },
   { to: "/crawler", label: "arXiv 采集", icon: Globe2, end: true },
   { to: "/tasks", label: "解析队列", icon: Workflow },
+  { to: "/analysis-reports", label: "分析报告", icon: FileChartColumn },
   { to: "/models", label: "模型配置", icon: Bot },
-  { to: "/system", label: "系统状态", icon: Activity },
 ];
 
 function Sidebar({ admin, collapsed, mobileOpen, onCollapse, onMobileClose }) {
