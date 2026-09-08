@@ -174,7 +174,7 @@ async def create_report(
         )
 
     try:
-        template = report_template_registry.get(payload.report_type, require_selectable=True)
+        template = report_template_registry.get(payload.report_type)
     except ReportTemplateError as exc:
         raise HTTPException(
             status_code=409,

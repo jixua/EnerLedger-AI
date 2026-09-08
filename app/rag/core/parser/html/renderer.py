@@ -12,6 +12,27 @@ from .word_table_processor import WordTableProcessor
 class HtmlMarkdownRenderer:
     """Render cleaned BeautifulSoup nodes to Markdown in DOM order."""
 
+    # 某些采集/导出工具会把整页可见文本塞进一个 <p>，只用换行
+    # 保留原始文本块。行数达到该阈值时，按“扁平文本型 HTML”恢复为
+    # 独立 Markdown 块，避免下游将整篇视为一个超长 paragraph。
+    FLAT_TEXT_PARAGRAPH_MIN_LINES = 8
+    DOCUMENT_BLOCK_TAGS = {
+        "p",
+        "h1",
+        "h2",
+        "h3",
+        "h4",
+        "h5",
+        "h6",
+        "ul",
+        "ol",
+        "pre",
+        "blockquote",
+        "table",
+        "figure",
+        "hr",
+    }
+
     CONTAINER_TAGS = {
         "html",
         "body",
@@ -43,9 +64,16 @@ class HtmlMarkdownRenderer:
         self.heading_path = list(options.initial_heading_path)
         self.image_count = 0
         self.image_upload_count = 0
+        self.flat_text_paragraph_count = 0
+        self.flat_text_block_count = 0
+        self._document_profiled = False
+        self._flat_text_paragraph_id: int | None = None
         self.warnings: list[str] = []
 
     def render_children(self, node: Tag) -> str:
+        if not self._document_profiled:
+            self._document_profiled = True
+            self._flat_text_paragraph_id = self._detect_flat_text_document(node)
         parts = [self.render_node(child) for child in node.children]
         return self._join_blocks(parts)
 
@@ -67,7 +95,8 @@ class HtmlMarkdownRenderer:
                 self.heading_path.append(text)
             return f"{'#' * level} {text}" if text else ""
         if name == "p":
-            return self.render_inline_children(node)
+            rendered = self.render_inline_children(node)
+            return self._expand_flat_text_paragraph(node, rendered)
         if name in {"ul", "ol"}:
             return self.render_list(node, ordered=name == "ol")
         if name == "pre":
@@ -142,6 +171,39 @@ class HtmlMarkdownRenderer:
         if name == "code":
             return f"`{self._clean_inline_text(node.get_text(' ', strip=True))}`"
         return self.render_inline_children(node) or self.render_children(node)
+
+    def _expand_flat_text_paragraph(self, node: Tag, rendered: str) -> str:
+        """Restore block boundaries in exporter-produced ``<p>line\nline</p>`` documents."""
+
+        if id(node) != self._flat_text_paragraph_id:
+            return rendered
+        lines = [self._clean_inline_text(line) for line in rendered.splitlines() if line.strip()]
+        self.flat_text_paragraph_count += 1
+        self.flat_text_block_count += len(lines)
+        return "\n\n".join(lines)
+
+    def _detect_flat_text_document(self, root: Tag) -> int | None:
+        """Detect a document whose entire block structure collapsed into one paragraph.
+
+        This is deliberately a document-level fallback rather than a special parser
+        for all HTML paragraphs. Standard HTML with headings, multiple paragraphs,
+        lists, tables, or other block elements stays on the regular DOM renderer.
+        """
+
+        block_nodes = root.find_all(self.DOCUMENT_BLOCK_TAGS)
+        if len(block_nodes) != 1 or block_nodes[0].name.lower() != "p":
+            return None
+        paragraph = block_nodes[0]
+        descendant_tags = {
+            tag.name.lower() for tag in paragraph.find_all(True) if isinstance(tag.name, str)
+        }
+        if descendant_tags - {"br"}:
+            return None
+        rendered = self.render_inline_children(paragraph)
+        lines = [line for line in rendered.splitlines() if line.strip()]
+        if len(lines) < self.FLAT_TEXT_PARAGRAPH_MIN_LINES:
+            return None
+        return id(paragraph)
 
     def _render_preserved_table(self, table: Tag) -> str:
         """保留原始 HTML 表格结构，但先将其中图片改写为可持久化引用。"""

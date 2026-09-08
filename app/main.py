@@ -14,7 +14,6 @@ from fastapi.middleware.cors import CORSMiddleware
 from app.rag.config import settings
 from app.rag.database import close_database, init_database
 from app.rag.observability.logging import logger, setup_logger
-from app.services.arxiv_crawler import arxiv_crawler
 from app.services.document_dispatch import run_document_dispatch_reconciler
 from app.services.report_dispatch import run_report_dispatch_reconciler
 
@@ -23,6 +22,7 @@ setup_logger()
 from app.api.agent import router as agent_router
 from app.api.auth import router as auth_router
 from app.api.crawler import router as crawler_router
+from app.api.crawler import submission_router
 from app.api.datasets import router as datasets_router
 from app.api.document_analysis import (
     report_index_router as document_analysis_report_index_router,
@@ -34,6 +34,7 @@ from app.api.rag import router as rag_router
 from app.api.recall import router as recall_router
 from app.api.report_agent_internal import router as report_agent_internal_router
 from app.api.reports import router as reports_router
+from app.api.structured_data import router as structured_data_router
 from app.api.system import router as system_router
 
 
@@ -69,7 +70,6 @@ async def lifespan(_: FastAPI):
     await drain_usage_reports()
     await close_recall_pipeline_resources()
     await close_ingestion_resources()
-    await arxiv_crawler.close()
     await close_database()
     await logger.complete()
 
@@ -90,6 +90,7 @@ app.add_middleware(
         "Authorization",
         "Content-Type",
         "X-Crawler-Api-Key",
+        "X-Document-Submission-Key",
         "X-Request-Id",
     ],
     expose_headers=["Location", "X-Request-Id", "X-Document-Version"],
@@ -97,6 +98,7 @@ app.add_middleware(
 app.include_router(auth_router)
 app.include_router(agent_router)
 app.include_router(crawler_router)
+app.include_router(submission_router)
 app.include_router(llm_router)
 app.include_router(datasets_router)
 app.include_router(documents_router)
@@ -107,6 +109,7 @@ app.include_router(reports_router)
 app.include_router(rag_router)
 app.include_router(report_agent_internal_router)
 app.include_router(system_router)
+app.include_router(structured_data_router)
 
 
 @app.get("/health/live", tags=["系统"])

@@ -7,7 +7,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.auth import get_user_id
+from app.domain.auth import get_shared_owner_user_id, get_user_id
 from app.domain.models import Dataset, Document
 from app.domain.schemas import LLMConfigCreate, LLMConfigRead, LLMConfigUpdate
 from app.rag.core.llm.encryption import decrypt_api_key, encrypt_api_key, mask_api_key
@@ -182,7 +182,7 @@ async def create_config(
 
 @router.get("/configs", response_model=list[LLMConfigRead])
 async def list_configs(
-    user_id: Annotated[int, Depends(get_user_id)],
+    user_id: Annotated[int, Depends(get_shared_owner_user_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
     capability: Annotated[str | None, Query(max_length=32)] = None,
     include_inactive: bool = False,

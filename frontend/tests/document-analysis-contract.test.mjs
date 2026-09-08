@@ -38,6 +38,10 @@ const appShellSource = await readFile(
   new URL("../src/components/AppShell.jsx", import.meta.url),
   "utf8",
 );
+const authContextSource = await readFile(
+  new URL("../src/state/AuthContext.jsx", import.meta.url),
+  "utf8",
+);
 
 test("document analysis starts a background run and restores its status", () => {
   assert.match(apiSource, /\/api\/v1\/documents\/\$\{encodeURIComponent\(documentId\)\}\/analysis/);
@@ -112,4 +116,8 @@ test("analysis report index replaces system status in navigation and links sourc
   assert.match(analysisReportsPageSource, /report\.dataset_name/);
   assert.match(analysisReportsPageSource, /report\.filename/);
   assert.match(analysisReportsPageSource, /documents\/\$\{report\.document_id\}\/analysis/);
+});
+
+test("demo administrator can open admin-only analysis reports", () => {
+  assert.match(authContextSource, /forcedDemo[\s\S]*role:\s*"admin"/);
 });

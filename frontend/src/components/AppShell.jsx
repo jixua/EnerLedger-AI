@@ -2,10 +2,8 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
   Bot,
-  CalendarDays,
   Database,
   FileChartColumn,
-  Globe2,
   Menu,
   MessageSquareText,
   PanelLeftClose,
@@ -24,7 +22,6 @@ const navigation = [
   { to: "/", label: "对话", icon: MessageSquareText, end: true },
   { to: "/datasets", label: "碳知识库", icon: Database },
   { to: "/crawler/review", label: "资料审核", icon: ShieldCheck },
-  { to: "/crawler", label: "arXiv 采集", icon: Globe2, end: true },
   { to: "/tasks", label: "解析队列", icon: Workflow },
   { to: "/analysis-reports", label: "分析报告", icon: FileChartColumn },
   { to: "/models", label: "模型配置", icon: Bot },
@@ -33,6 +30,9 @@ const navigation = [
 function Sidebar({ admin, collapsed, mobileOpen, onCollapse, onMobileClose }) {
   const navigate = useNavigate();
   const isCompact = collapsed && !mobileOpen;
+  const visibleNavigation = admin?.role === "reviewer"
+    ? navigation.filter(({ to }) => to === "/" || to === "/crawler/review")
+    : navigation;
 
   return (
     <>
@@ -55,7 +55,7 @@ function Sidebar({ admin, collapsed, mobileOpen, onCollapse, onMobileClose }) {
 
         <div className="sidebar__section-label">{isCompact ? "" : "功能"}</div>
         <nav className="sidebar__nav" aria-label="主导航">
-          {navigation.map(({ to, label, icon: Icon, end }) => (
+          {visibleNavigation.map(({ to, label, icon: Icon, end }) => (
             <NavLink
               key={to}
               to={to}
@@ -73,9 +73,9 @@ function Sidebar({ admin, collapsed, mobileOpen, onCollapse, onMobileClose }) {
 
         <div className="sidebar__footer">
           {!isCompact ? (
-            <div className="sidebar-profile" title="当前管理员">
+            <div className="sidebar-profile" title="当前账号">
               <span className="sidebar-profile__avatar">{String(admin?.username || "A").slice(0, 1).toUpperCase()}</span>
-              <span><strong>{admin?.username || "管理员"}</strong><small>管理员</small></span>
+              <span><strong>{admin?.username || "用户"}</strong><small>{admin?.role === "reviewer" ? "资料审核员" : "管理员"}</small></span>
             </div>
           ) : null}
           <button className="collapse-button" onClick={onCollapse} title={collapsed ? "展开侧栏" : "收起侧栏"}>
@@ -105,11 +105,6 @@ export function AppShell() {
   const { admin, logout } = useAuth();
   const breadcrumb = useMemo(() => getBreadcrumb(location.pathname), [location.pathname]);
   const isKnowledgeLibrary = location.pathname === "/datasets";
-  const todayLabel = useMemo(() => new Intl.DateTimeFormat("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    weekday: "short",
-  }).format(new Date()), []);
 
   useEffect(() => {
     document.documentElement.classList.remove("dark");
@@ -130,8 +125,7 @@ export function AppShell() {
             <strong>{breadcrumb}</strong>
           </div>
           <div className="topbar__actions">
-            <span className="topbar-date"><CalendarDays size={15} />{todayLabel}</span>
-            <Button onClick={() => navigate(isKnowledgeLibrary ? `/datasets?create=${Date.now()}` : `/?new=${Date.now()}`)}>
+            <Button onClick={() => navigate(isKnowledgeLibrary && admin?.role === "admin" ? `/datasets?create=${Date.now()}` : `/?new=${Date.now()}`)}>
               <Plus size={16} />{isKnowledgeLibrary ? "新建知识库" : "新建对话"}
             </Button>
             <IconButton label="退出登录" onClick={logout}><LogOut size={17} /></IconButton>

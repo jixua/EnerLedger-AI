@@ -13,7 +13,6 @@ const TasksPage = lazy(() => import("./pages/TasksPage").then((module) => ({ def
 const PlaygroundPage = lazy(() => import("./pages/PlaygroundPage").then((module) => ({ default: module.PlaygroundPage })));
 const ModelsPage = lazy(() => import("./pages/ModelsPage").then((module) => ({ default: module.ModelsPage })));
 const SystemPage = lazy(() => import("./pages/SystemPage").then((module) => ({ default: module.SystemPage })));
-const CrawlerPage = lazy(() => import("./pages/CrawlerPage").then((module) => ({ default: module.CrawlerPage })));
 const CrawlerReviewPage = lazy(() => import("./pages/CrawlerReviewPage").then((module) => ({ default: module.CrawlerReviewPage })));
 const LoginPage = lazy(() => import("./pages/LoginPage").then((module) => ({ default: module.LoginPage })));
 
@@ -29,6 +28,11 @@ function ProtectedApp() {
   return <AppProvider><AppShell /></AppProvider>;
 }
 
+function AdminRoute({ children }) {
+  const { admin } = useAuth();
+  return admin?.role === "admin" ? children : <Navigate to="/" replace />;
+}
+
 export function App() {
   return (
     <BrowserRouter>
@@ -37,16 +41,15 @@ export function App() {
           <Route path="login" element={<Suspense fallback={<PageLoader />}><LoginPage /></Suspense>} />
           <Route element={<ProtectedApp />}>
             <Route index element={<Suspense fallback={<PageLoader />}><PlaygroundPage /></Suspense>} />
-            <Route path="datasets" element={<Suspense fallback={<PageLoader />}><DatasetsPage /></Suspense>} />
-            <Route path="datasets/:datasetId" element={<Suspense fallback={<PageLoader />}><DatasetDetailPage /></Suspense>} />
-            <Route path="datasets/:datasetId/documents/:documentId" element={<Suspense fallback={<PageLoader />}><DocumentDetailPage /></Suspense>} />
-            <Route path="datasets/:datasetId/documents/:documentId/analysis" element={<Suspense fallback={<PageLoader />}><DocumentAnalysisPage /></Suspense>} />
-            <Route path="analysis-reports" element={<Suspense fallback={<PageLoader />}><AnalysisReportsPage /></Suspense>} />
-            <Route path="tasks" element={<Suspense fallback={<PageLoader />}><TasksPage /></Suspense>} />
+            <Route path="datasets" element={<AdminRoute><Suspense fallback={<PageLoader />}><DatasetsPage /></Suspense></AdminRoute>} />
+            <Route path="datasets/:datasetId" element={<AdminRoute><Suspense fallback={<PageLoader />}><DatasetDetailPage /></Suspense></AdminRoute>} />
+            <Route path="datasets/:datasetId/documents/:documentId" element={<AdminRoute><Suspense fallback={<PageLoader />}><DocumentDetailPage /></Suspense></AdminRoute>} />
+            <Route path="datasets/:datasetId/documents/:documentId/analysis" element={<AdminRoute><Suspense fallback={<PageLoader />}><DocumentAnalysisPage /></Suspense></AdminRoute>} />
+            <Route path="analysis-reports" element={<AdminRoute><Suspense fallback={<PageLoader />}><AnalysisReportsPage /></Suspense></AdminRoute>} />
+            <Route path="tasks" element={<AdminRoute><Suspense fallback={<PageLoader />}><TasksPage /></Suspense></AdminRoute>} />
             <Route path="playground" element={<Navigate to="/" replace />} />
-            <Route path="models" element={<Suspense fallback={<PageLoader />}><ModelsPage /></Suspense>} />
-            <Route path="system" element={<Suspense fallback={<PageLoader />}><SystemPage /></Suspense>} />
-            <Route path="crawler" element={<Suspense fallback={<PageLoader />}><CrawlerPage /></Suspense>} />
+            <Route path="models" element={<AdminRoute><Suspense fallback={<PageLoader />}><ModelsPage /></Suspense></AdminRoute>} />
+            <Route path="system" element={<AdminRoute><Suspense fallback={<PageLoader />}><SystemPage /></Suspense></AdminRoute>} />
             <Route path="crawler/review" element={<Suspense fallback={<PageLoader />}><CrawlerReviewPage /></Suspense>} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Route>

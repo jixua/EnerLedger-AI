@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from datetime import timedelta
+from datetime import UTC, datetime, timedelta
 from io import BytesIO
 
 import pytest
@@ -135,6 +135,42 @@ def test_document_payload_repairs_legacy_mojibake_error_message() -> None:
     assert _document_payload(document)["error_message"] == original
 
 
+def test_document_payload_hides_legacy_html_page_count() -> None:
+    document = _document(status="READY")
+    document.filename = "IEA能源效率.md.html"
+    document.file_type = "html"
+    document.page_count = 8
+
+    assert _document_payload(document)["page_count"] is None
+
+
+def test_document_payload_preserves_pdf_page_count() -> None:
+    document = _document(status="READY")
+    document.page_count = 8
+
+    assert _document_payload(document)["page_count"] == 8
+
+
+def test_document_payload_marks_naive_database_timestamps_as_utc() -> None:
+    document = _document(status="PROCESSING")
+    naive_utc = datetime(2026, 9, 7, 5, 46, 41)
+    document.queued_at = naive_utc
+    document.processing_started_at = naive_utc
+    document.lease_expires_at = naive_utc
+
+    payload = _document_payload(document)
+
+    for field_name in (
+        "created_at",
+        "updated_at",
+        "queued_at",
+        "processing_started_at",
+        "lease_expires_at",
+    ):
+        assert payload[field_name].tzinfo is UTC
+        assert payload[field_name].utcoffset() == timedelta(0)
+
+
 def test_document_retrieval_ready_matches_pdf_quality_gate() -> None:
     legacy_pdf = _document(status="READY")
     assert _document_payload(legacy_pdf)["retrieval_ready"] is False
@@ -266,17 +302,17 @@ async def test_crawler_upload_is_saved_for_review_without_dispatch(
     _active_dispatch_stub,
 ) -> None:
     storage = _FakeStorage()
-    source_path = tmp_path / "crawler.pdf"
-    source_path.write_bytes(b"%PDF-1.7\n")
+    source_path = tmp_path / "crawler.md"
+    source_path.write_text("# 待审核资料\n\n正文。\n", encoding="utf-8")
     dataset = _dataset()
     db = _FakeSession([dataset])
 
     document = await queue_document_from_path(
         dataset_id=9,
         user_id=11,
-        filename="crawler.pdf",
+        filename="crawler.md",
         source_path=source_path,
-        content_type="application/pdf",
+        content_type="text/markdown; charset=utf-8",
         db=db,
         storage=storage,
         ownership_checked=True,
@@ -292,7 +328,7 @@ async def test_crawler_upload_is_saved_for_review_without_dispatch(
     assert document.dispatch_status == "IDLE"
     assert document.available_at is None
     assert document.queued_at is None
-    assert storage.uploads[0][2] == b"%PDF-1.7\n"
+    assert storage.uploads[0][2] == "# 待审核资料\n\n正文。\n".encode()
     assert _active_dispatch_stub == []
 
 

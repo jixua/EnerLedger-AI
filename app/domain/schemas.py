@@ -1,6 +1,5 @@
 """控制面 API 的 Pydantic 契约。"""
 
-import re
 from datetime import datetime
 from pathlib import PurePath
 from typing import Annotated, Any, Literal, Self
@@ -37,89 +36,7 @@ class AuthToken(BaseModel):
 class CurrentAdmin(BaseModel):
     user_id: int
     username: str
-    role: Literal["admin"] = "admin"
-
-
-class ArxivPaper(BaseModel):
-    arxiv_id: str
-    title: str
-    summary: str
-    authors: list[str]
-    categories: list[str]
-    published_at: datetime
-    updated_at: datetime
-    abstract_url: AnyHttpUrl
-    pdf_url: AnyHttpUrl
-
-
-class ArxivSearchResponse(BaseModel):
-    source: Literal["arXiv"] = "arXiv"
-    query: str
-    optimized_query: str
-    search_query: str
-    optimization_mode: Literal["AI", "RULES"]
-    optimization_model: str | None = None
-    optimization_warning: str | None = None
-    total_results: int
-    fetched_at: datetime
-    items: list[ArxivPaper]
-
-
-class ArxivImportPaper(BaseModel):
-    arxiv_id: str
-    title: str = Field(min_length=1, max_length=500)
-
-    @field_validator("arxiv_id")
-    @classmethod
-    def validate_arxiv_id(cls, value: str) -> str:
-        pattern = re.compile(
-            r"^(?:\d{4}\.\d{4,5}|[a-z-]+(?:\.[a-z]{2})?/\d{7})(?:v\d+)?$",
-            re.IGNORECASE,
-        )
-        arxiv_id = value.strip()
-        if not pattern.fullmatch(arxiv_id):
-            raise ValueError(f"无效的 arXiv ID：{value}")
-        return arxiv_id
-
-    @field_validator("title")
-    @classmethod
-    def strip_title(cls, value: str) -> str:
-        title = value.strip()
-        if not title:
-            raise ValueError("论文标题不能为空")
-        return title
-
-
-class ArxivImportRequest(BaseModel):
-    dataset_id: int = Field(gt=0)
-    papers: list[ArxivImportPaper] = Field(min_length=1, max_length=10)
-
-    @field_validator("papers")
-    @classmethod
-    def deduplicate_papers(cls, values: list[ArxivImportPaper]) -> list[ArxivImportPaper]:
-        normalized: list[ArxivImportPaper] = []
-        seen_ids: set[str] = set()
-        for paper in values:
-            if paper.arxiv_id in seen_ids:
-                continue
-            seen_ids.add(paper.arxiv_id)
-            normalized.append(paper)
-        return normalized
-
-
-class ArxivImportItem(BaseModel):
-    arxiv_id: str
-    status: Literal["QUEUED", "FAILED"]
-    document_id: int | None = None
-    filename: str
-    message: str | None = None
-
-
-class ArxivImportResponse(BaseModel):
-    dataset_id: int
-    queued_count: int
-    failed_count: int
-    items: list[ArxivImportItem]
+    role: Literal["admin", "reviewer"]
 
 
 class DatasetCreate(BaseModel):
@@ -199,6 +116,7 @@ class DatasetRead(BaseModel):
     sparse_embedding_config_id: int
     chat_config_id: int | None
     vision_config_id: int | None
+    retrieval_ready_document_count: int = 0
     created_at: datetime
     updated_at: datetime
 
@@ -340,6 +258,7 @@ class CrawlerSubmissionPage(BaseModel):
 
 class CrawlerReviewRequest(BaseModel):
     decision: Literal["APPROVED", "REJECTED"]
+    dataset_id: int | None = Field(default=None, gt=0)
     note: str | None = Field(default=None, max_length=1000)
 
     @field_validator("note")
@@ -349,6 +268,12 @@ class CrawlerReviewRequest(BaseModel):
             return None
         stripped = value.strip()
         return stripped or None
+
+    @model_validator(mode="after")
+    def require_approval_dataset(self) -> Self:
+        if self.decision == "APPROVED" and self.dataset_id is None:
+            raise ValueError("审核通过时必须选择目标数据集")
+        return self
 
 
 class DocumentChunkRead(BaseModel):
@@ -408,7 +333,8 @@ class DocumentPreviewMap(BaseModel):
     document_version: int
     boundary_precision: Literal["line", "approximate_line", "legacy_line"] = Field(
         description=(
-            "line=精确行边界；approximate_line=语义细分仅有近似行位置；legacy_line=历史数据降级位置"
+            "line=精确行边界；approximate_line=分片边界落在行内，仅有近似行位置；"
+            "legacy_line=历史数据降级位置"
         )
     )
     map_reliable: bool = Field(

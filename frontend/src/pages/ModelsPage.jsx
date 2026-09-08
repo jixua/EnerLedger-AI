@@ -215,7 +215,6 @@ export function ModelsPage() {
     <div className="page-shell models-page feature-page">
       <header className="knowledge-hero">
         <div className="knowledge-hero__copy">
-          <p className="eyebrow">Model capability registry</p>
           <h1>模型配置</h1>
           <p className="knowledge-hero__subtitle">检索与生成模型</p>
         </div>
@@ -232,75 +231,79 @@ export function ModelsPage() {
         </div>
       ) : null}
 
-      <div className="model-tabs" role="tablist" aria-label="模型能力筛选">
-        {CAPABILITIES.map((capability) => (
-          <button
-            type="button"
-            role="tab"
-            aria-selected={filter === capability.value}
-            className={filter === capability.value ? "is-active" : ""}
-            key={capability.value}
-            onClick={() => setFilter(capability.value)}
-          >
-            {capability.label}
-            <span>{capabilityCount(models, capability.value)}</span>
-          </button>
-        ))}
-      </div>
-
-      <section className="paper-card model-registry">
-        <div className="registry-toolbar">
-          <label className="search-control">
-            <Search size={16} />
-            <input
-              value={search}
-              onChange={(event) => setSearch(event.target.value)}
-              placeholder="搜索模型、厂商或协议"
-            />
-          </label>
+      <section className="model-controls" aria-label="模型筛选与搜索">
+        <div className="model-tabs" role="tablist" aria-label="模型能力筛选">
+          {CAPABILITIES.map((capability) => (
+            <button
+              type="button"
+              role="tab"
+              aria-selected={filter === capability.value}
+              className={filter === capability.value ? "is-active" : ""}
+              key={capability.value}
+              onClick={() => setFilter(capability.value)}
+            >
+              {capability.label}
+              <span>{capabilityCount(models, capability.value)}</span>
+            </button>
+          ))}
         </div>
+        <label className="search-control">
+          <Search size={16} />
+          <input
+            value={search}
+            onChange={(event) => setSearch(event.target.value)}
+            placeholder="搜索模型、厂商或协议"
+          />
+        </label>
+      </section>
 
+      <section className="model-registry" aria-label="模型配置列表">
         {filteredModels.length ? (
-          <div className="model-list">
-            {filteredModels.map((model) => (
-              <article className="model-row" key={model.id}>
-                <div className="model-row__glyph">
-                  <BrainCircuit size={21} />
-                </div>
-                <div className="model-row__identity">
-                  <div>
-                    <h2>{modelName(model)}</h2>
-                    <span className={`state-pill ${model.is_active === false ? "state-pill--muted" : "state-pill--ready"}`}>
-                      <i />
-                      {model.is_active === false ? "已停用" : "已启用"}
-                    </span>
+          <>
+            <header className="model-list__header" aria-hidden="true">
+              <span>模型</span>
+              <span>能力</span>
+              <span>厂商 / 协议</span>
+              <span>状态</span>
+              <span>操作</span>
+            </header>
+            <div className="model-list">
+              {filteredModels.map((model) => (
+                <article className="model-row" key={model.id}>
+                  <div className="model-row__main">
+                    <div className="model-row__glyph">
+                      <BrainCircuit size={21} />
+                    </div>
+                    <div className="model-row__identity">
+                      <h2>{modelName(model)}</h2>
+                      <p>{model.model_name}</p>
+                    </div>
                   </div>
-                  <p>{model.model_name}</p>
-                </div>
-                <div className="model-row__metadata">
-                  <span>{CAPABILITY_LABELS[model.capability] || model.capability}</span>
-                  <span>{model.provider_type}</span>
-                  <span>{model.protocol}</span>
-                  {model.supports_tool_calling ? <span>工具调用</span> : null}
-                </div>
-                <div className="model-row__endpoint">
-                  <small>API 地址</small>
-                  <span>{model.protocol === "codex_cli" ? "本机 Codex CLI" : model.api_base_url}</span>
-                </div>
-                <div className="model-row__actions">
-                  <button className="icon-button" type="button" onClick={() => openEditForm(model)} disabled={busyModelId === model.id} title="编辑模型" aria-label={`编辑 ${modelName(model)}`}>
-                    <Pencil size={16} />
-                  </button>
-                  <button className="icon-button" type="button" onClick={() => toggleModel(model)} disabled={busyModelId === model.id} title={model.is_active === false ? "启用模型" : "停用模型"} aria-label={model.is_active === false ? `启用 ${modelName(model)}` : `停用 ${modelName(model)}`}>
-                    <Power size={16} />
-                  </button>
-                  <button className="icon-button icon-button--danger" type="button" onClick={() => removeModel(model)} disabled={busyModelId === model.id} title="删除模型" aria-label={`删除 ${modelName(model)}`}>
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </article>
-            ))}
-          </div>
+                  <span className="model-row__capability">{CAPABILITY_LABELS[model.capability] || model.capability}</span>
+                  <div className="model-row__metadata">
+                    <span>{model.provider_type}</span>
+                    <span>{model.protocol === "codex_cli" ? "Codex CLI" : model.protocol}</span>
+                    {model.supports_tool_calling ? <span>工具调用</span> : null}
+                  </div>
+                  <span className={`model-row__status${model.is_active === false ? " model-row__status--muted" : ""}`}>
+                    <i />
+                    {model.is_active === false ? "已停用" : "已启用"}
+                  </span>
+                  <div className="model-row__actions">
+                    <button className="icon-button" type="button" onClick={() => openEditForm(model)} disabled={busyModelId === model.id} title="编辑模型" aria-label={`编辑 ${modelName(model)}`}>
+                      <Pencil size={16} />
+                    </button>
+                    <button className="icon-button" type="button" onClick={() => toggleModel(model)} disabled={busyModelId === model.id} title={model.is_active === false ? "启用模型" : "停用模型"} aria-label={model.is_active === false ? `启用 ${modelName(model)}` : `停用 ${modelName(model)}`}>
+                      <Power size={16} />
+                    </button>
+                    <button className="icon-button icon-button--danger" type="button" onClick={() => removeModel(model)} disabled={busyModelId === model.id} title="删除模型" aria-label={`删除 ${modelName(model)}`}>
+                      <Trash2 size={16} />
+                    </button>
+                  </div>
+                </article>
+              ))}
+            </div>
+          </>
         ) : (
           <div className="empty-state empty-state--models">
             <Sparkles size={27} />
@@ -318,16 +321,16 @@ export function ModelsPage() {
       </section>
 
       {showForm ? (
-        <div className="sheet-backdrop" role="presentation" onMouseDown={(event) => {
+        <div className={`sheet-backdrop${editingModel ? " sheet-backdrop--dialog" : ""}`} role="presentation" onMouseDown={(event) => {
           if (event.target === event.currentTarget && !submitting) setShowForm(false);
         }}>
-          <aside className="form-sheet" role="dialog" aria-modal="true" aria-labelledby="model-form-title">
+          <aside className={`form-sheet${editingModel ? " form-sheet--dialog" : ""}`} role="dialog" aria-modal="true" aria-labelledby="model-form-title">
             <header className="form-sheet__head">
               <div>
                 <h2 id="model-form-title">{editingModel ? "编辑模型" : "新增模型"}</h2>
                 <p>{editingModel ? "可轮换 API Key、修正 API 地址或更新模型参数。" : "创建可供数据集和对话使用的模型配置。"}</p>
               </div>
-              <button className="icon-button" type="button" disabled={submitting} onClick={() => setShowForm(false)} aria-label="关闭新增模型表单">
+              <button className="icon-button" type="button" disabled={submitting} onClick={() => setShowForm(false)} aria-label={editingModel ? "关闭编辑模型弹窗" : "关闭新增模型表单"}>
                 <X size={19} />
               </button>
             </header>
