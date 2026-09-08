@@ -37,7 +37,7 @@ from app.rag.application.recall_serialization import (
     serialize_reranked_hits,
 )
 from app.rag.config import settings
-from app.rag.core.llm.exceptions import LLMConfigResolutionError
+from app.rag.core.llm.exceptions import LLMConfigResolutionError, public_llm_error
 from app.rag.core.llm.response import UsageInfo
 from app.rag.core.llm.user_model_resolver import aresolve_model
 from app.rag.core.mq.messages import ChatTurnMessage
@@ -933,6 +933,7 @@ async def _generate_answer(
         )
         return
     except Exception as exc:  # noqa: BLE001 - 生成失败统一收敛为 GENERATION_FAILED
+        failure = public_llm_error(exc)
         logger.bind(
             event="recall_generation_failed",
             outcome="failed",
@@ -958,7 +959,11 @@ async def _generate_answer(
         )
         yield recall_event(
             "error",
-            {"code": CODE_GENERATION_FAILED, "message": "answer generation failed"},
+            {
+                "code": CODE_GENERATION_FAILED,
+                "reason_code": failure.code,
+                "message": failure.message,
+            },
         )
         await _drain_title_task(title_task)
         await _emit_chat_turn(
@@ -974,7 +979,7 @@ async def _generate_answer(
             latency_ms=_elapsed_ms(),
             status="FAILED",
             error_code=CODE_GENERATION_FAILED,
-            error_message="answer generation failed",
+            error_message=failure.message,
             title=sent_title or fallback_title,
         )
         return

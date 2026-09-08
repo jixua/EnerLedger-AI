@@ -25,6 +25,7 @@ from app.rag.config import settings
 from app.rag.core.llm.exceptions import (
     DatasetModelBindingRequiredError,
     LLMConfigResolutionError,
+    public_llm_error,
 )
 from app.rag.core.llm.provider_lifecycle import aclose_dataset_execution_contexts
 from app.rag.core.llm.response import UsageInfo
@@ -230,8 +231,16 @@ async def _event_stream(
         yield _sse("error", {"code": "INVALID_REQUEST", "message": str(exc)})
     except RecallError:
         yield _sse("error", {"code": "RECALL_FAILED", "message": "三路召回执行失败"})
-    except Exception:
-        yield _sse("error", {"code": "GENERATION_FAILED", "message": "LLM 流式生成失败"})
+    except Exception as exc:  # noqa: BLE001 - SSE 必须返回结构化失败终帧
+        failure = public_llm_error(exc)
+        yield _sse(
+            "error",
+            {
+                "code": "GENERATION_FAILED",
+                "reason_code": failure.code,
+                "message": failure.message,
+            },
+        )
     finally:
         contexts = (getattr(recall_request, "dataset_contexts", None) or {}).values()
         await aclose_dataset_execution_contexts(
