@@ -14,6 +14,10 @@ const analysisPageSource = await readFile(
   new URL("../src/pages/DocumentAnalysisPage.jsx", import.meta.url),
   "utf8",
 );
+const analysisReportsPageSource = await readFile(
+  new URL("../src/pages/AnalysisReportsPage.jsx", import.meta.url),
+  "utf8",
+);
 const appSource = await readFile(
   new URL("../src/App.jsx", import.meta.url),
   "utf8",
@@ -28,6 +32,14 @@ const apiSource = await readFile(
 );
 const stylesSource = await readFile(
   new URL("../src/pages.css", import.meta.url),
+  "utf8",
+);
+const appShellSource = await readFile(
+  new URL("../src/components/AppShell.jsx", import.meta.url),
+  "utf8",
+);
+const authContextSource = await readFile(
+  new URL("../src/state/AuthContext.jsx", import.meta.url),
   "utf8",
 );
 
@@ -91,4 +103,21 @@ test("analysis panel remains usable at medium and narrow widths", () => {
   assert.match(stylesSource, /\.document-analysis__report table/);
   assert.match(stylesSource, /@container document-detail \(max-width: 820px\)[\s\S]*\.document-analysis__header \{ flex-direction: column; \}/);
   assert.match(stylesSource, /@container document-detail \(max-width: 520px\)[\s\S]*\.document-analysis__actions \{ display: grid;/);
+});
+
+test("analysis report index replaces system status in navigation and links source records", () => {
+  assert.match(appShellSource, /to: "\/analysis-reports", label: "分析报告"/);
+  assert.doesNotMatch(appShellSource, /to: "\/system", label: "系统状态"/);
+  assert.match(appSource, /path="analysis-reports"/);
+  assert.match(apiSource, /export function listDocumentAnalysisReports/);
+  assert.match(apiSource, /\/api\/v1\/analysis-reports/);
+  assert.match(analysisReportsPageSource, />所属知识库</);
+  assert.match(analysisReportsPageSource, />源文件</);
+  assert.match(analysisReportsPageSource, /report\.dataset_name/);
+  assert.match(analysisReportsPageSource, /report\.filename/);
+  assert.match(analysisReportsPageSource, /documents\/\$\{report\.document_id\}\/analysis/);
+});
+
+test("demo administrator can open admin-only analysis reports", () => {
+  assert.match(authContextSource, /forcedDemo[\s\S]*role:\s*"admin"/);
 });

@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { NavLink, Outlet, useLocation, useNavigate } from "react-router-dom";
 import {
-  Activity,
   Bot,
   Database,
+  FileChartColumn,
   Menu,
   MessageSquareText,
   PanelLeftClose,
@@ -23,8 +23,8 @@ const navigation = [
   { to: "/datasets", label: "碳知识库", icon: Database },
   { to: "/crawler/review", label: "资料审核", icon: ShieldCheck },
   { to: "/tasks", label: "解析队列", icon: Workflow },
+  { to: "/analysis-reports", label: "分析报告", icon: FileChartColumn },
   { to: "/models", label: "模型配置", icon: Bot },
-  { to: "/system", label: "系统状态", icon: Activity },
 ];
 
 function Sidebar({ admin, collapsed, mobileOpen, onCollapse, onMobileClose }) {

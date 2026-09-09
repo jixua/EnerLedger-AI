@@ -11,7 +11,12 @@ const AuthContext = createContext(null);
 
 export function AuthProvider({ children }) {
   const forcedDemo = import.meta.env.VITE_DEMO_MODE === "true";
-  const [admin, setAdmin] = useState(forcedDemo ? { id: 1, username: "preview", preview: true } : null);
+  const [admin, setAdmin] = useState(forcedDemo ? {
+    id: 1,
+    username: "preview",
+    role: "admin",
+    preview: true,
+  } : null);
   const [checking, setChecking] = useState(!forcedDemo);
 
   const logout = useCallback(() => {

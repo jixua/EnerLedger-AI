@@ -433,6 +433,10 @@ export function getDocumentAnalysisStatus(documentId, { signal } = {}) {
   return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}/analysis/status`, { signal });
 }
 
+export function listDocumentAnalysisReports({ signal } = {}) {
+  return apiRequest("/api/v1/analysis-reports", { signal });
+}
+
 export async function downloadDocumentAnalysisDocx(documentId, { signal } = {}) {
   let response;
   try {
