@@ -6,7 +6,7 @@
 
 1. GitHub Actions 对候选分支进行 Python、Web、Pi Agent 和部署契约检查。
 2. 只有 `master` 分支的完整 40 位 Git SHA 可以生成发布镜像。
-3. API、Pi Agent 和 Web 镜像推送到 GitHub Container Registry（GHCR）。
+3. API、Pi Agent、Web 以及按官方摘要锁定的中间件镜像推送或同步到 GitHub Container Registry（GHCR）。
 4. 发布 Job 通过 SSH 登录生产服务器，拉取指定 SHA 的镜像，再由 Docker Compose 切换并验证。
 
 本方案不在生产服务器编译源码，不使用浮动的 `latest` 标签，不将生产 `.env` 提交到 Git。
@@ -62,7 +62,7 @@ permissions:
   packages: write
 ```
 
-三个 GHCR Package 应与当前仓库关联并继承仓库 Actions 权限。发布时，短期 Token 通过 SSH 标准输入传给 `docker login --password-stdin`；镜像拉取后执行 `docker logout ghcr.io`，不在服务器长期保存 PAT。
+九个 GHCR Package（3 个应用镜像和 6 个中间件镜像）应与当前仓库关联并继承仓库 Actions 权限。中间件上游镜像使用固定版本与官方 manifest 摘要同步，避免生产服务器直接访问 Docker Hub。发布时，短期 Token 通过 SSH 标准输入传给 `docker login --password-stdin`；镜像拉取后执行 `docker logout ghcr.io`，不在服务器长期保存 PAT。
 
 ## 5. GitHub 配置
 
@@ -201,7 +201,7 @@ location / {
 2. 配置 GitHub `production` Environment 和 SSH Secrets。
 3. 在 GitHub 中合并流水线候选分支到 `dev`，完成 Dev 验收。
 4. 用同一候选分支提交到 `master`。
-5. 第一次保持 `PRODUCTION_DEPLOY_ENABLED=false`，观察三个 GHCR 镜像是否成功生成。
+5. 第一次保持 `PRODUCTION_DEPLOY_ENABLED=false`，观察 3 个应用镜像和 6 个中间件镜像是否成功生成。
 6. 在服务器完成域名、密钥和 Compose 预检。
 7. 将 `PRODUCTION_DEPLOY_ENABLED=true`，在 `master` 上手动运行 `Master 镜像与生产发布`，选择 `deploy=true`。
 8. 审批 `production` Environment 发布。
