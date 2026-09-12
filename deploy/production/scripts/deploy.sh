@@ -40,12 +40,69 @@ fi
 export GHCR_NAMESPACE RELEASE_SHA
 compose=(docker compose --env-file "$env_file" -f "$compose_file")
 
+wait_for_services() {
+  local deadline=$((SECONDS + 300))
+  local services=(mysql minio qdrant manticore rabbitmq pi-agent api parse-worker web)
+  local service container_id state health exit_code all_ready
+  if grep -Eq '^COMPOSE_PROFILES=reports([[:space:]]*)$' "$env_file"; then
+    services+=(report-worker)
+  fi
+
+  while ((SECONDS < deadline)); do
+    all_ready=true
+
+    container_id="$("${compose[@]}" ps -a -q minio-init)"
+    if [[ -z "$container_id" ]]; then
+      all_ready=false
+    else
+      IFS='|' read -r state health exit_code < <(
+        docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{.State.ExitCode}}' "$container_id"
+      )
+      if [[ "$state" == "exited" && "$exit_code" != "0" ]]; then
+        echo "minio-init failed with exit code ${exit_code}" >&2
+        return 1
+      fi
+      if [[ "$state" != "exited" || "$exit_code" != "0" ]]; then
+        all_ready=false
+      fi
+    fi
+
+    for service in "${services[@]}"; do
+      container_id="$("${compose[@]}" ps -a -q "$service")"
+      if [[ -z "$container_id" ]]; then
+        all_ready=false
+        continue
+      fi
+      IFS='|' read -r state health exit_code < <(
+        docker inspect --format '{{.State.Status}}|{{if .State.Health}}{{.State.Health.Status}}{{end}}|{{.State.ExitCode}}' "$container_id"
+      )
+      if [[ "$state" == "exited" || "$state" == "dead" ]]; then
+        echo "${service} stopped unexpectedly with exit code ${exit_code}" >&2
+        return 1
+      fi
+      if [[ "$state" != "running" || ( -n "$health" && "$health" != "healthy" ) ]]; then
+        all_ready=false
+      fi
+    done
+
+    if [[ "$all_ready" == "true" ]]; then
+      return 0
+    fi
+    sleep 5
+  done
+
+  "${compose[@]}" ps -a >&2
+  echo "Services did not become ready within 300 seconds" >&2
+  return 1
+}
+
 "${compose[@]}" config --quiet
 "${compose[@]}" pull api parse-worker pi-agent web
 if grep -Eq '^COMPOSE_PROFILES=reports([[:space:]]*)$' "$env_file"; then
   "${compose[@]}" --profile reports pull report-worker
 fi
-"${compose[@]}" up -d --no-build --wait --wait-timeout 300
+"${compose[@]}" up -d --no-build
+wait_for_services
 "${deploy_root}/bin/verify.sh" "$deploy_root"
 
 if [[ -n "$current_sha" && "$current_sha" != "$RELEASE_SHA" ]]; then
