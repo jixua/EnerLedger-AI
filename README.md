@@ -79,7 +79,7 @@ docker compose up --build -d
 
 ## Docker Compose 启动
 
-生产环境的 GitHub Actions + GHCR + SSH + Docker Compose 发布方案与完整操作步骤见
+生产环境的 Jenkins + SSH 镜像流式传输 + Docker Compose 发布方案与完整操作步骤见
 [生产环境部署与 CI/CD 手册](docs/%E7%94%9F%E4%BA%A7%E7%8E%AF%E5%A2%83%E9%83%A8%E7%BD%B2%E4%B8%8ECI-CD.md)。
 根目录 `docker-compose.yml` 仅用于本地开发，不应携带默认口令直接部署到公网服务器。
 
