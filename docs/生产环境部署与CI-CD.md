@@ -125,6 +125,12 @@ Master 合并或 Jenkins 开始运行都不等于已部署；只有上述验收�
 
 确认 Jenkins 主机 Docker daemon 的 Docker Hub 镜像源，并确认 Quay 可访问。中间件始终按官方摘要校验，不得用未锁定的 `latest`。
 
+### API 镜像的 Debian 软件安装慢
+
+根目录 `Dockerfile` 默认通过阿里云 Debian 镜像安装 LibreOffice、字体等系统依赖，避免 Jenkins 直接访问缓慢的 `deb.debian.org`。如构建节点不在中国大陆，可通过 `DEBIAN_MIRROR` 和 `DEBIAN_SECURITY_MIRROR` build args 覆盖，不能在 Jenkins 工作区临时改写 Dockerfile。
+
+NLTK 构建资产使用 jsDelivr 上四个固定路径的 `punkt`、`punkt_tab`、`stopwords` 和 `wordnet` 压缩包，不再调用会访问 GitHub Raw 的交互式 downloader；当前链路不需要的 `omw-1.4` 不进入镜像。
+
 ### SSH 输送中断
 
 Jenkins 使用 `ServerAliveInterval=30` 和 `ServerAliveCountMax=10`。重新运行生产 job 会重新执行传输，不会覆盖 `.env` 或删除数据卷。

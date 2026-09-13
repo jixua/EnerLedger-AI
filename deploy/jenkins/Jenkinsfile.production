@@ -10,7 +10,18 @@ node {
 
         stage('Checkout master') {
             deleteDir()
-            checkout scm
+            checkout([$class: 'GitSCM',
+                branches: [[name: 'refs/remotes/origin/master']],
+                userRemoteConfigs: [[
+                    credentialsId: 'git-cred',
+                    url: 'ssh://git@ssh.github.com:443/jixua/EnerLedger-AI.git',
+                    refspec: '+refs/heads/master:refs/remotes/origin/master'
+                ]],
+                extensions: [
+                    [$class: 'CloneOption', depth: 1, honorRefspec: true, noTags: true, shallow: true],
+                    [$class: 'PruneStaleBranch']
+                ]
+            ])
             env.SOURCE_SHA = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
             env.SOURCE_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
             sh '''
