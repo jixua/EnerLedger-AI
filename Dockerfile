@@ -66,27 +66,27 @@ RUN --mount=type=cache,id=enerledger-uv,target=/root/.cache/uv,sharing=locked \
         --requirements /tmp/requirements.txt \
     && rm -f /tmp/requirements.txt
 
-# 固定语料独立于 Python 锁文件，依赖升级时继续复用这一镜像层。
-# 直接使用 NLTK 官方静态站点，避免 jsDelivr 在当前网络中重定向到不可达的
-# GitHub Raw。omw-1.4 只提供多语言 WordNet 映射，当前解析链路不使用。
+# Jenkins 使用经 SHA-256 校验的本地种子目录，生产构建不访问任何 NLTK/GitHub
+# 下载站点。普通本地构建仍可从 NLTK 官方静态站点下载四个固定资源。
+ARG NLTK_ASSETS_MODE=download
+COPY .build-cache/nltk_data/ /tmp/nltk-seed/
 RUN mkdir -p "${NLTK_DATA}/tokenizers" "${NLTK_DATA}/corpora" \
-    && curl -fsSL \
-        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 \
-        -o /tmp/punkt.zip \
-        https://www.nltk.org/nltk_data/packages/tokenizers/punkt.zip \
-    && curl -fsSL \
-        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 \
-        -o /tmp/punkt_tab.zip \
-        https://www.nltk.org/nltk_data/packages/tokenizers/punkt_tab.zip \
-    && curl -fsSL \
-        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 \
-        -o /tmp/stopwords.zip \
-        https://www.nltk.org/nltk_data/packages/corpora/stopwords.zip \
-    && curl -fsSL \
-        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 \
-        -o /tmp/wordnet.zip \
-        https://www.nltk.org/nltk_data/packages/corpora/wordnet.zip \
-    && python -c "import zipfile; [zipfile.ZipFile('/tmp/' + name + '.zip').extractall('${NLTK_DATA}/' + target) for name, target in [('punkt', 'tokenizers'), ('punkt_tab', 'tokenizers'), ('stopwords', 'corpora'), ('wordnet', 'corpora')]]" \
+    && if [ "${NLTK_ASSETS_MODE}" = "cache" ]; then \
+        test -d /tmp/nltk-seed/tokenizers/punkt \
+        && test -d /tmp/nltk-seed/tokenizers/punkt_tab \
+        && test -d /tmp/nltk-seed/corpora/stopwords \
+        && test -d /tmp/nltk-seed/corpora/wordnet \
+        && cp -a /tmp/nltk-seed/. "${NLTK_DATA}/"; \
+    else \
+        test "${NLTK_ASSETS_MODE}" = "download" \
+        && curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 -o /tmp/punkt.zip https://www.nltk.org/nltk_data/packages/tokenizers/punkt.zip \
+        && curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 -o /tmp/punkt_tab.zip https://www.nltk.org/nltk_data/packages/tokenizers/punkt_tab.zip \
+        && curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 -o /tmp/stopwords.zip https://www.nltk.org/nltk_data/packages/corpora/stopwords.zip \
+        && curl -fsSL --retry 5 --retry-all-errors --connect-timeout 10 --max-time 900 -o /tmp/wordnet.zip https://www.nltk.org/nltk_data/packages/corpora/wordnet.zip \
+        && python -c "import zipfile; [zipfile.ZipFile('/tmp/' + name + '.zip').extractall('${NLTK_DATA}/' + target) for name, target in [('punkt', 'tokenizers'), ('punkt_tab', 'tokenizers'), ('stopwords', 'corpora'), ('wordnet', 'corpora')]]"; \
+    fi \
+    && python -c "import nltk; [nltk.data.find(path) for path in ('tokenizers/punkt', 'tokenizers/punkt_tab/english', 'corpora/stopwords', 'corpora/wordnet')]" \
+    && rm -rf /tmp/nltk-seed \
     && rm -f /tmp/punkt.zip /tmp/punkt_tab.zip /tmp/stopwords.zip /tmp/wordnet.zip
 
 COPY README.md ./

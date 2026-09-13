@@ -96,6 +96,19 @@ def test_production_api_dockerfile_uses_only_required_reachable_nltk_assets() ->
     assert "/tmp/omw-1.4.zip" not in dockerfile
 
 
+def test_production_jenkins_uses_verified_local_nltk_bundle() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    jenkinsfile = (ROOT / "deploy/jenkins/Jenkinsfile.production").read_text()
+
+    assert "ARG NLTK_ASSETS_MODE=download" in dockerfile
+    assert "COPY .build-cache/nltk_data/ /tmp/nltk-seed/" in dockerfile
+    assert '[ "${NLTK_ASSETS_MODE}" = "cache" ]' in dockerfile
+    assert "nltk.data.find(path)" in dockerfile
+    assert "NLTK_BUNDLE_SHA256" in jenkinsfile
+    assert "sha256sum -c -" in jenkinsfile
+    assert "--build-arg NLTK_ASSETS_MODE=cache" in jenkinsfile
+
+
 def test_jenkins_api_dockerfile_keeps_nltk_layer_independent_from_lockfile() -> None:
     dockerfile = (ROOT / "deploy/jenkins/Dockerfile.api").read_text()
 
