@@ -1,0 +1,235 @@
+name: enerledger-production
+
+x-api-environment: &api-environment
+  APP_ENV: production
+  APP_HOST: 0.0.0.0
+  APP_PORT: 8000
+  DB_HOST: mysql
+  DB_PORT: 3306
+  DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+  ALEMBIC_DATABASE_URL: ${DATABASE_URL:?DATABASE_URL is required}
+  STORAGE_TYPE: minio
+  MINIO_ENDPOINT: minio:9000
+  MINIO_PUBLIC_ENDPOINT: ${MINIO_PUBLIC_ENDPOINT:?MINIO_PUBLIC_ENDPOINT is required}
+  QDRANT_URL: http://qdrant:6333
+  QDRANT_HOST: qdrant
+  QDRANT_PORT: 6333
+  QDRANT_GRPC_PORT: 6334
+  MANTICORE_HOST: manticore
+  MANTICORE_PORT: 9306
+  MQ_VENDOR: rabbitmq
+  RABBITMQ_URL: ${RABBITMQ_URL:?RABBITMQ_URL is required}
+  NLTK_DATA: /app/nltk_data
+  LOG_FILE_ENABLED: "false"
+  PI_SERVICE_BASE_URL: http://pi-agent:8010
+  PI_SERVICE_URL: http://pi-agent:8010
+
+services:
+  mysql:
+    image: "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}/enerledger-mysql:8.0.42"
+    restart: unless-stopped
+    command:
+      - mysqld
+      - --character-set-server=utf8mb4
+      - --collation-server=utf8mb4_unicode_ci
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+      MYSQL_DATABASE: ${DB_NAME:?DB_NAME is required}
+      MYSQL_USER: ${DB_USER:?DB_USER is required}
+      MYSQL_PASSWORD: ${DB_PASSWORD:?DB_PASSWORD is required}
+      TZ: Asia/Shanghai
+    volumes:
+      - mysql-data:/var/lib/mysql
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - mysqladmin ping -h 127.0.0.1 -u"$${MYSQL_USER}" -p"$${MYSQL_PASSWORD}" --silent
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+  minio:
+    image: "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}/enerledger-minio:RELEASE.2025-09-07T16-13-09Z"
+    restart: unless-stopped
+    command: server /data --console-address ":9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_ROOT_PASSWORD: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+    ports:
+      - "${MINIO_BIND_ADDRESS:-127.0.0.1}:${MINIO_API_PORT:-19000}:9000"
+      - "${MINIO_BIND_ADDRESS:-127.0.0.1}:${MINIO_CONSOLE_PORT:-19001}:9001"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://127.0.0.1:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+
+  minio-init:
+    image: "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}/enerledger-minio-mc:RELEASE.2025-08-13T08-35-41Z"
+    restart: "no"
+    depends_on:
+      minio:
+        condition: service_healthy
+    environment:
+      MINIO_ACCESS_KEY: ${MINIO_ACCESS_KEY:?MINIO_ACCESS_KEY is required}
+      MINIO_SECRET_KEY: ${MINIO_SECRET_KEY:?MINIO_SECRET_KEY is required}
+      MINIO_RAW_BUCKET: ${MINIO_RAW_BUCKET:-tolink-rag-raw}
+      MINIO_PRIVATE_BUCKET: ${MINIO_PRIVATE_BUCKET:-tolink-rag-docs}
+    entrypoint:
+      - /bin/sh
+      - -ec
+      - |
+        mc alias set local http://minio:9000 "$${MINIO_ACCESS_KEY}" "$${MINIO_SECRET_KEY}"
+        mc mb --ignore-existing "local/$${MINIO_RAW_BUCKET}"
+        mc mb --ignore-existing "local/$${MINIO_PRIVATE_BUCKET}"
+
+  qdrant:
+    image: "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}/enerledger-qdrant:v1.17.1"
+    restart: unless-stopped
+    volumes:
+      - qdrant-data:/qdrant/storage
+
+  manticore:
+    image: "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}/enerledger-manticore:27.1.5"
+    restart: unless-stopped
+    ulimits:
+      nofile:
+        soft: 65536
+        hard: 65536
+    volumes:
+      - manticore-data:/var/lib/manticore
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:9308/ >/dev/null || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 30
+      start_period: 10s
+
+  rabbitmq:
+    image: "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}/enerledger-rabbitmq:4.1.8-management-alpine"
+    restart: unless-stopped
+    environment:
+      RABBITMQ_DEFAULT_USER: ${RABBITMQ_USER:?RABBITMQ_USER is required}
+      RABBITMQ_DEFAULT_PASS: ${RABBITMQ_PASSWORD:?RABBITMQ_PASSWORD is required}
+      RABBITMQ_DEFAULT_VHOST: ${RABBITMQ_VHOST:?RABBITMQ_VHOST is required}
+    volumes:
+      - rabbitmq-data:/var/lib/rabbitmq
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "-q", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 15s
+
+  pi-agent:
+    image: "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}/enerledger-pi:${RELEASE_SHA:?RELEASE_SHA is required}"
+    restart: unless-stopped
+    env_file: ${PRODUCTION_ENV_FILE:-.env}
+    environment:
+      NODE_ENV: production
+      APP_ENV: production
+      ENERLEDGER_BASE_URL: http://api:8000
+      PI_SERVICE_HOST: 0.0.0.0
+      PI_SERVICE_PORT: 8010
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:8010/health').then(r=>{if(!r.ok)process.exit(1)})"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  api:
+    image: "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}/enerledger-api:${RELEASE_SHA:?RELEASE_SHA is required}"
+    restart: unless-stopped
+    env_file: ${PRODUCTION_ENV_FILE:-.env}
+    environment:
+      <<: *api-environment
+    ports:
+      - "${API_BIND_ADDRESS:-127.0.0.1}:${API_PORT:-18000}:8000"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+      qdrant:
+        condition: service_started
+      manticore:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+      pi-agent:
+        condition: service_healthy
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health/live', timeout=3)
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 45s
+
+  parse-worker:
+    image: "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}/enerledger-api:${RELEASE_SHA:?RELEASE_SHA is required}"
+    restart: unless-stopped
+    stop_grace_period: 6m
+    command: ["python", "-m", "app.workers.document_parse_worker"]
+    env_file: ${PRODUCTION_ENV_FILE:-.env}
+    environment:
+      <<: *api-environment
+      RABBITMQ_PREFETCH_COUNT: ${DOCUMENT_QUEUE_WORKER_CONCURRENCY:-1}
+    depends_on:
+      api:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  report-worker:
+    profiles: ["reports"]
+    image: "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}/enerledger-api:${RELEASE_SHA:?RELEASE_SHA is required}"
+    restart: unless-stopped
+    stop_grace_period: 12m
+    command: ["python", "-m", "app.workers.report_generation_worker"]
+    env_file: ${PRODUCTION_ENV_FILE:-.env}
+    environment:
+      <<: *api-environment
+      REPORT_PROCESSOR_MODE: pi
+      RABBITMQ_PREFETCH_COUNT: ${REPORT_QUEUE_WORKER_CONCURRENCY:-1}
+    depends_on:
+      api:
+        condition: service_healthy
+      pi-agent:
+        condition: service_healthy
+      rabbitmq:
+        condition: service_healthy
+    healthcheck:
+      disable: true
+
+  web:
+    image: "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}/enerledger-web:${RELEASE_SHA:?RELEASE_SHA is required}"
+    restart: unless-stopped
+    ports:
+      - "${WEB_BIND_ADDRESS:-127.0.0.1}:${WEB_PORT:-18080}:80"
+    depends_on:
+      api:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1/health/live"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
+volumes:
+  mysql-data:
+  minio-data:
+  qdrant-data:
+  manticore-data:
+  rabbitmq-data:
