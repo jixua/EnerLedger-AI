@@ -26,4 +26,5 @@ fi
 
 export GHCR_NAMESPACE="$(<"${state_dir}/ghcr_namespace")"
 export RELEASE_SHA="$previous_sha"
+export SKIP_PULL="${SKIP_PULL:-true}"
 "${deploy_root}/bin/deploy.sh" "$deploy_root"
