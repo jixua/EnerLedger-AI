@@ -36,6 +36,12 @@ jobs:
       - name: 同步锁定依赖
         run: uv sync --frozen
 
+      - name: 准备测试所需 NLTK 数据
+        run: >-
+          uv run python -m nltk.downloader
+          -d nltk_data
+          punkt punkt_tab stopwords wordnet omw-1.4
+
       - name: Ruff
         run: uv run ruff check app/api app/domain app/services app/main.py migrations tests
 
