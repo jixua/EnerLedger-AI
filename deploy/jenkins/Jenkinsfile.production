@@ -7,6 +7,8 @@ node {
         env.PRODUCTION_USER = 'deploy'
         env.PRODUCTION_SSH_KEY = '/opt/tolink/jenkins-secrets/enerledger-production/id_ed25519'
         env.PRODUCTION_KNOWN_HOSTS = '/opt/tolink/jenkins-secrets/enerledger-production/known_hosts'
+        env.NLTK_BUNDLE = '/opt/tolink/jenkins-cache/enerledger-nltk/nltk-data-v1.tar.gz'
+        env.NLTK_BUNDLE_SHA256 = 'b2a01515e237cf8746fd659fb66e526b3fba9d6c3d046176de8fdc5035a5040f'
 
         stage('Checkout master') {
             deleteDir()
@@ -36,7 +38,13 @@ node {
         stage('Build immutable application images') {
             sh '''
                 set -eu
+                test -r "$NLTK_BUNDLE"
+                test "$(stat -c '%a' "$NLTK_BUNDLE")" = 600
+                printf '%s  %s\n' "$NLTK_BUNDLE_SHA256" "$NLTK_BUNDLE" | sha256sum -c -
+                mkdir -p .build-cache/nltk_data
+                tar -xzf "$NLTK_BUNDLE" --strip-components=1 -C .build-cache/nltk_data
                 docker build \
+                  --build-arg NLTK_ASSETS_MODE=cache \
                   --label "org.opencontainers.image.revision=$SOURCE_SHA" \
                   --label "org.opencontainers.image.source=https://github.com/jixua/EnerLedger-AI" \
                   -f Dockerfile \
