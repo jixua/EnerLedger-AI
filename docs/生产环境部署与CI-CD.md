@@ -129,7 +129,7 @@ Master 合并或 Jenkins 开始运行都不等于已部署；只有上述验收�
 
 根目录 `Dockerfile` 默认通过阿里云 Debian 镜像安装 LibreOffice、字体等系统依赖，避免 Jenkins 直接访问缓慢的 `deb.debian.org`。如构建节点不在中国大陆，可通过 `DEBIAN_MIRROR` 和 `DEBIAN_SECURITY_MIRROR` build args 覆盖，不能在 Jenkins 工作区临时改写 Dockerfile。
 
-NLTK 构建资产使用 jsDelivr 上四个固定路径的 `punkt`、`punkt_tab`、`stopwords` 和 `wordnet` 压缩包，不再调用会访问 GitHub Raw 的交互式 downloader；当前链路不需要的 `omw-1.4` 不进入镜像。
+NLTK 构建资产使用官方静态站点上四个固定路径的 `punkt`、`punkt_tab`、`stopwords` 和 `wordnet` 压缩包，单文件超时为 900 秒。不再调用会访问 GitHub Raw 的交互式 downloader，也不使用可能重定向到 GitHub Raw 的 jsDelivr；当前链路不需要的 `omw-1.4` 不进入镜像。
 
 ### SSH 输送中断
 
