@@ -56,9 +56,27 @@ def test_api_dockerfile_uses_stable_locked_buildkit_caches(path: str) -> None:
     ) == 2
 
 
-@pytest.mark.parametrize("path", ("Dockerfile", "deploy/jenkins/Dockerfile.api"))
-def test_api_dockerfiles_use_only_required_reachable_nltk_assets(path: str) -> None:
-    dockerfile = (ROOT / path).read_text()
+def test_jenkins_api_dockerfile_uses_only_required_reachable_nltk_assets() -> None:
+    dockerfile = (ROOT / "deploy/jenkins/Dockerfile.api").read_text()
+
+    required_assets = (
+        "packages/tokenizers/punkt.zip",
+        "packages/tokenizers/punkt_tab.zip",
+        "packages/corpora/stopwords.zip",
+        "packages/corpora/wordnet.zip",
+    )
+    for asset in required_assets:
+        assert f"nltk_data@gh-pages/{asset}" in dockerfile
+
+    assert dockerfile.count("--retry-all-errors") == len(required_assets)
+    assert "raw.githubusercontent.com" not in dockerfile
+    assert "gh-proxy.com" not in dockerfile
+    assert "packages/corpora/omw-1.4.zip" not in dockerfile
+    assert "/tmp/omw-1.4.zip" not in dockerfile
+
+
+def test_production_api_dockerfile_uses_only_required_reachable_nltk_assets() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text()
 
     required_assets = (
         "packages/tokenizers/punkt.zip",
