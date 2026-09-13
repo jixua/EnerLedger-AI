@@ -18,13 +18,20 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
     TZ=Asia/Shanghai
 
 ARG UV_VERSION=0.11.14
+ARG DEBIAN_MIRROR=https://mirrors.aliyun.com/debian
+ARG DEBIAN_SECURITY_MIRROR=https://mirrors.aliyun.com/debian-security
 
 COPY --from=java-runtime /opt/java/openjdk /opt/java/openjdk
 
 WORKDIR /app
 
 # OpenCV/OpenDataLoader 运行库、LightGBM OpenMP 运行库以及健康检查工具。
-RUN apt-get update \
+# 国内 Jenkins 默认使用可覆盖的 Debian 镜像，避免官方源跨境链路拖慢构建。
+RUN sed -i \
+        -e "s|http://deb.debian.org/debian-security|${DEBIAN_SECURITY_MIRROR}|g" \
+        -e "s|http://deb.debian.org/debian|${DEBIAN_MIRROR}|g" \
+        /etc/apt/sources.list.d/debian.sources \
+    && apt-get update \
     && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
@@ -59,11 +66,28 @@ RUN --mount=type=cache,id=enerledger-uv,target=/root/.cache/uv,sharing=locked \
         --requirements /tmp/requirements.txt \
     && rm -f /tmp/requirements.txt
 
-# infinity-sdk 等分词依赖会读取这些 NLTK 资源。它们位于业务源码层之前，
-# 构建期固化，普通代码修改不会重新下载，运行期也不需要联网。
-RUN python -m nltk.downloader \
-    -d "${NLTK_DATA}" \
-    punkt punkt_tab stopwords wordnet omw-1.4
+# 固定语料独立于 Python 锁文件，依赖升级时继续复用这一镜像层。
+# omw-1.4 只提供多语言 WordNet 映射，当前解析链路不使用；不要为了它依赖
+# 构建机不可达的 GitHub Raw 地址。
+RUN mkdir -p "${NLTK_DATA}/tokenizers" "${NLTK_DATA}/corpora" \
+    && curl -fsSL \
+        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 120 \
+        -o /tmp/punkt.zip \
+        https://cdn.jsdelivr.net/gh/nltk/nltk_data@gh-pages/packages/tokenizers/punkt.zip \
+    && curl -fsSL \
+        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 120 \
+        -o /tmp/punkt_tab.zip \
+        https://cdn.jsdelivr.net/gh/nltk/nltk_data@gh-pages/packages/tokenizers/punkt_tab.zip \
+    && curl -fsSL \
+        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 120 \
+        -o /tmp/stopwords.zip \
+        https://cdn.jsdelivr.net/gh/nltk/nltk_data@gh-pages/packages/corpora/stopwords.zip \
+    && curl -fsSL \
+        --retry 5 --retry-all-errors --connect-timeout 10 --max-time 120 \
+        -o /tmp/wordnet.zip \
+        https://cdn.jsdelivr.net/gh/nltk/nltk_data@gh-pages/packages/corpora/wordnet.zip \
+    && python -c "import zipfile; [zipfile.ZipFile('/tmp/' + name + '.zip').extractall('${NLTK_DATA}/' + target) for name, target in [('punkt', 'tokenizers'), ('punkt_tab', 'tokenizers'), ('stopwords', 'corpora'), ('wordnet', 'corpora')]]" \
+    && rm -f /tmp/punkt.zip /tmp/punkt_tab.zip /tmp/stopwords.zip /tmp/wordnet.zip
 
 COPY README.md ./
 COPY app ./app

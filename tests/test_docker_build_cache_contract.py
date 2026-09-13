@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
         (
             "Dockerfile",
             "COPY pyproject.toml uv.lock ./",
-            "python -m nltk.downloader",
+            'RUN mkdir -p "${NLTK_DATA}/tokenizers"',
             "COPY app ./app",
         ),
         (
@@ -56,8 +56,9 @@ def test_api_dockerfile_uses_stable_locked_buildkit_caches(path: str) -> None:
     ) == 2
 
 
-def test_jenkins_api_dockerfile_uses_only_required_reachable_nltk_assets() -> None:
-    dockerfile = (ROOT / "deploy/jenkins/Dockerfile.api").read_text()
+@pytest.mark.parametrize("path", ("Dockerfile", "deploy/jenkins/Dockerfile.api"))
+def test_api_dockerfiles_use_only_required_reachable_nltk_assets(path: str) -> None:
+    dockerfile = (ROOT / path).read_text()
 
     required_assets = (
         "packages/tokenizers/punkt.zip",
