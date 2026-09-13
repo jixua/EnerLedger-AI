@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import re
 
-
 _MOJIBAKE_HINT = re.compile(r"(?:Ã|Â|â€|æ|è|å|ç|é|ä|ð|ï¿½|[\x80-\x9f])")
 _CJK = re.compile(r"[\u3400-\u9fff]")
 

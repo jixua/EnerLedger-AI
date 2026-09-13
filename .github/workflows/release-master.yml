@@ -1,0 +1,209 @@
+name: Master 镜像与生产发布
+
+on:
+  push:
+    branches:
+      - master
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: 构建镜像后是否执行生产发布
+        required: true
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+  packages: write
+
+concurrency:
+  group: production-release
+  cancel-in-progress: false
+
+jobs:
+  quality:
+    name: 重用完整质量门禁
+    uses: ./.github/workflows/quality.yml
+
+  images:
+    name: 构建 ${{ matrix.component }} 镜像
+    needs: quality
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: api
+            dockerfile: Dockerfile
+          - component: pi
+            dockerfile: deploy/jenkins/Dockerfile.pi
+          - component: web
+            dockerfile: deploy/production/Dockerfile.frontend
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: 准备镜像命名空间
+        id: image
+        shell: bash
+        run: |
+          namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          echo "namespace=${namespace}" >> "$GITHUB_OUTPUT"
+          echo "name=${namespace}/enerledger-${{ matrix.component }}" >> "$GITHUB_OUTPUT"
+
+      - name: 登录 GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: 创建 Buildx 构建器
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: 构建并推送不可变镜像
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7.3.0
+        with:
+          context: .
+          file: ${{ matrix.dockerfile }}
+          push: true
+          tags: ${{ steps.image.outputs.name }}:${{ github.sha }}
+          labels: |
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}
+          cache-from: type=gha,scope=${{ matrix.component }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.component }}
+
+  middleware-images:
+    name: 同步 ${{ matrix.component }} 固定镜像
+    needs: quality
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - component: mysql
+            source: docker.io/library/mysql@sha256:63823b8e2cbe4ae0c558155e02d00beba56130fbc3d147efccbdb328ae2dbb9e
+            tag: 8.0.42
+          - component: minio
+            source: quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e
+            tag: RELEASE.2025-09-07T16-13-09Z
+          - component: minio-mc
+            source: quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727
+            tag: RELEASE.2025-08-13T08-35-41Z
+          - component: qdrant
+            source: docker.io/qdrant/qdrant@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f
+            tag: v1.17.1
+          - component: manticore
+            source: docker.io/manticoresearch/manticore@sha256:511cfcbe22669e101fdc3818afc6ef709cf659e300f9a83d2cf4291421081228
+            tag: 27.1.5
+          - component: rabbitmq
+            source: docker.io/library/rabbitmq@sha256:eb6736723c5d0831ab12d29e7a2b8ee1082f744370c2a784b50b84b3b4d6d030
+            tag: 4.1.8-management-alpine
+    steps:
+      - name: 登录 GHCR
+        env:
+          GHCR_TOKEN: ${{ github.token }}
+        run: printf '%s' "$GHCR_TOKEN" | docker login ghcr.io -u "$GITHUB_ACTOR" --password-stdin
+
+      - name: 创建 Buildx 构建器
+        uses: docker/setup-buildx-action@37fe631027851001ddb9b187196cc803df7f5f0e # v4.3.0
+
+      - name: 按官方摘要同步到 GHCR
+        shell: bash
+        run: |
+          namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          docker buildx imagetools create \
+            --tag "${namespace}/enerledger-${{ matrix.component }}:${{ matrix.tag }}" \
+            "${{ matrix.source }}"
+
+  deploy:
+    name: SSH 发布生产环境
+    needs:
+      - images
+      - middleware-images
+    if: >-
+      github.ref == 'refs/heads/master' &&
+      vars.PRODUCTION_DEPLOY_ENABLED == 'true' &&
+      (github.event_name == 'push' || inputs.deploy == true)
+    runs-on: ubuntu-24.04
+    environment: production
+    env:
+      DEPLOY_ROOT: /opt/enerledger-ai
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: 校验发布 Secrets
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          SSH_PORT: ${{ secrets.PRODUCTION_SSH_PORT }}
+          SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+        run: |
+          test -n "$SSH_HOST"
+          test -n "$SSH_PORT"
+          test -n "$SSH_USER"
+          test -n "$SSH_PRIVATE_KEY"
+          test -n "$SSH_KNOWN_HOSTS"
+
+      - name: 准备 SSH
+        shell: bash
+        env:
+          SSH_PRIVATE_KEY: ${{ secrets.PRODUCTION_SSH_PRIVATE_KEY }}
+          SSH_KNOWN_HOSTS: ${{ secrets.PRODUCTION_SSH_KNOWN_HOSTS }}
+        run: |
+          install -m 700 -d "$HOME/.ssh"
+          printf '%s\n' "$SSH_PRIVATE_KEY" > "$HOME/.ssh/id_ed25519"
+          printf '%s\n' "$SSH_KNOWN_HOSTS" > "$HOME/.ssh/known_hosts"
+          chmod 600 "$HOME/.ssh/id_ed25519" "$HOME/.ssh/known_hosts"
+
+      - name: 同步发布契约
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          SSH_PORT: ${{ secrets.PRODUCTION_SSH_PORT }}
+          SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        run: |
+          target="${SSH_USER}@${SSH_HOST}"
+          ssh -p "$SSH_PORT" "$target" "mkdir -p '$DEPLOY_ROOT/bin'"
+          scp -P "$SSH_PORT" \
+            deploy/production/docker-compose.yml \
+            "$target:$DEPLOY_ROOT/docker-compose.yml"
+          scp -P "$SSH_PORT" \
+            deploy/production/scripts/deploy.sh \
+            deploy/production/scripts/rollback.sh \
+            deploy/production/scripts/validate-env.sh \
+            deploy/production/scripts/verify.sh \
+            "$target:$DEPLOY_ROOT/bin/"
+          ssh -p "$SSH_PORT" "$target" "chmod 750 '$DEPLOY_ROOT'/bin/*.sh"
+
+      - name: 使用短期令牌拉取并发布
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          SSH_PORT: ${{ secrets.PRODUCTION_SSH_PORT }}
+          SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+          GHCR_TOKEN: ${{ github.token }}
+        run: |
+          target="${SSH_USER}@${SSH_HOST}"
+          namespace="ghcr.io/${GITHUB_REPOSITORY_OWNER,,}"
+          printf '%s' "$GHCR_TOKEN" | \
+            ssh -p "$SSH_PORT" "$target" \
+              "docker login ghcr.io -u '$GITHUB_ACTOR' --password-stdin"
+          ssh -p "$SSH_PORT" "$target" \
+            "GHCR_NAMESPACE='$namespace' RELEASE_SHA='$GITHUB_SHA' '$DEPLOY_ROOT/bin/deploy.sh' '$DEPLOY_ROOT'"
+
+      - name: 清理服务器上的短期 GHCR 令牌
+        if: always()
+        shell: bash
+        env:
+          SSH_HOST: ${{ secrets.PRODUCTION_SSH_HOST }}
+          SSH_PORT: ${{ secrets.PRODUCTION_SSH_PORT }}
+          SSH_USER: ${{ secrets.PRODUCTION_SSH_USER }}
+        run: |
+          if [[ -z "$SSH_HOST" || -z "$SSH_PORT" || -z "$SSH_USER" ]]; then
+            exit 0
+          fi
+          target="${SSH_USER}@${SSH_HOST}"
+          ssh -p "$SSH_PORT" "$target" "docker logout ghcr.io >/dev/null 2>&1 || true"
