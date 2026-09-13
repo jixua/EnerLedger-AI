@@ -59,11 +59,11 @@ jobs:
       - name: 安装锁定依赖
         run: npm ci --prefix frontend --ignore-scripts
 
-      - name: 前端测试
-        run: npm --prefix frontend test
-
       - name: 生产构建
         run: npm --prefix frontend run build
+
+      - name: 前端测试
+        run: npm --prefix frontend test
 
   pi-agent:
     name: Pi Agent
