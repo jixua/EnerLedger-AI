@@ -39,6 +39,10 @@ fi
 
 export GHCR_NAMESPACE RELEASE_SHA
 compose=(docker compose --env-file "$env_file" -f "$compose_file")
+compose_with_profiles=("${compose[@]}")
+if grep -Eq '^COMPOSE_PROFILES=reports([[:space:]]*)$' "$env_file"; then
+  compose_with_profiles+=(--profile reports)
+fi
 
 wait_for_services() {
   local deadline=$((SECONDS + 300))
@@ -96,12 +100,33 @@ wait_for_services() {
   return 1
 }
 
-"${compose[@]}" config --quiet
-"${compose[@]}" pull api parse-worker pi-agent web
-if grep -Eq '^COMPOSE_PROFILES=reports([[:space:]]*)$' "$env_file"; then
-  "${compose[@]}" --profile reports pull report-worker
+"${compose_with_profiles[@]}" config --quiet
+
+skip_pull="${SKIP_PULL:-false}"
+if [[ "$skip_pull" != "true" && "$skip_pull" != "false" ]]; then
+  echo "SKIP_PULL must be true or false" >&2
+  exit 2
 fi
-"${compose[@]}" up -d --no-build
+
+if [[ "$skip_pull" == "true" ]]; then
+  mapfile -t required_images < <(
+    "${compose_with_profiles[@]}" config --images | sort -u
+  )
+  for image in "${required_images[@]}"; do
+    if ! docker image inspect "$image" >/dev/null 2>&1; then
+      echo "Required preloaded image is missing: ${image}" >&2
+      exit 1
+    fi
+  done
+  echo "All production images are preloaded; registry pull skipped."
+else
+  "${compose[@]}" pull api parse-worker pi-agent web
+  if grep -Eq '^COMPOSE_PROFILES=reports([[:space:]]*)$' "$env_file"; then
+    "${compose[@]}" --profile reports pull report-worker
+  fi
+fi
+
+"${compose_with_profiles[@]}" up -d --no-build --pull never
 wait_for_services
 "${deploy_root}/bin/verify.sh" "$deploy_root"
 
