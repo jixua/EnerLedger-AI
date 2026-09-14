@@ -186,6 +186,18 @@ class DocumentAnalysisResult:
     generated_at: datetime
 
 
+@dataclass(frozen=True)
+class DocumentAnalysisSummary:
+    """无需下载报告正文即可展示的已保存分析报告摘要。"""
+
+    model_name: str
+    model_config_id: int
+    analyzed_chunk_count: int
+    evidence_batch_count: int
+    source_count: int
+    generated_at: datetime
+
+
 def _is_derived(record: ChunkRecordDB) -> bool:
     structure = record.structure_metadata
     return bool(
@@ -852,6 +864,41 @@ class DocumentAnalysisStore:
             evidence_batch_count=int(manifest["evidence_batch_count"]),
             generated_at=generated_at,
         )
+
+    async def load_summary(self, *, document: Document) -> DocumentAnalysisSummary:
+        """读取当前文档版本的报告清单元数据，不下载 Markdown 正文。"""
+
+        bucket, analysis_prefix, manifest_key = self._locations(document)
+        manifest = await self._download_manifest(bucket=bucket, manifest_key=manifest_key)
+        try:
+            if int(manifest["schema_version"]) != self._SCHEMA_VERSION:
+                raise ValueError("schema mismatch")
+            if int(manifest["document_id"]) != int(document.id):
+                raise ValueError("document mismatch")
+            if int(manifest["dataset_id"]) != int(document.dataset_id):
+                raise ValueError("dataset mismatch")
+            if int(manifest["document_version"]) != int(document.version):
+                raise DocumentAnalysisNotFoundError("当前文档版本尚未生成分析报告")
+            self._validated_markdown_key(
+                str(manifest["markdown_object_key"]),
+                analysis_prefix=analysis_prefix,
+            )
+            raw_sources = manifest.get("sources", [])
+            if not isinstance(raw_sources, list):
+                raise ValueError("invalid sources")
+            generated_at = datetime.fromisoformat(str(manifest["generated_at"]))
+            return DocumentAnalysisSummary(
+                model_name=str(manifest["model_name"]),
+                model_config_id=int(manifest["model_config_id"]),
+                analyzed_chunk_count=int(manifest["analyzed_chunk_count"]),
+                evidence_batch_count=int(manifest["evidence_batch_count"]),
+                source_count=len(raw_sources),
+                generated_at=generated_at,
+            )
+        except DocumentAnalysisError:
+            raise
+        except (KeyError, TypeError, ValueError) as exc:
+            raise DocumentAnalysisStorageError("MinIO 中的分析报告元数据无效") from exc
 
     async def _load_previous_markdown_key(
         self,

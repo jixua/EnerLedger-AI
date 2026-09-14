@@ -198,33 +198,6 @@ export function getSystemStatus({ signal } = {}) {
   return apiRequest("/api/v1/system/status", { signal });
 }
 
-export function searchArxivPapers(
-  { query, maxResults = 10, datasetId, aiOptimize = true },
-  { signal } = {},
-) {
-  const path = appendQuery("/api/v1/crawler/arxiv", {
-    query: String(query || "").trim(),
-    max_results: maxResults,
-    dataset_id: Number(datasetId),
-    ai_optimize: aiOptimize,
-  });
-  return apiRequest(path, { signal });
-}
-
-export function importArxivPapers(
-  { datasetId, papers },
-  { signal } = {},
-) {
-  return apiRequest("/api/v1/crawler/arxiv/import", {
-    method: "POST",
-    body: {
-      dataset_id: Number(datasetId),
-      papers,
-    },
-    signal,
-  });
-}
-
 export function listCrawlerSubmissions(
   { reviewStatus = "PENDING", offset = 0, limit = 50 } = {},
   { signal } = {},
@@ -239,12 +212,20 @@ export function listCrawlerSubmissions(
 
 export function reviewCrawlerSubmission(
   documentId,
-  { decision, note = null },
+  { decision, datasetId, note = null },
   { signal } = {},
 ) {
   return apiRequest(
     `/api/v1/crawler/submissions/${encodeURIComponent(documentId)}/review`,
-    { method: "POST", body: { decision, note }, signal },
+    {
+      method: "POST",
+      body: {
+        decision,
+        note,
+        ...(datasetId == null ? {} : { dataset_id: Number(datasetId) }),
+      },
+      signal,
+    },
   );
 }
 
@@ -450,6 +431,10 @@ export function getDocumentAnalysis(documentId, { signal } = {}) {
 
 export function getDocumentAnalysisStatus(documentId, { signal } = {}) {
   return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}/analysis/status`, { signal });
+}
+
+export function listDocumentAnalysisReports({ signal } = {}) {
+  return apiRequest("/api/v1/analysis-reports", { signal });
 }
 
 export async function downloadDocumentAnalysisDocx(documentId, { signal } = {}) {

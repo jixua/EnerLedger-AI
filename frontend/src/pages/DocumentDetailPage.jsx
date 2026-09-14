@@ -38,6 +38,7 @@ import {
   remarkDocumentPageMarkers,
 } from "../lib/document-reader";
 import { normalizeDocumentMath } from "../lib/document-math";
+import { hasDocumentPageCount } from "../lib/document-metadata";
 import { documentErrorMessage } from "../lib/text";
 import { useApp } from "../state/AppContext";
 
@@ -455,6 +456,7 @@ export function DocumentDetailPage() {
   const sourceChunkCount = preview
     ? Math.max(Number.isFinite(rawSourceChunkCount) ? rawSourceChunkCount : 0, readerBoundaries.length)
     : null;
+  const displaysPageCount = hasDocumentPageCount(document);
   return (
     <div className="page page--document-detail">
       <header className="document-detail-header">
@@ -462,9 +464,8 @@ export function DocumentDetailPage() {
           <Link className="icon-button" to={`/datasets/${datasetId}`} aria-label="返回数据集"><ArrowLeft size={18} /></Link>
           <span className="document-detail-file-icon" aria-hidden="true"><FileText size={22} /></span>
           <div className="document-detail-header__identity">
-            <p className="eyebrow">文档详情 · {dataset?.name || `数据集 #${datasetId}`}</p>
             <div className="document-detail-title-line"><h1>{document.filename || `文档 #${targetDocumentId}`}</h1><StatusPill document={document} /></div>
-            <p>{String(document.file_type || "").toUpperCase()} · {formatBytes(document.file_size)} · {document.parser_backend || "—"} · 更新于 {formatTime(document.updated_at)}</p>
+            <p>文档详情 · {dataset?.name || `数据集 #${datasetId}`} · {String(document.file_type || "").toUpperCase()} · {formatBytes(document.file_size)} · {document.parser_backend || "—"} · 更新于 {formatTime(document.updated_at)}</p>
           </div>
         </div>
         <div className="document-detail-header__actions">
@@ -478,7 +479,7 @@ export function DocumentDetailPage() {
 
       <section className="document-detail-meta" aria-label="文档解析摘要">
         <span><Layers3 size={14} />{status === "READY" ? (sourceChunkCount === null ? "正在读取正文分片" : `${sourceChunkCount} 个正文分片`) : statusMeta(document).label}</span>
-        <span>{document.page_count == null ? "页数未记录" : `${document.page_count} 页`}</span>
+        {displaysPageCount ? <span>{document.page_count} 页</span> : null}
         <span>{status === "READY" ? `解析耗时 ${formatDuration(document.parse_time_ms)}` : `已尝试 ${Number(document.attempt_count || 0)} 次`}</span>
         <span>版本 v{document.version ?? 1}</span>
       </section>

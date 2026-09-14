@@ -39,6 +39,7 @@ import {
   folderDescendantIds,
   folderPath,
 } from "../lib/folder-tree";
+import { hasDocumentPageCount } from "../lib/document-metadata";
 import { isDocumentRetrievalReady } from "../lib/parse-quality";
 import { mockDocumentFoldersByDataset } from "../lib/mock-data";
 import { documentErrorMessage } from "../lib/text";
@@ -523,7 +524,7 @@ export function DatasetDetailPage() {
       <header className="dataset-detail-header">
         <div className="dataset-detail-header__main">
           <Link className="icon-button" to="/datasets" aria-label="返回数据集列表"><ArrowLeft size={18} /></Link>
-          <div><p className="eyebrow">数据集 #{dataset.id}</p><h1>{dataset.name}</h1>{dataset.description ? <p>{dataset.description}</p> : null}</div>
+          <div><h1>{dataset.name}</h1><p>数据集 #{dataset.id}{dataset.description ? ` · ${dataset.description}` : ""}</p></div>
         </div>
         <div className="dataset-detail-header__actions">
           <Link className="button button--secondary" to="/tasks"><Clock3 size={16} />解析队列</Link>
@@ -589,7 +590,7 @@ export function DatasetDetailPage() {
               {loadingDocuments && datasetDocuments.length === 0 ? (
             <div className="empty-state empty-state--loading"><Loader2 className="spin" size={20} /><p>正在读取文档…</p></div>
           ) : datasetDocuments.length === 0 ? (
-            <div className="empty-state"><FileText size={24} /><h3>还没有文档</h3><p>支持 PDF、DOCX、HTML 和 HTM；PDF 使用 OpenDataLoader 解析。</p><button type="button" className="button button--primary" onClick={() => setUploadOpen(true)}><Upload size={16} />上传文档</button></div>
+            <div className="empty-state"><FileText size={24} /><h3>还没有文档</h3><p>支持 PDF、Word、Markdown 和 HTML；PDF 使用 OpenDataLoader 解析。</p><button type="button" className="button button--primary" onClick={() => setUploadOpen(true)}><Upload size={16} />上传文档</button></div>
           ) : (
             <>
               <div className="document-toolbar">
@@ -618,7 +619,7 @@ export function DatasetDetailPage() {
                         <div className="document-row__identity" role="cell"><span className="file-icon"><FileText size={16} /></span><span><Link className="document-name-link" to={`/datasets/${datasetId}/documents/${id}`}>{document.filename || `文档 #${id}`}</Link><small>{String(document.file_type || "").toUpperCase()} · {formatBytes(document.file_size)} · {folderPath(folders.find((folder) => Number(folder.id) === Number(document.folder_id)), folders)}</small></span></div>
                         <div className="document-row__status" role="cell" data-label="状态"><StatusPill document={document} />{Number(document.attempt_count) > 0 ? <small>尝试 {document.attempt_count} 次</small> : null}</div>
                         <div className="document-row__result" role="cell" data-label="解析结果">
-                          {status === "FAILED" ? <p className="document-error">{documentErrorMessage(document)}</p> : <><strong>{document.chunk_count ?? 0} 个分片 · {document.page_count ?? "—"} 页</strong><small>{status === "READY" ? `耗时 ${formatDuration(document.parse_time_ms)}` : status === "QUEUED" ? `可用时间 ${formatTime(document.available_at || document.queued_at)}` : `开始于 ${formatTime(document.processing_started_at)}`}</small></>}
+                          {status === "FAILED" ? <p className="document-error">{documentErrorMessage(document)}</p> : <><strong>{document.chunk_count ?? 0} 个分片{hasDocumentPageCount(document) ? ` · ${document.page_count} 页` : ""}</strong><small>{status === "READY" ? `耗时 ${formatDuration(document.parse_time_ms)}` : status === "QUEUED" ? `可用时间 ${formatTime(document.available_at || document.queued_at)}` : `开始于 ${formatTime(document.processing_started_at)}`}</small></>}
                         </div>
                         <time className="document-row__time" role="cell" data-label="更新时间">{formatTime(document.updated_at)}</time>
                         <div className="document-row__actions" role="cell" data-label="操作">
@@ -689,7 +690,7 @@ export function DatasetDetailPage() {
           </form>
 
           <aside className="settings-aside">
-            <article className="panel execution-card"><h2>处理方式</h2><dl><div><dt><FileText size={14} />支持格式</dt><dd>PDF、DOCX、HTML、HTM</dd></div><div><dt><Layers3 size={14} />PDF 解析</dt><dd>OpenDataLoader</dd></div><div><dt><Database size={14} />检索索引</dt><dd>关键词 + 稀疏向量 + 稠密向量</dd></div><div><dt><Clock3 size={14} />任务处理</dt><dd>后台解析队列</dd></div></dl></article>
+            <article className="panel execution-card"><h2>处理方式</h2><dl><div><dt><FileText size={14} />支持格式</dt><dd>PDF、Word、Markdown、HTML</dd></div><div><dt><Layers3 size={14} />PDF 解析</dt><dd>OpenDataLoader</dd></div><div><dt><Database size={14} />检索索引</dt><dd>关键词 + 稀疏向量 + 稠密向量</dd></div><div><dt><Clock3 size={14} />任务处理</dt><dd>后台解析队列</dd></div></dl></article>
             <article className="panel danger-zone"><p className="eyebrow">谨慎操作</p><h2>删除数据集</h2><p>只有不包含文档的数据集才能删除。</p><button type="button" className="button button--danger" onClick={handleDeleteDataset} disabled={savingSettings || datasetDocuments.length > 0}><Trash2 size={15} />删除数据集</button>{datasetDocuments.length ? <small>请先删除当前 {datasetDocuments.length} 个文档。</small> : null}</article>
           </aside>
         </section>

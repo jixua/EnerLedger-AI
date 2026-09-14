@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 import time
@@ -336,7 +337,7 @@ def test_output_limits_cover_image_count_bytes_and_whole_directory(tmp_path: Pat
     with pytest.raises(PdfResourceLimitError) as image_error:
         enforce_output_limits(
             output_dir,
-            PdfReliabilityLimits(max_single_image_bytes=30),
+            PdfReliabilityLimits(max_single_output_image_bytes=30),
         )
     assert image_error.value.error_code == "ODL_SINGLE_IMAGE_BYTES_EXCEEDED"
     assert image_error.value.retryable is False
@@ -355,6 +356,56 @@ def test_output_limits_cover_image_count_bytes_and_whole_directory(tmp_path: Pat
         )
     assert file_count_error.value.error_code == "ODL_MAX_OUTPUT_FILES_EXCEEDED"
     assert file_count_error.value.retryable is False
+
+
+@pytest.mark.parametrize(
+    ("original_options", "expected_options"),
+    [
+        ("-Xmx2g", "-Xmx2g -Djava.util.Arrays.useLegacyMergeSort=true"),
+        (None, "-Djava.util.Arrays.useLegacyMergeSort=true"),
+        (
+            "-Djava.util.Arrays.useLegacyMergeSort=true",
+            "-Djava.util.Arrays.useLegacyMergeSort=true",
+        ),
+    ],
+)
+@pytest.mark.parametrize("raises", [False, True])
+def test_odl_worker_applies_legacy_java_sort_without_leaking_environment(
+    monkeypatch: pytest.MonkeyPatch,
+    original_options: str | None,
+    expected_options: str,
+    raises: bool,
+) -> None:
+    observed_options: list[str] = []
+
+    def convert(**_kwargs: object) -> None:
+        observed_options.append(os.environ["JAVA_TOOL_OPTIONS"])
+        if raises:
+            raise RuntimeError("conversion failed")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "opendataloader_pdf",
+        SimpleNamespace(convert=convert),
+    )
+    if original_options is None:
+        monkeypatch.delenv("JAVA_TOOL_OPTIONS", raising=False)
+    else:
+        monkeypatch.setenv("JAVA_TOOL_OPTIONS", original_options)
+    arguments = SimpleNamespace(
+        input="source.pdf",
+        output_dir="output",
+        table_method="default",
+        markdown_with_html=False,
+        page_marker_template="<!-- ODL_PAGE:%page-number% -->",
+        image_dir="output/images",
+    )
+
+    result = reliability_module._run_odl_worker(arguments)
+
+    assert result == (30 if raises else 0)
+    assert observed_options == [expected_options]
+    assert os.environ.get("JAVA_TOOL_OPTIONS") == original_options
 
 
 def test_process_runner_times_out_and_terminates_isolated_process_group(

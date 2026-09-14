@@ -86,16 +86,16 @@ def _run() -> ReportRun:
     )
 
 
-def test_pilot_templates_pass_technical_review_but_are_not_business_active() -> None:
+def test_templates_are_selectable_regardless_of_review_status() -> None:
     registry = ReportTemplateRegistry(_reporting_root())
     templates = {template.report_type: template for template in registry.list()}
 
     assert set(templates) == {f"R{index}" for index in range(1, 8)}
+    assert all(template.to_public_dict()["selectable"] is True for template in templates.values())
     for report_type in ("R1", "R2"):
         template = templates[report_type]
         assert template.review["technical_review"]["status"] == "PASSED"
         assert template.review["business_review"]["status"] == "PENDING"
-        assert template.selectable is False
 
 
 def test_fixture_report_ir_requires_blocking_fields_and_tracks_user_answers() -> None:
@@ -301,15 +301,10 @@ async def test_create_report_freezes_document_template_and_model(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     template = ReportTemplateRegistry(_reporting_root()).get("R2")
-    object.__setattr__(template, "status", "ACTIVE")
-    review = dict(template.review)
-    review["business_review"] = {"status": "APPROVED"}
-    object.__setattr__(template, "review", review)
 
     class Registry:
-        def get(self, report_type, *, require_selectable=False):
+        def get(self, report_type):
             assert report_type == "R2"
-            assert require_selectable is True
             return template
 
     dispatched = []

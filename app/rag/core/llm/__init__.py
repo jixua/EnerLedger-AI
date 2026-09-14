@@ -2,39 +2,42 @@
 多 LLM 接入模块
 """
 
+from app.rag.core.llm.base_provider import BaseProvider
+from app.rag.core.llm.exceptions import (
+    AllProvidersFailedError,
+    AuthenticationError,
+    CircuitBreakerOpenError,
+    ConfigNotFoundError,
+    ConfigurationException,
+    InsufficientBalanceError,
+    InvalidConfigError,
+    InvalidResponseError,
+    LLMException,
+    ProviderConnectionError,
+    ProviderException,
+    PublicLLMError,
+    RateLimitError,
+    TokenLimitExceededError,
+    public_llm_error,
+)
 from app.rag.core.llm.interfaces import (
     CapabilityType,
-    ITextGenerator,
     IEmbedder,
     IReranker,
+    ITextGenerator,
     IVisionProcessor,
 )
-from app.rag.core.llm.exceptions import (
-    LLMException,
-    ProviderException,
-    AuthenticationError,
-    RateLimitError,
-    ProviderConnectionError,
-    InvalidResponseError,
-    ConfigurationException,
-    ConfigNotFoundError,
-    InvalidConfigError,
-    CircuitBreakerOpenError,
-    AllProvidersFailedError,
-    TokenLimitExceededError,
-)
 from app.rag.core.llm.response import (
-    UsageInfo,
-    GenerateResult,
-    StreamChunk,
+    APIResponse,
     EmbeddingResult,
+    GenerateResult,
     RerankItem,
     RerankResult,
-    VisionResult,
+    StreamChunk,
     ToolCallResult,
-    APIResponse,
+    UsageInfo,
+    VisionResult,
 )
-from app.rag.core.llm.base_provider import BaseProvider
 
 __all__ = [
     "CapabilityType",
@@ -45,6 +48,7 @@ __all__ = [
     "LLMException",
     "ProviderException",
     "AuthenticationError",
+    "InsufficientBalanceError",
     "RateLimitError",
     "ProviderConnectionError",
     "InvalidResponseError",
@@ -54,6 +58,8 @@ __all__ = [
     "CircuitBreakerOpenError",
     "AllProvidersFailedError",
     "TokenLimitExceededError",
+    "PublicLLMError",
+    "public_llm_error",
     "UsageInfo",
     "GenerateResult",
     "StreamChunk",

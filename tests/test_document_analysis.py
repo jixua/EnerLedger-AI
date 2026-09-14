@@ -685,6 +685,7 @@ async def test_document_analysis_store_persists_markdown_and_manifest() -> None:
 
     await store.save(document=document, result=result)
     restored = await store.load(document=document)
+    summary = await store.load_summary(document=document)
 
     analysis_prefix = "parsed/11/3/7/versions/v2/attempt-1/analysis"
     assert ("private", f"{analysis_prefix}/latest.json") in storage.objects
@@ -694,6 +695,10 @@ async def test_document_analysis_store_persists_markdown_and_manifest() -> None:
     assert restored.markdown == result.markdown
     assert restored.sources[0].excerpt == "报告期为 2023 年。"
     assert restored.generated_at == result.generated_at
+    assert summary.model_name == "analysis-model"
+    assert summary.source_count == 1
+    assert summary.analyzed_chunk_count == 2
+    assert summary.generated_at == result.generated_at
 
 
 @pytest.mark.asyncio

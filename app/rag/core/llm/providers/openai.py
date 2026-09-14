@@ -11,8 +11,11 @@ import httpx
 from app.rag.core.llm.base_provider import BaseProvider
 from app.rag.core.llm.exceptions import (
     AuthenticationError,
+    InsufficientBalanceError,
+    InvalidResponseError,
     ProviderConnectionError,
     RateLimitError,
+    sanitize_provider_error_message,
 )
 from app.rag.core.llm.interfaces import CapabilityType
 from app.rag.core.llm.providers._sse import iter_sse_json
@@ -36,12 +39,73 @@ class OpenAIClient:
         api_base_url: Optional[str] = None,
         timeout_ms: int = 60000,
         max_retries: int = 3,
+        provider_type: str = "openai",
     ):
         self.api_key = api_key
         self.api_base_url = (api_base_url or "").rstrip("/")
         self.timeout_ms = timeout_ms
         self.max_retries = max_retries
+        self.provider_type = provider_type
         self._http_client: Optional[httpx.AsyncClient] = None
+
+    @staticmethod
+    def _response_error(response: httpx.Response) -> tuple[str, str]:
+        """提取 OpenAI 兼容错误体；上游格式不稳定时安全降级。"""
+
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        error = payload.get("error", payload) if isinstance(payload, dict) else None
+        if isinstance(error, dict):
+            code = str(error.get("code") or error.get("type") or "").strip()
+            message = str(error.get("message") or error.get("msg") or "").strip()
+        elif isinstance(error, str):
+            code = ""
+            message = error
+        else:
+            code = ""
+            message = ""
+        return code, sanitize_provider_error_message(message)
+
+    def _raise_response_error(self, response: httpx.Response) -> None:
+        code, message = self._response_error(response)
+        normalized = f"{code} {message}".lower()
+        insufficient_markers = (
+            "insufficient_balance",
+            "insufficient balance",
+            "insufficient_quota",
+            "insufficient quota",
+            "billing_hard_limit",
+            "credit balance",
+            "余额不足",
+            "额度已用完",
+        )
+        detail = message or code or f"HTTP {response.status_code}"
+        if response.status_code == 402 or any(marker in normalized for marker in insufficient_markers):
+            raise InsufficientBalanceError(
+                message=detail,
+                provider_type=self.provider_type,
+            )
+        if response.status_code == 401:
+            raise AuthenticationError(
+                message=detail,
+                provider_type=self.provider_type,
+            )
+        if response.status_code == 429:
+            raise RateLimitError(
+                message=detail,
+                provider_type=self.provider_type,
+            )
+        if 400 <= response.status_code < 500:
+            raise InvalidResponseError(
+                message=detail,
+                provider_type=self.provider_type,
+            )
+        raise ProviderConnectionError(
+            message=f"模型服务返回 HTTP {response.status_code}",
+            provider_type=self.provider_type,
+        )
 
     async def _get_client(self) -> httpx.AsyncClient:
         """获取或创建 HTTP 客户端"""
@@ -76,7 +140,7 @@ class OpenAIClient:
         if not self.api_base_url:
             raise ProviderConnectionError(
                 message="OpenAI-compatible api_base_url is not configured.",
-                provider_type="openai",
+                provider_type=self.provider_type,
             )
         url = f"{self.api_base_url}{endpoint}"
         headers = {
@@ -89,26 +153,16 @@ class OpenAIClient:
         try:
             response = await client.post(url, json=json, headers=headers)
 
-            if response.status_code == 401:
-                raise AuthenticationError(
-                    message="Invalid API Key",
-                    provider_type="openai",
-                )
-            elif response.status_code == 429:
-                raise RateLimitError(
-                    message="Rate limit exceeded",
-                    provider_type="openai",
-                )
-            elif response.status_code >= 500:
+            if response.status_code >= 500:
                 if retry_count < self.max_retries:
                     # 服务器错误，重试。必须 return：否则重试结果被丢弃，控制流落到下方
                     # response.raise_for_status() 对原始 5xx 抛错，把可恢复的 5xx 变成硬失败。
                     return await self._post(endpoint, json, retry_count + 1)
                 else:
-                    raise ProviderConnectionError(
-                        message=f"OpenAI API error: {response.status_code}",
-                        provider_type="openai",
-                    )
+                    self._raise_response_error(response)
+
+            if response.status_code >= 400:
+                self._raise_response_error(response)
 
             response.raise_for_status()
             return response.json()
@@ -116,13 +170,13 @@ class OpenAIClient:
         except httpx.TimeoutException:
             raise ProviderConnectionError(
                 message="Request timeout",
-                provider_type="openai",
-            )
+                provider_type=self.provider_type,
+            ) from None
         except httpx.ConnectError:
             raise ProviderConnectionError(
                 message="Connection failed",
-                provider_type="openai",
-            )
+                provider_type=self.provider_type,
+            ) from None
 
     async def chat_completions(
         self,
@@ -185,7 +239,7 @@ class OpenAIClient:
         if not self.api_base_url:
             raise ProviderConnectionError(
                 message="OpenAI-compatible api_base_url is not configured.",
-                provider_type="openai",
+                provider_type=self.provider_type,
             )
         url = self.api_base_url  # 完整端点 URL，不拼后缀
         headers = {
@@ -198,20 +252,19 @@ class OpenAIClient:
             async with client.stream("POST", url, json=payload, headers=headers) as response:
                 if response.status_code >= 400:
                     await response.aread()
-                    if response.status_code == 401:
-                        raise AuthenticationError(message="Invalid API Key", provider_type="openai")
-                    if response.status_code == 429:
-                        raise RateLimitError(message="Rate limit exceeded", provider_type="openai")
-                    raise ProviderConnectionError(
-                        message=f"OpenAI API error: {response.status_code}",
-                        provider_type="openai",
-                    )
+                    self._raise_response_error(response)
                 async for chunk in iter_sse_json(response):
                     yield chunk
         except httpx.TimeoutException:
-            raise ProviderConnectionError(message="Request timeout", provider_type="openai")
+            raise ProviderConnectionError(
+                message="Request timeout",
+                provider_type=self.provider_type,
+            ) from None
         except httpx.ConnectError:
-            raise ProviderConnectionError(message="Connection failed", provider_type="openai")
+            raise ProviderConnectionError(
+                message="Connection failed",
+                provider_type=self.provider_type,
+            ) from None
 
     async def embeddings(self, model: str, input: Union[str, List[str]], **kwargs) -> dict:
         """调用 Embeddings API
@@ -280,6 +333,7 @@ class OpenAICompatibleProvider(BaseProvider):
             api_base_url=self.api_base_url,
             timeout_ms=timeout_ms,
             max_retries=max_retries,
+            provider_type=self.provider_type,
         )
 
     async def generate(
