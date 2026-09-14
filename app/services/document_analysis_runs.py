@@ -11,7 +11,11 @@ from uuid import uuid4
 from sqlalchemy import select
 
 from app.domain.models import Dataset, Document
-from app.rag.core.llm.exceptions import LLMConfigResolutionError
+from app.rag.core.llm.exceptions import (
+    LLMConfigResolutionError,
+    ProviderException,
+    public_llm_error,
+)
 from app.rag.database import get_db_context
 from app.rag.observability.logging import logger, safe_exception_stack, truncate_log_value
 from app.services.document_analysis import (
@@ -184,6 +188,22 @@ class DocumentAnalysisRunManager:
             run.stage = "FAILED"
             run.error_code = getattr(exc, "code", "DOCUMENT_ANALYSIS_FAILED")
             run.error_message = str(exc)
+        except ProviderException as exc:
+            failure = public_llm_error(exc)
+            run.state = RUN_STATE_FAILED
+            run.stage = "FAILED"
+            run.error_code = failure.code
+            run.error_message = failure.message
+            logger.bind(
+                event="document_analysis_provider_failed",
+                document_id=run.document_id,
+                dataset_id=run.dataset_id,
+                provider_type=getattr(exc, "provider_type", "") or "",
+                public_error_code=failure.code,
+                retryable=failure.retryable,
+                error_type=type(exc).__name__,
+                error_message=truncate_log_value(exc),
+            ).warning("后台企业文档分析的模型调用失败")
         except TimeoutError:
             run.state = RUN_STATE_FAILED
             run.stage = "FAILED"

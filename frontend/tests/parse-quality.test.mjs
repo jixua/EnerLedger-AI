@@ -181,6 +181,13 @@ const documentDetailSource = await readFile(new URL("../src/pages/DocumentDetail
 const tasksSource = await readFile(new URL("../src/pages/TasksPage.jsx", import.meta.url), "utf8");
 const playgroundSource = await readFile(new URL("../src/pages/PlaygroundPage.jsx", import.meta.url), "utf8");
 
+test("dataset totals and search share one compact toolbar with search on the right", () => {
+  assert.match(datasetListSource, /<section className="knowledge-toolbar"[\s\S]*className="knowledge-toolbar__stats"[\s\S]*className="search-field"/);
+  assert.match(datasetListSource, /libraryStats\.documents/);
+  assert.match(datasetListSource, /libraryStats\.searchable/);
+  assert.doesNotMatch(datasetListSource, /knowledge-hero__stats/);
+});
+
 test("dataset create and settings send the optional VISION binding with reparse guidance", () => {
   assert.match(datasetListSource, /modelCapability\(model\) === 'VISION'/);
   assert.match(datasetListSource, /vision_config_id: form\.vision_config_id \? Number\(form\.vision_config_id\) : null/);
@@ -203,12 +210,24 @@ test("quality diagnostics never block READY documents or add a detail-page banne
   assert.match(playgroundSource, /isDocumentRetrievalReady\(document\)/);
 });
 
-test("the primary conversation page switches between original RAG and Pi Agent", () => {
-  assert.match(playgroundSource, /streamAgent, streamRag/);
-  assert.match(playgroundSource, /conversationMode/);
-  assert.match(playgroundSource, /chat-mode-switch/);
-  assert.match(playgroundSource, /普通对话/);
-  assert.match(playgroundSource, /智能体/);
-  assert.match(playgroundSource, /const stream = conversationMode === "agent" \? streamAgent : streamRag/);
+test("parse queue only presents progress supported by the document lifecycle contract", () => {
+  assert.match(tasksSource, /document\.processing_started_at/);
+  assert.match(tasksSource, /document\.queued_at/);
+  assert.match(tasksSource, /document\.parse_time_ms/);
+  assert.match(tasksSource, /document\.error_code/);
+  assert.match(tasksSource, /document\.chunk_count/);
+  assert.match(tasksSource, /document\.page_count/);
+  assert.match(tasksSource, /每 \$\{DOCUMENT_POLL_INTERVAL_MS \/ 1000\} 秒自动更新/);
+  assert.doesNotMatch(tasksSource, /progress_percent|queue_position|estimated_time|current_stage/);
+});
+
+test("the primary conversation page always uses Pi Agent", () => {
+  assert.match(playgroundSource, /streamAgent/);
+  assert.match(playgroundSource, /await streamAgent\(/);
+  assert.doesNotMatch(playgroundSource, /streamRag/);
+  assert.doesNotMatch(playgroundSource, /conversationMode/);
+  assert.doesNotMatch(playgroundSource, /chat-mode-switch/);
+  assert.doesNotMatch(playgroundSource, /普通对话/);
   assert.match(playgroundSource, /全部知识库/);
+  assert.match(playgroundSource, /const showModelSelector = needsExplicitModel && chatModels\.length > 1/);
 });

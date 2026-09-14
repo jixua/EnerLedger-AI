@@ -9,6 +9,7 @@ import pytest
 
 import app.services.document_analysis_runs as runs_module
 from app.domain.models import Dataset, Document
+from app.rag.core.llm.exceptions import InsufficientBalanceError
 from app.rag.core.llm.response import UsageInfo
 from app.services.document_analysis import DocumentAnalysisResult
 from app.services.document_analysis_runs import DocumentAnalysisRunManager
@@ -104,3 +105,35 @@ async def test_background_run_is_deduplicated_and_completes_after_start_returns(
     assert status.stage == "COMPLETED"
     assert status.finished_at is not None
     assert len(saved) == 1
+
+
+@pytest.mark.asyncio
+async def test_background_run_exposes_insufficient_model_balance(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    document = _document()
+
+    @asynccontextmanager
+    async def fake_db_context():
+        yield _Session([document, _dataset()])
+
+    class Service:
+        async def analyze(self, **_kwargs):
+            raise InsufficientBalanceError(
+                message="Insufficient Balance",
+                provider_type="deepseek",
+            )
+
+    monkeypatch.setattr(runs_module, "get_db_context", fake_db_context)
+    monkeypatch.setattr(runs_module, "DocumentAnalysisService", Service)
+
+    manager = DocumentAnalysisRunManager()
+    run = await manager.start(document=document, llm_config_id=None)
+    task = next(iter(manager._tasks))
+    await task
+
+    assert run.state == "FAILED"
+    assert run.error_code == "LLM_INSUFFICIENT_BALANCE"
+    assert "DeepSeek" in run.error_message
+    assert "余额不足" in run.error_message
+    assert "充值或更换可用模型" in run.error_message

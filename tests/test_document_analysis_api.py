@@ -13,10 +13,16 @@ from app.api.document_analysis import (
     download_document_analysis_docx,
     get_document_analysis,
     get_document_analysis_status,
+    list_document_analysis_reports,
 )
 from app.domain.models import Document
 from app.rag.core.llm.response import UsageInfo
-from app.services.document_analysis import DocumentAnalysisResult
+from app.services.document_analysis import (
+    DocumentAnalysisNotFoundError,
+    DocumentAnalysisResult,
+    DocumentAnalysisStorageError,
+    DocumentAnalysisSummary,
+)
 
 
 class _Session:
@@ -25,6 +31,22 @@ class _Session:
 
     async def scalar(self, _statement):
         return self.scalar_values.popleft()
+
+
+class _Rows:
+    def __init__(self, values):
+        self.values = values
+
+    def all(self):
+        return self.values
+
+
+class _ListSession:
+    def __init__(self, values):
+        self.values = values
+
+    async def execute(self, _statement):
+        return _Rows(self.values)
 
 
 def _document(status: str = "READY") -> Document:
@@ -193,3 +215,40 @@ async def test_analysis_api_rejects_document_before_ready() -> None:
 
     assert raised.value.status_code == 409
     assert raised.value.detail["code"] == "DOCUMENT_ANALYSIS_NOT_READY"
+
+
+@pytest.mark.asyncio
+async def test_analysis_report_index_lists_saved_reports_and_counts_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    generated_at = datetime(2026, 8, 20, tzinfo=UTC)
+    documents = [_document(), _document(), _document()]
+    for document_id, document in enumerate(documents, start=7):
+        document.id = document_id
+
+    class Store:
+        async def load_summary(self, *, document):
+            if document.id == 8:
+                raise DocumentAnalysisNotFoundError("not generated")
+            if document.id == 9:
+                raise DocumentAnalysisStorageError("broken manifest")
+            return DocumentAnalysisSummary(
+                model_name="chat-model",
+                model_config_id=3,
+                analyzed_chunk_count=4,
+                evidence_batch_count=1,
+                source_count=2,
+                generated_at=generated_at,
+            )
+
+    monkeypatch.setattr(api_module, "DocumentAnalysisStore", Store)
+    response = await list_document_analysis_reports(
+        user_id=11,
+        db=_ListSession([(document, "企业材料") for document in documents]),
+    )
+
+    assert response.total == 1
+    assert response.unavailable_count == 1
+    assert response.items[0].document_id == 7
+    assert response.items[0].dataset_name == "企业材料"
+    assert response.items[0].source_count == 2

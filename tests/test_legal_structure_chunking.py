@@ -216,3 +216,47 @@ async def test_semantic_stage_falls_back_to_deterministic_packing_when_embedding
     assert all(tokenizer.count_tokens(chunk.content.strip()) <= 40 for chunk in final_set.chunks)
     assert final_set.metadata["semantic_fallback"] is True
     assert final_set.metadata["semantic_fallback_reason"] == "RuntimeError"
+
+
+@pytest.mark.asyncio
+async def test_semantic_stage_preserves_exact_lines_for_line_aligned_fallback() -> None:
+    tokenizer = _LengthTokenizer()
+    markdown = "\n".join(f"第 {index} 行内容足够长" for index in range(1, 13))
+    coarse_set = CandidateBoundaryChunker(
+        tokenizer=tokenizer,
+        min_candidate_chunk_tokens=1000,
+    ).run(_split_input(markdown))
+    final_set = await SemanticDepthWindowStageTwo(
+        tokenizer=tokenizer,
+        embedder=None,
+        max_chunk_tokens=30,
+        hard_max_tokens=40,
+        min_chunk_tokens=10,
+        semantic_scoring=False,
+    ).run(coarse_set)
+
+    assert len(final_set.chunks) > 1
+    spans = [(chunk.start_line, chunk.end_line) for chunk in final_set.chunks]
+    assert spans == sorted(spans)
+    assert len(set(spans)) == len(spans)
+    assert all(chunk.metadata.get("line_span_approx") is not True for chunk in final_set.chunks)
+
+
+@pytest.mark.asyncio
+async def test_semantic_stage_marks_mid_line_fallback_as_approximate() -> None:
+    tokenizer = _LengthTokenizer()
+    coarse_set = CandidateBoundaryChunker(
+        tokenizer=tokenizer,
+        min_candidate_chunk_tokens=1000,
+    ).run(_split_input("这是一个没有换行但必须按句子继续切分的很长段落。" * 12))
+    final_set = await SemanticDepthWindowStageTwo(
+        tokenizer=tokenizer,
+        embedder=None,
+        max_chunk_tokens=30,
+        hard_max_tokens=40,
+        min_chunk_tokens=10,
+        semantic_scoring=False,
+    ).run(coarse_set)
+
+    assert len(final_set.chunks) > 1
+    assert any(chunk.metadata.get("line_span_approx") is True for chunk in final_set.chunks)

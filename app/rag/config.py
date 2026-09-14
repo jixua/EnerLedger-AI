@@ -103,6 +103,8 @@ class Settings(BaseSettings):
     )
     ADMIN_USERNAME: str = "root"
     ADMIN_PASSWORD_HASH: str = ""
+    REVIEWER_USERNAME: str = "reviewer"
+    REVIEWER_PASSWORD_HASH: str = ""
     JWT_SECRET: str = ""
     JWT_ISSUER: str = "energy-carbon-rag"
     JWT_AUDIENCE: str = "energy-carbon-web"
@@ -637,6 +639,7 @@ class Settings(BaseSettings):
     # 解析任务源文件临时落盘目录：流式下载在此创建临时文件，markdown 拿到后立即清理；
     # worker 启动时由 src/main.py lifespan 调用 temp_workspace.ensure_clean_on_startup 清空兜底。
     PARSE_TEMP_DIR: str = "/tmp/tolink-rag-parse"
+    STRUCTURED_DATA_CACHE_DIR: str = "/tmp/tolink-rag-structured-cache"
 
     STORAGE_TYPE: str = "minio"  # minio / local
     DOCUMENT_UPLOAD_MAX_BYTES: int = Field(default=128 * 1024 * 1024, gt=0)
@@ -725,6 +728,7 @@ class Settings(BaseSettings):
         ge=1,
     )
     PDF_MAX_SINGLE_IMAGE_BYTES: int = Field(default=20 * 1024 * 1024, ge=1)
+    PDF_MAX_SINGLE_OUTPUT_IMAGE_BYTES: int = Field(default=32 * 1024 * 1024, ge=1)
     PDF_MAX_TOTAL_IMAGE_BYTES: int = Field(default=200 * 1024 * 1024, ge=1)
     PDF_MAX_OUTPUT_FILES: int = Field(default=10_000, ge=1)
     PDF_MAX_OUTPUT_DIR_BYTES: int = Field(default=500 * 1024 * 1024, ge=1)
@@ -762,6 +766,13 @@ class Settings(BaseSettings):
             raise ValueError("ADMIN_USERNAME must not be empty")
         if not self.ADMIN_PASSWORD_HASH.startswith("scrypt:"):
             raise ValueError("ADMIN_PASSWORD_HASH must be a generated scrypt hash")
+        if self.REVIEWER_PASSWORD_HASH:
+            if not self.REVIEWER_USERNAME.strip():
+                raise ValueError("REVIEWER_USERNAME must not be empty when reviewer is enabled")
+            if self.REVIEWER_USERNAME == self.ADMIN_USERNAME:
+                raise ValueError("REVIEWER_USERNAME must differ from ADMIN_USERNAME")
+            if not self.REVIEWER_PASSWORD_HASH.startswith("scrypt:"):
+                raise ValueError("REVIEWER_PASSWORD_HASH must be a generated scrypt hash")
         if self.DOCUMENT_QUEUE_HEARTBEAT_SECONDS >= self.DOCUMENT_QUEUE_LEASE_SECONDS:
             raise ValueError(
                 "DOCUMENT_QUEUE_HEARTBEAT_SECONDS must be less than DOCUMENT_QUEUE_LEASE_SECONDS"

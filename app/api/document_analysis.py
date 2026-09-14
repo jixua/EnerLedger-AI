@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime
 from io import BytesIO
 from pathlib import Path
@@ -14,19 +15,24 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
-from app.domain.models import Document
+from app.domain.models import Dataset, Document
 from app.rag.core.llm.response import UsageInfo
 from app.rag.database import get_db
 from app.services.document_analysis import (
     DocumentAnalysisError,
+    DocumentAnalysisNotFoundError,
     DocumentAnalysisResult,
     DocumentAnalysisStore,
+    DocumentAnalysisSummary,
 )
 from app.services.document_analysis_docx import build_document_analysis_docx
 from app.services.document_analysis_runs import document_analysis_run_manager
 from app.services.document_queue import DOCUMENT_STATUS_READY
 
 router = APIRouter(prefix="/api/v1/documents", tags=["文档分析"])
+report_index_router = APIRouter(prefix="/api/v1/analysis-reports", tags=["文档分析"])
+
+_REPORT_INDEX_CONCURRENCY = 12
 
 
 class DocumentAnalysisRequest(BaseModel):
@@ -73,6 +79,26 @@ class DocumentAnalysisRunResponse(BaseModel):
     error_message: str | None
 
 
+class DocumentAnalysisReportListItem(BaseModel):
+    document_id: int
+    dataset_id: int
+    dataset_name: str
+    document_version: int
+    filename: str
+    model_name: str
+    model_config_id: int
+    analyzed_chunk_count: int
+    evidence_batch_count: int
+    source_count: int
+    generated_at: datetime
+
+
+class DocumentAnalysisReportListResponse(BaseModel):
+    items: list[DocumentAnalysisReportListItem]
+    total: int
+    unavailable_count: int
+
+
 def _analysis_response(document: Document, result: DocumentAnalysisResult) -> dict:
     return {
         "document_id": document.id,
@@ -106,6 +132,89 @@ async def _ready_document(document_id: int, user_id: int, db: AsyncSession) -> D
             },
         )
     return document
+
+
+async def _load_report_list_item(
+    *,
+    document: Document,
+    dataset_name: str,
+    store: DocumentAnalysisStore,
+    semaphore: asyncio.Semaphore,
+) -> tuple[DocumentAnalysisReportListItem | None, bool]:
+    async with semaphore:
+        try:
+            summary: DocumentAnalysisSummary = await store.load_summary(document=document)
+        except DocumentAnalysisNotFoundError:
+            return None, False
+        except DocumentAnalysisError:
+            return None, True
+    return (
+        DocumentAnalysisReportListItem(
+            document_id=int(document.id),
+            dataset_id=int(document.dataset_id),
+            dataset_name=dataset_name,
+            document_version=int(document.version),
+            filename=document.filename,
+            model_name=summary.model_name,
+            model_config_id=summary.model_config_id,
+            analyzed_chunk_count=summary.analyzed_chunk_count,
+            evidence_batch_count=summary.evidence_batch_count,
+            source_count=summary.source_count,
+            generated_at=summary.generated_at,
+        ),
+        False,
+    )
+
+
+@report_index_router.get("", response_model=DocumentAnalysisReportListResponse)
+async def list_document_analysis_reports(
+    user_id: int = Depends(get_user_id),
+    db: AsyncSession = Depends(get_db),
+) -> DocumentAnalysisReportListResponse:
+    """汇总当前用户仍可读取的文档分析报告。"""
+
+    rows = (
+        await db.execute(
+            select(Document, Dataset.name)
+            .join(Dataset, Dataset.id == Document.dataset_id)
+            .where(
+                Document.user_id == user_id,
+                Document.status == DOCUMENT_STATUS_READY,
+                Dataset.user_id == user_id,
+                Dataset.status == "ACTIVE",
+            )
+            .order_by(Document.id.asc())
+        )
+    ).all()
+    store = DocumentAnalysisStore()
+    semaphore = asyncio.Semaphore(_REPORT_INDEX_CONCURRENCY)
+    loaded = await asyncio.gather(
+        *(
+            _load_report_list_item(
+                document=document,
+                dataset_name=dataset_name,
+                store=store,
+                semaphore=semaphore,
+            )
+            for document, dataset_name in rows
+        )
+    )
+    items = [item for item, _ in loaded if item is not None]
+    unavailable_count = sum(1 for _, unavailable in loaded if unavailable)
+    if unavailable_count and not items:
+        raise HTTPException(
+            status_code=502,
+            detail={
+                "code": "DOCUMENT_ANALYSIS_INDEX_UNAVAILABLE",
+                "message": "暂时无法读取分析报告清单，请稍后重试",
+            },
+        )
+    items.sort(key=lambda item: item.generated_at.timestamp(), reverse=True)
+    return DocumentAnalysisReportListResponse(
+        items=items,
+        total=len(items),
+        unavailable_count=unavailable_count,
+    )
 
 
 @router.get("/{document_id}/analysis", response_model=DocumentAnalysisResponse)

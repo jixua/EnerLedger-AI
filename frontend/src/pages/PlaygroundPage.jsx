@@ -28,7 +28,6 @@ import { useApp } from "../state/AppContext";
 const SUGGESTED_QUESTIONS = [
   "企业天然气燃烧排放如何核算？",
   "请概括文档中的碳排放数据质量要求。",
-  "产品碳足迹边界应如何确定？",
 ];
 
 const STATUS_COPY = {
@@ -99,8 +98,7 @@ function flattenDocuments(documents) {
 
 export function PlaygroundPage() {
   const location = useLocation();
-  const { datasets = [], models = [], documents = {}, streamAgent, streamRag } = useApp();
-  const [conversationMode, setConversationMode] = useState("agent");
+  const { datasets = [], models = [], documents = {}, streamAgent } = useApp();
   const [selectedDatasetIds, setSelectedDatasetIds] = useState([]);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [question, setQuestion] = useState("");
@@ -130,7 +128,10 @@ export function PlaygroundPage() {
   const activeDatasets = useMemo(
     () => datasets.filter((dataset) => (
       String(dataset.status || "ACTIVE").toUpperCase() !== "DELETED"
-      && retrievalReadyCounts.has(Number(dataset.id))
+      && (
+        retrievalReadyCounts.has(Number(dataset.id))
+        || Number(dataset.retrieval_ready_document_count || 0) > 0
+      )
     )),
     [datasets, retrievalReadyCounts],
   );
@@ -142,9 +143,7 @@ export function PlaygroundPage() {
     () => activeDatasets.filter((dataset) => selectedDatasetIds.includes(String(dataset.id))),
     [activeDatasets, selectedDatasetIds],
   );
-  const effectiveDatasets = conversationMode === "agent" && !selectedDatasetIds.length
-    ? activeDatasets
-    : selectedDatasets;
+  const effectiveDatasets = selectedDatasetIds.length ? selectedDatasets : activeDatasets;
   const boundChatIds = useMemo(
     () => new Set(effectiveDatasets.map((dataset) => dataset.chat_config_id).filter(Boolean).map(String)),
     [effectiveDatasets],
@@ -152,11 +151,12 @@ export function PlaygroundPage() {
   const needsExplicitModel = effectiveDatasets.length > 1
     || effectiveDatasets.some((dataset) => !dataset.chat_config_id)
     || boundChatIds.size > 1;
+  const showModelSelector = needsExplicitModel && chatModels.length > 1;
   const selectedModel = useMemo(
     () => chatModels.find((model) => String(model.id) === String(selectedModelId)) || null,
     [chatModels, selectedModelId],
   );
-  const datasetTriggerLabel = conversationMode === "agent" && !selectedDatasetIds.length
+  const datasetTriggerLabel = !selectedDatasetIds.length
     ? `全部知识库${activeDatasets.length ? `（${activeDatasets.length}）` : ""}`
     : selectedDatasets.length === 1
     ? selectedDatasets[0].name
@@ -164,9 +164,7 @@ export function PlaygroundPage() {
       ? `${selectedDatasets.length} 个数据集`
       : "选择数据集";
   const isRunning = messages.some((message) => message.role === "assistant" && ["recalling", "generating"].includes(message.status));
-  const hasRetrievalScope = conversationMode === "agent"
-    ? activeDatasets.length > 0
-    : selectedDatasetIds.length > 0;
+  const hasRetrievalScope = activeDatasets.length > 0;
   const canSubmit = Boolean(question.trim() && hasRetrievalScope && (!needsExplicitModel || selectedModelId) && !isRunning);
   const sourceMessage = messages.find((message) => message.id === sourceMessageId);
   const sourceHits = sourceMessage?.hits ?? [];
@@ -175,13 +173,10 @@ export function PlaygroundPage() {
   ).length;
 
   useEffect(() => {
-    setSelectedDatasetIds((current) => {
-      const valid = current.filter((id) => activeDatasets.some((dataset) => String(dataset.id) === id));
-      if (valid.length || !activeDatasets.length) return valid;
-      if (conversationMode === "agent") return [];
-      return [String(activeDatasets[0].id)];
-    });
-  }, [activeDatasets, conversationMode]);
+    setSelectedDatasetIds((current) => current.filter(
+      (id) => activeDatasets.some((dataset) => String(dataset.id) === id),
+    ));
+  }, [activeDatasets]);
 
   useEffect(() => {
     if (!new URLSearchParams(location.search).has("new")) return;
@@ -203,8 +198,8 @@ export function PlaygroundPage() {
   }, [chatModels, needsExplicitModel]);
 
   useEffect(() => {
-    if (!needsExplicitModel && openSelector === "model") setOpenSelector(null);
-  }, [needsExplicitModel, openSelector]);
+    if (!showModelSelector && openSelector === "model") setOpenSelector(null);
+  }, [showModelSelector, openSelector]);
 
   useEffect(() => {
     if (!openSelector) return undefined;
@@ -248,15 +243,6 @@ export function PlaygroundPage() {
       : [...current, normalized]);
   }
 
-  function selectConversationMode(mode) {
-    if (isRunning || mode === conversationMode) return;
-    setConversationMode(mode);
-    setOpenSelector(null);
-    if (mode === "rag" && !selectedDatasetIds.length && activeDatasets.length) {
-      setSelectedDatasetIds([String(activeDatasets[0].id)]);
-    }
-  }
-
   function closeSelectorAndRestoreFocus(selector = openSelector) {
     const trigger = selector === "datasets" ? datasetTriggerRef.current : modelTriggerRef.current;
     setOpenSelector(null);
@@ -280,7 +266,7 @@ export function PlaygroundPage() {
         const nextHits = data.hits ?? [];
         return {
           ...message,
-          hits: message.conversationMode === "agent" ? mergeRecallHits(message.hits, nextHits) : nextHits,
+          hits: mergeRecallHits(message.hits, nextHits),
           failedSources: data.failed_sources ?? [],
           retrievalScope: data.scope ?? message.retrievalScope,
           retrievalDetails: data.retrieval ?? message.retrievalDetails,
@@ -314,8 +300,7 @@ export function PlaygroundPage() {
 
   async function submitQuestion(event) {
     event?.preventDefault();
-    const stream = conversationMode === "agent" ? streamAgent : streamRag;
-    if (!canSubmit || typeof stream !== "function") return;
+    if (!canSubmit || typeof streamAgent !== "function") return;
 
     const prompt = question.trim();
     const idBase = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -328,7 +313,6 @@ export function PlaygroundPage() {
       status: "recalling",
       hits: [],
       failedSources: [],
-      conversationMode,
       datasetIds: [...selectedDatasetIds],
       modelId: selectedModelId || null,
     };
@@ -344,11 +328,11 @@ export function PlaygroundPage() {
         .filter((message) => message.content && ["user", "assistant"].includes(message.role))
         .slice(-5)
         .map((message) => ({ role: message.role, content: message.content }));
-      await stream({
+      await streamAgent({
         query: prompt,
         datasetIds: selectedDatasetIds.map(Number),
         llmConfigId: selectedModelId ? Number(selectedModelId) : undefined,
-        ...(conversationMode === "agent" ? { history } : {}),
+        history,
         signal: controller.signal,
         onEvent: handleStreamEvent,
       });
@@ -418,30 +402,6 @@ export function PlaygroundPage() {
       />
       <div className="chat-composer__toolbar">
         <div className="chat-composer__controls" ref={controlsRef}>
-          <div className="chat-mode-switch" role="group" aria-label="对话模式">
-            <button
-              type="button"
-              className={conversationMode === "rag" ? "is-active" : ""}
-              aria-pressed={conversationMode === "rag"}
-              disabled={isRunning}
-              onClick={() => selectConversationMode("rag")}
-              title="使用原有固定 RAG 流程进行召回和回答"
-            >
-              <Search size={14} />
-              普通对话
-            </button>
-            <button
-              type="button"
-              className={conversationMode === "agent" ? "is-active" : ""}
-              aria-pressed={conversationMode === "agent"}
-              disabled={isRunning}
-              onClick={() => selectConversationMode("agent")}
-              title="由 Pi Agent 分析意图并按需调用知识库工具"
-            >
-              <Sparkles size={14} />
-              智能体
-            </button>
-          </div>
           <div className={`composer-selector composer-selector--datasets${openSelector === "datasets" ? " is-open" : ""}`}>
             <button
               ref={datasetTriggerRef}
@@ -470,7 +430,7 @@ export function PlaygroundPage() {
                   <span>{selectedDatasetIds.length} / {activeDatasets.length}</span>
                 </header>
                 <div className="composer-selector__options">
-                  {conversationMode === "agent" && activeDatasets.length ? (
+                  {activeDatasets.length ? (
                     <button
                       type="button"
                       className={`composer-selector__option${!selectedDatasetIds.length ? " is-selected" : ""}`}
@@ -498,14 +458,14 @@ export function PlaygroundPage() {
                   }) : <p className="composer-selector__empty">暂无可用数据集</p>}
                 </div>
                 <footer className="composer-selector__footer">
-                  <span>{conversationMode === "agent" && !selectedDatasetIds.length ? "已使用全部知识库" : `已选择 ${selectedDatasetIds.length} 个`}</span>
+                  <span>{!selectedDatasetIds.length ? "已使用全部知识库" : `已选择 ${selectedDatasetIds.length} 个`}</span>
                   <button type="button" onClick={() => closeSelectorAndRestoreFocus("datasets")}>完成</button>
                 </footer>
               </div>
             ) : null}
           </div>
 
-          {needsExplicitModel ? (
+          {showModelSelector ? (
             <div className={`composer-selector composer-selector--model${openSelector === "model" ? " is-open" : ""}`}>
               <button
                 ref={modelTriggerRef}
@@ -577,8 +537,6 @@ export function PlaygroundPage() {
       </div>
       {!activeDatasets.length ? (
         <p className="composer-warning composer-warning--action">开始对话前，请先<Link to="/datasets">创建数据集并上传文档</Link>。</p>
-      ) : conversationMode === "rag" && !selectedDatasetIds.length ? (
-        <p className="composer-warning">请至少选择一个数据集。</p>
       ) : needsExplicitModel && !chatModels.length ? (
         <p className="composer-warning composer-warning--action">开始对话前，请先<Link to="/models">配置可用的对话模型</Link>。</p>
       ) : needsExplicitModel && !selectedModelId ? <p className="composer-warning">请选择用于本次对话的模型。</p> : null}
@@ -589,10 +547,6 @@ export function PlaygroundPage() {
     <div className={`conversation-page${messages.length ? " conversation-page--active" : ""}`}>
       {!messages.length ? (
         <main className="conversation-empty">
-          <div className="conversation-empty__intro">
-            <h1>把碳知识库<br />变成会回答问题的专家</h1>
-            <p>AI 检索政策、标准与核算资料，生成有依据的答案，并回溯原文片段和页码。</p>
-          </div>
           <div className="conversation-empty__composer">{composer}</div>
           <div className="chat-suggestions" aria-label="建议问题">
             {SUGGESTED_QUESTIONS.map((suggestion) => (
@@ -610,7 +564,7 @@ export function PlaygroundPage() {
               </article>
             ) : (
               <article className="chat-message chat-message--assistant" key={message.id}>
-                <div className="chat-message__avatar">{message.conversationMode === "rag" ? <Search size={15} /> : <Sparkles size={15} />}</div>
+                <div className="chat-message__avatar"><Sparkles size={15} /></div>
                 <div className="chat-message__body">
                   {message.status !== "done" ? <div className="chat-message__status">
                     {["recalling", "generating"].includes(message.status) ? <LoaderCircle className="spin" size={14} /> : message.status === "error" ? <CircleAlert size={14} /> : <Check size={14} />}

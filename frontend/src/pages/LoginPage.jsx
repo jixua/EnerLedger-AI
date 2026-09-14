@@ -53,8 +53,8 @@ export function LoginPage() {
           <div><strong>能碳会计</strong><small>AI 智能体</small></div>
         </header>
         <div className="login-heading">
-          <h1 id="login-title">管理员登录</h1>
-          <p>进入碳知识库与文档解析工作台。</p>
+          <h1 id="login-title">账号登录</h1>
+          <p>进入能碳知识与资料审核工作台。</p>
         </div>
         <form onSubmit={submit} className="login-form">
           <label>
@@ -71,7 +71,7 @@ export function LoginPage() {
             {busy ? "正在验证" : "登录"}
           </button>
         </form>
-        <footer>系统未开放自助注册，仅限授权管理员使用。</footer>
+        <footer>系统未开放自助注册，仅限授权账号使用。</footer>
       </section>
     </main>
   );

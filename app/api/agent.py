@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.auth import get_user_id
+from app.domain.auth import get_shared_owner_user_id
 from app.domain.models import Dataset, Document
 from app.rag.application.recall_pipeline_provider import (
     aresolve_recall_execution,
@@ -816,7 +816,7 @@ async def internal_agent_read_section(
 async def agent_stream(
     body: AgentStreamBody,
     request: Request,
-    user_id: int = Depends(get_user_id),
+    user_id: int = Depends(get_shared_owner_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     if not settings.AGENT_ENABLED:

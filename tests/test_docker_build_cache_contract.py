@@ -66,9 +66,11 @@ def test_jenkins_api_dockerfile_uses_only_required_reachable_nltk_assets() -> No
         "packages/corpora/wordnet.zip",
     )
     for asset in required_assets:
-        assert f"nltk_data@gh-pages/{asset}" in dockerfile
+        assert f"https://www.nltk.org/nltk_data/{asset}" in dockerfile
 
     assert dockerfile.count("--retry-all-errors") == len(required_assets)
+    assert dockerfile.count("--max-time 900") == len(required_assets)
+    assert "cdn.jsdelivr.net" not in dockerfile
     assert "raw.githubusercontent.com" not in dockerfile
     assert "gh-proxy.com" not in dockerfile
     assert "packages/corpora/omw-1.4.zip" not in dockerfile
