@@ -41,7 +41,12 @@ node {
         set -eu; . ./.production-images.env
         install -d -m 750 "$DEPLOY_ROOT/bin"
         install -m 640 deploy/production/docker-compose.yml "$DEPLOY_ROOT/docker-compose.yml"
-        install -m 750 deploy/production/scripts/{deploy,rollback,validate-env,verify}.sh "$DEPLOY_ROOT/bin/"
+        install -m 750 \
+          deploy/production/scripts/deploy.sh \
+          deploy/production/scripts/rollback.sh \
+          deploy/production/scripts/validate-env.sh \
+          deploy/production/scripts/verify.sh \
+          "$DEPLOY_ROOT/bin/"
         SKIP_PULL=true GHCR_NAMESPACE="$IMAGE_NAMESPACE" RELEASE_SHA="$SOURCE_SHA" API_RELEASE_SHA="$API_RELEASE_SHA" PI_RELEASE_SHA="$PI_RELEASE_SHA" WEB_RELEASE_SHA="$WEB_RELEASE_SHA" "$DEPLOY_ROOT/bin/deploy.sh" "$DEPLOY_ROOT"
       '''
     }
