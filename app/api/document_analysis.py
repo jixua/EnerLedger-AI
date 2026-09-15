@@ -13,6 +13,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import load_only
 
 from app.domain.auth import get_user_id
 from app.domain.models import Dataset, Document
@@ -176,6 +177,17 @@ async def list_document_analysis_reports(
     rows = (
         await db.execute(
             select(Document, Dataset.name)
+            .options(
+                load_only(
+                    Document.id,
+                    Document.dataset_id,
+                    Document.user_id,
+                    Document.filename,
+                    Document.parsed_bucket,
+                    Document.parsed_object_key,
+                    Document.version,
+                )
+            )
             .join(Dataset, Dataset.id == Document.dataset_id)
             .where(
                 Document.user_id == user_id,
@@ -183,7 +195,6 @@ async def list_document_analysis_reports(
                 Dataset.user_id == user_id,
                 Dataset.status == "ACTIVE",
             )
-            .order_by(Document.id.asc())
         )
     ).all()
     store = DocumentAnalysisStore()

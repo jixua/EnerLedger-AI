@@ -44,8 +44,10 @@ class _Rows:
 class _ListSession:
     def __init__(self, values):
         self.values = values
+        self.statement = None
 
-    async def execute(self, _statement):
+    async def execute(self, statement):
+        self.statement = statement
         return _Rows(self.values)
 
 
@@ -242,9 +244,10 @@ async def test_analysis_report_index_lists_saved_reports_and_counts_unavailable(
             )
 
     monkeypatch.setattr(api_module, "DocumentAnalysisStore", Store)
+    db = _ListSession([(document, "企业材料") for document in documents])
     response = await list_document_analysis_reports(
         user_id=11,
-        db=_ListSession([(document, "企业材料") for document in documents]),
+        db=db,
     )
 
     assert response.total == 1
@@ -252,3 +255,8 @@ async def test_analysis_report_index_lists_saved_reports_and_counts_unavailable(
     assert response.items[0].document_id == 7
     assert response.items[0].dataset_name == "企业材料"
     assert response.items[0].source_count == 2
+
+    compiled_sql = str(db.statement)
+    assert "document.parse_quality" not in compiled_sql
+    assert "document.source_metadata" not in compiled_sql
+    assert "ORDER BY" not in compiled_sql
