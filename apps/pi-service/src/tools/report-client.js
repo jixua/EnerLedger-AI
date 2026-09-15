@@ -42,6 +42,10 @@ export function createEnerLedgerClient(config, runId, runToken, signal) {
       method: "POST",
       body: JSON.stringify({ cursor, limit }),
     }),
+    customTemplateChunks: (cursor = null, limit = 20) => request(`${prefix}/custom-template-chunks`, {
+      method: "POST",
+      body: JSON.stringify({ cursor, limit }),
+    }),
     searchReferences: (query, limit = 10) => request(`${prefix}/references/search`, {
       method: "POST",
       body: JSON.stringify({ query, limit }),

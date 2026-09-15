@@ -181,6 +181,68 @@ class Document(Base):
     )
 
 
+class AgentConversation(Base):
+    """A durable, tenant-owned conversation."""
+
+    __tablename__ = "agent_conversation"
+    __table_args__ = (Index("idx_agent_conversation_user_updated", "user_id", "updated_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    title: Mapped[str] = mapped_column(String(160), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+
+
+class AgentConversationTurn(Base):
+    """One persisted user/assistant round, including attachments and UI actions."""
+
+    __tablename__ = "agent_conversation_turn"
+    __table_args__ = (
+        UniqueConstraint("conversation_id", "turn_index", name="uk_agent_turn_index"),
+        Index("idx_agent_turn_conversation", "conversation_id", "turn_index"),
+        Index("idx_agent_turn_user_created", "user_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    conversation_id: Mapped[str] = mapped_column(String(36), nullable=False)
+    user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    turn_index: Mapped[int] = mapped_column(Integer, nullable=False)
+    user_content: Mapped[str] = mapped_column(Text, nullable=False)
+    assistant_content: Mapped[str | None] = mapped_column(
+        Text().with_variant(mysql.LONGTEXT(), "mysql"), nullable=True
+    )
+    status: Mapped[str] = mapped_column(
+        String(20), nullable=False, default="STREAMING", server_default="STREAMING"
+    )
+    dataset_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
+    document_ids: Mapped[list[int]] = mapped_column(JSON, nullable=False)
+    llm_config_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
+    attachments: Mapped[list[dict[str, Any]]] = mapped_column(JSON, nullable=False)
+    interaction: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    report_run_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
+    error_code: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_message: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+
+
 class ReportRun(Base):
     """A frozen, tenant-owned report-generation execution."""
 
@@ -210,6 +272,11 @@ class ReportRun(Base):
     template_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     model_snapshot: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
     document_manifest: Mapped[dict[str, Any]] = mapped_column(JSON, nullable=False)
+    custom_template_document_id: Mapped[int | None] = mapped_column(
+        UnsignedBigInteger, nullable=True
+    )
+    custom_template_document_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    custom_template_manifest: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     mode: Mapped[str] = mapped_column(
         String(16), nullable=False, default="GENERATE", server_default="GENERATE"
     )

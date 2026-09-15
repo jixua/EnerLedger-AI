@@ -29,6 +29,7 @@ from app.services.report_agent_tokens import issue_report_agent_token
 from app.services.report_ir import build_fixture_report_ir, validate_report_ir
 from app.services.report_queue import ReportRunClaim, ReportRunQueueService
 from app.services.report_source_context import (
+    load_document_chunk_manifest,
     load_report_source_context,
     validate_chunk_coverage,
 )
@@ -157,6 +158,30 @@ class PiReportProcessor:
             )
             error.error_code = "REPORT_DOCUMENT_MANIFEST_CHANGED"
             raise error
+        if run.custom_template_document_id:
+            custom_document = await db.scalar(
+                select(Document).where(
+                    Document.id == run.custom_template_document_id,
+                    Document.user_id == run.user_id,
+                )
+            )
+            expected_custom = run.custom_template_manifest or {}
+            if (
+                custom_document is None
+                or int(custom_document.dataset_id) != int(run.dataset_id)
+                or int(custom_document.version) != int(run.custom_template_document_version or 0)
+            ):
+                error = PiReportProcessorError("冻结的用户模板已经变化", retryable=False)
+                error.error_code = "REPORT_CUSTOM_TEMPLATE_CHANGED"
+                raise error
+            custom_manifest = await load_document_chunk_manifest(db, document=custom_document)
+            if (
+                custom_manifest.content_hash != expected_custom.get("chunk_manifest_sha256")
+                or len(custom_manifest.items) != expected_custom.get("chunk_count")
+            ):
+                error = PiReportProcessorError("冻结的用户模板分片已经变化", retryable=False)
+                error.error_code = "REPORT_CUSTOM_TEMPLATE_CHANGED"
+                raise error
         model = await db.scalar(
             select(LLMModelConfigDB).where(LLMModelConfigDB.id == run.llm_config_id)
         )

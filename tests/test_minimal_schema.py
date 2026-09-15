@@ -10,6 +10,8 @@ from pathlib import Path
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 VERSIONS_DIR = PROJECT_ROOT / "migrations" / "versions"
 CORE_TABLES = {
+    "agent_conversation",
+    "agent_conversation_turn",
     "dataset",
     "document",
     "document_chunk",
@@ -36,6 +38,7 @@ from app.rag.models.db_models import Base
 
 actual = set(Base.metadata.tables)
 expected = {
+    "agent_conversation", "agent_conversation_turn",
     "dataset", "document", "document_chunk", "document_folder", "llm_config",
     "report_run", "report_question", "report_artifact",
     "structured_asset", "structured_asset_alias", "structured_asset_version",
@@ -67,6 +70,7 @@ from app.rag.models.db_models import Base
 
 actual = set(Base.metadata.tables)
 expected = {
+    "agent_conversation", "agent_conversation_turn",
     "dataset", "document", "document_chunk", "document_folder", "llm_config",
     "report_run", "report_question", "report_artifact",
     "structured_asset", "structured_asset_alias", "structured_asset_version",
@@ -101,6 +105,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0009_report_platform_foundation.py",
         "0009_structured_assets.py",
         "0010_structured_report_merge.py",
+        "0011_agent_conversations.py",
     ]
 
     root_revision = runpy.run_path(str(version_files[0]))
@@ -116,6 +121,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     report_revision = runpy.run_path(str(version_files[10]))
     structured_assets_revision = runpy.run_path(str(version_files[11]))
     merge_revision = runpy.run_path(str(version_files[12]))
+    conversation_revision = runpy.run_path(str(version_files[13]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
@@ -151,6 +157,8 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0009_report_platform_foundation",
         "0009_structured_assets",
     )
+    assert conversation_revision["revision"] == "0011_agent_conversations"
+    assert conversation_revision["down_revision"] == "0010_structured_report_merge"
 
 
 def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
@@ -186,6 +194,9 @@ def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
     assert "idx_document_folder_parent" in sql
     assert "alter table llm_config add column supports_tool_calling bool" in sql
     assert "create table report_run" in sql
+    assert "create table agent_conversation" in sql
+    assert "create table agent_conversation_turn" in sql
+    assert "custom_template_manifest json" in sql
     assert "template_snapshot json not null" in sql
     assert "model_snapshot json not null" in sql
     assert "document_manifest json not null" in sql
@@ -194,6 +205,8 @@ def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
     assert "create table structured_asset" in sql
     assert "create table structured_asset_version" in sql
     assert "create table structured_table" in sql
+    assert "create table agent_conversation" in sql
+    assert "create table agent_conversation_turn" in sql
     assert "create table structured_query_audit" in sql
 
     legacy_tables = {

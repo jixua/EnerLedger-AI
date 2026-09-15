@@ -757,10 +757,10 @@ export function AppProvider({ children }) {
     }
   }, [isDemo]);
 
-  const streamAgent = useCallback(async ({ query, datasetIds, llmConfigId, docIds, history, signal, onEvent }) => {
+  const streamAgent = useCallback(async ({ query, datasetIds, llmConfigId, docIds, history, conversationId, attachments, signal, onEvent }) => {
     if (!isDemo) {
       try {
-        return await streamAgentRequest({ query, datasetIds, llmConfigId, docIds, history }, {
+        return await streamAgentRequest({ query, datasetIds, llmConfigId, docIds, history, conversationId, attachments }, {
           signal,
           onEvent: ({ event, data }) => onEvent?.(event, data),
         });
@@ -771,6 +771,26 @@ export function AppProvider({ children }) {
     }
 
     const requestId = `preview-${Date.now()}`;
+    if (attachments?.length) {
+      const previewConversationId = conversationId || "preview-conversation";
+      onEvent?.("conversation_started", { conversation_id: previewConversationId, turn_id: requestId });
+      const answer = "我还不能可靠判断报告类型，请从下面的候选中选择一项后继续。";
+      onEvent?.("answer_delta", { text: answer });
+      onEvent?.("confirmation_required", {
+        interaction: {
+          type: "TEMPLATE_SELECTION",
+          status: "OPEN",
+          question: "当前材料可能对应多类报告，请确认要生成哪一种？",
+          options: [
+            { value: "R2", label: "R2 · 组织温室气体排放清单报告", description: "适合 Scope 1/2/3 年度盘查与组织边界材料。" },
+            { value: "R3", label: "R3 · ESG/可持续发展报告", description: "适合同时包含治理、战略、风险与指标目标的材料。" },
+            { value: "R6", label: "R6 · SBTi 目标设定报告", description: "适合基准年清单、近期目标与净零路径材料。" },
+          ],
+        },
+      });
+      onEvent?.("answer_done", { request_id: requestId, answer, hits: [], failed_sources: [] });
+      return { requestId, answer, hits: [], failedSources: [] };
+    }
     const hits = clone(mockRecallResponse.hits);
     const answer = `根据当前预览资料，企业天然气燃烧排放可按“活动数据 × 排放因子”进行核算。活动数据应优先采用经过校验的计量数据，并统一热值、体积和时间边界。[片段1]\n\n在形成核算结果前，还需要确认组织边界、排放因子来源及其适用年份，并保留原始凭证供追溯。[片段2]`;
     onEvent?.("stream_started", { request_id: requestId });

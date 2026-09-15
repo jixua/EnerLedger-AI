@@ -600,6 +600,24 @@ export function uploadDocument(datasetId, file, { signal, folderId } = {}) {
   );
 }
 
+export function listAgentConversations({ signal, limit = 50 } = {}) {
+  return apiRequest(appendQuery("/api/v1/agent/conversations", { limit }), { signal });
+}
+
+export function listAgentConversationTurns(conversationId, { signal } = {}) {
+  return apiRequest(
+    `/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/turns`,
+    { signal },
+  );
+}
+
+export function confirmAgentTemplateSelection(conversationId, turnId, reportType, { signal } = {}) {
+  return apiRequest(
+    `/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/template-selection`,
+    { method: "POST", body: { report_type: reportType }, signal },
+  );
+}
+
 export function retryDocument(documentId, { signal } = {}) {
   return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}/retry`, {
     method: "POST",

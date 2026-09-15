@@ -15,12 +15,15 @@ import {
   isDocumentPreviewAssetUrl,
   listDocumentChunks,
   getSystemStatus,
+  listAgentConversations,
+  listAgentConversationTurns,
   listAllDocuments,
   listDocumentFolders,
   listDocumentReportRuns,
   listCrawlerSubmissions,
   listReportTemplates,
   retryReportRun,
+  confirmAgentTemplateSelection,
   reviewCrawlerSubmission,
   updateDocument,
   updateDocumentFolder,
@@ -359,7 +362,7 @@ test("crawler original file is fetched as a protected blob", async () => {
   assert.equal(blob.type, "application/pdf");
 });
 
-test("Pi Agent stream sends current-page history to the dedicated endpoint", async () => {
+test("Pi Agent stream keeps legacy browser history compatible at the dedicated endpoint", async () => {
   let captured;
   const frames = [
     'event: stream_started\ndata: {"request_id":"agent-1"}\n\n',
@@ -386,6 +389,66 @@ test("Pi Agent stream sends current-page history to the dedicated endpoint", asy
     dataset_ids: [2],
     history: [{ role: "user", content: "上一问" }, { role: "assistant", content: "上一答" }],
   });
+});
+
+test("Pi Agent stream sends the durable conversation id and report attachments", async () => {
+  let captured;
+  const frames = [
+    'event: conversation_started\ndata: {"conversation_id":"conversation-1","turn_id":"turn-1"}\n\n',
+    'event: confirmation_required\ndata: {"interaction":{"type":"TEMPLATE_SELECTION"}}\n\n',
+    'event: answer_done\ndata: {"request_id":"turn-1","answer":"请选择报告类型"}\n\n',
+  ].join("");
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(frames, { status: 200, headers: { "Content-Type": "text/event-stream" } });
+  };
+
+  const result = await streamAgent({
+    query: "根据文件生成报告",
+    datasetIds: [2],
+    conversationId: "conversation-1",
+    attachments: [
+      { documentId: 21, role: "SOURCE" },
+      { documentId: 22, role: "TEMPLATE" },
+    ],
+  });
+
+  assert.deepEqual(JSON.parse(captured.init.body), {
+    query: "根据文件生成报告",
+    dataset_ids: [2],
+    history: [],
+    conversation_id: "conversation-1",
+    attachments: [
+      { document_id: 21, role: "SOURCE" },
+      { document_id: 22, role: "TEMPLATE" },
+    ],
+  });
+  assert.equal(result.conversationId, "conversation-1");
+  assert.equal(result.turnId, "turn-1");
+});
+
+test("conversation history and template confirmation use durable agent routes", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push({ url, init });
+    if (String(url).endsWith("/template-selection")) {
+      return jsonResponse({ turn: { status: "SUCCEEDED" }, report_run: { run_id: "run-1" } });
+    }
+    return jsonResponse([]);
+  };
+
+  await listAgentConversations({ limit: 12 });
+  await listAgentConversationTurns("conversation-1");
+  await confirmAgentTemplateSelection("conversation-1", "turn-1", "R3");
+
+  assert.equal(requests[0].url, "/api/v1/agent/conversations?limit=12");
+  assert.equal(requests[1].url, "/api/v1/agent/conversations/conversation-1/turns");
+  assert.equal(
+    requests[2].url,
+    "/api/v1/agent/conversations/conversation-1/turns/turn-1/template-selection",
+  );
+  assert.equal(requests[2].init.method, "POST");
+  assert.deepEqual(JSON.parse(requests[2].init.body), { report_type: "R3" });
 });
 
 test("Pi Agent stream keeps an empty dataset list as the all-knowledge-base scope", async () => {

@@ -246,6 +246,9 @@ CREATE TABLE report_run (
     template_snapshot JSON NOT NULL,
     model_snapshot JSON NOT NULL,
     document_manifest JSON NOT NULL,
+    custom_template_document_id BIGINT UNSIGNED NULL,
+    custom_template_document_version INT NULL,
+    custom_template_manifest JSON NULL,
     mode VARCHAR(16) NOT NULL DEFAULT 'GENERATE',
     language VARCHAR(16) NOT NULL DEFAULT 'zh-CN',
     reporting_year INT NULL,
@@ -302,6 +305,40 @@ CREATE TABLE report_question (
     PRIMARY KEY (id),
     UNIQUE KEY uk_report_question_field (run_id, field_id, question_type),
     KEY idx_report_question_run_status (run_id, status, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE agent_conversation (
+    id VARCHAR(36) NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    title VARCHAR(160) NOT NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    KEY idx_agent_conversation_user_updated (user_id, updated_at)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
+
+CREATE TABLE agent_conversation_turn (
+    id VARCHAR(36) NOT NULL,
+    conversation_id VARCHAR(36) NOT NULL,
+    user_id BIGINT UNSIGNED NOT NULL,
+    turn_index INT NOT NULL,
+    user_content TEXT NOT NULL,
+    assistant_content LONGTEXT NULL,
+    status VARCHAR(20) NOT NULL DEFAULT 'STREAMING',
+    dataset_ids JSON NOT NULL,
+    document_ids JSON NOT NULL,
+    llm_config_id BIGINT UNSIGNED NULL,
+    attachments JSON NOT NULL,
+    interaction JSON NULL,
+    report_run_id VARCHAR(36) NULL,
+    error_code VARCHAR(64) NULL,
+    error_message VARCHAR(1000) NULL,
+    created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    PRIMARY KEY (id),
+    UNIQUE KEY uk_agent_turn_index (conversation_id, turn_index),
+    KEY idx_agent_turn_conversation (conversation_id, turn_index),
+    KEY idx_agent_turn_user_created (user_id, created_at)
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;
 
 CREATE TABLE report_artifact (
