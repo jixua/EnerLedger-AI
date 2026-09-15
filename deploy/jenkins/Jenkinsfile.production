@@ -6,7 +6,21 @@ node {
     env.NLTK_BUNDLE_SHA256 = 'b2a01515e237cf8746fd659fb66e526b3fba9d6c3d046176de8fdc5035a5040f'
     stage('Checkout master') {
       deleteDir()
-      checkout([$class: 'GitSCM', branches: [[name: '*/master']], userRemoteConfigs: [[url: 'https://github.com/jixua/EnerLedger-AI.git']], extensions: [[$class: 'CloneOption', depth: 100, noTags: true, shallow: true]]])
+      checkout([
+        $class: 'GitSCM',
+        branches: [[name: 'refs/remotes/origin/master']],
+        userRemoteConfigs: [[
+          url: 'https://github.com/jixua/EnerLedger-AI.git',
+          refspec: '+refs/heads/master:refs/remotes/origin/master'
+        ]],
+        extensions: [[
+          $class: 'CloneOption',
+          depth: 100,
+          honorRefspec: true,
+          noTags: true,
+          shallow: true
+        ]]
+      ])
       env.SOURCE_SHA = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
       env.SOURCE_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
     }
