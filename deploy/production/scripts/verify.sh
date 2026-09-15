@@ -26,6 +26,9 @@ read_value() {
 
 requested_namespace="${GHCR_NAMESPACE:-}"
 requested_sha="${RELEASE_SHA:-}"
+requested_api_sha="${API_RELEASE_SHA:-}"
+requested_pi_sha="${PI_RELEASE_SHA:-}"
+requested_web_sha="${WEB_RELEASE_SHA:-}"
 
 GHCR_NAMESPACE="$(read_value GHCR_NAMESPACE)"
 RELEASE_SHA="$(read_value RELEASE_SHA)"
@@ -48,13 +51,31 @@ fi
 : "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}"
 : "${RELEASE_SHA:?RELEASE_SHA is required}"
 
+component_sha() {
+  local requested="$1"
+  local component="$2"
+  if [[ -n "$requested" ]]; then
+    printf '%s' "$requested"
+  elif [[ -f "${state_dir}/${component}_sha" ]]; then
+    <"${state_dir}/${component}_sha"
+  else
+    printf '%s' "$RELEASE_SHA"
+  fi
+}
+
+API_RELEASE_SHA="$(component_sha "$requested_api_sha" api)"
+PI_RELEASE_SHA="$(component_sha "$requested_pi_sha" pi)"
+WEB_RELEASE_SHA="$(component_sha "$requested_web_sha" web)"
+
 compose=(docker compose --env-file "$env_file" -f "$compose_file")
 "${compose[@]}" ps
 
-for service in api pi-agent web; do
+for service_and_sha in "api:$API_RELEASE_SHA" "pi-agent:$PI_RELEASE_SHA" "web:$WEB_RELEASE_SHA"; do
+  service="${service_and_sha%%:*}"
+  expected_sha="${service_and_sha#*:}"
   image_json="$("${compose[@]}" images --format json "$service" | head -n 1)"
-  if [[ "$image_json" != *"${RELEASE_SHA}"* ]]; then
-    echo "${service} image does not match RELEASE_SHA=${RELEASE_SHA}" >&2
+  if [[ "$image_json" != *"${expected_sha}"* ]]; then
+    echo "${service} image does not match expected revision ${expected_sha}" >&2
     exit 1
   fi
 done

@@ -3,10 +3,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def test_production_deploy_recreates_all_application_services() -> None:
+def test_production_deploy_recreates_only_changed_application_services() -> None:
     script = (ROOT / "deploy/production/scripts/deploy.sh").read_text()
 
-    assert "application_services=(api parse-worker pi-agent web)" in script
+    assert "application_services=()" in script
+    assert 'application_services+=(api parse-worker)' in script
+    assert 'application_services+=(pi-agent)' in script
+    assert 'application_services+=(web)' in script
     assert 'application_services+=(report-worker)' in script
     assert "--force-recreate" in script
     assert '"${application_services[@]}"' in script
