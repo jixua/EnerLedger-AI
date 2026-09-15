@@ -547,6 +547,10 @@ export function PlaygroundPage() {
     <div className={`conversation-page${messages.length ? " conversation-page--active" : ""}`}>
       {!messages.length ? (
         <main className="conversation-empty">
+          <div className="conversation-empty__intro">
+            <h1>把碳知识库<br />变成会回答问题的专家</h1>
+            <p>AI 检索政策、标准与核算资料，生成有依据的答案，并回溯原文片段和页码。</p>
+          </div>
           <div className="conversation-empty__composer">{composer}</div>
           <div className="chat-suggestions" aria-label="建议问题">
             {SUGGESTED_QUESTIONS.map((suggestion) => (

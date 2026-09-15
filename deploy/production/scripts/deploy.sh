@@ -8,6 +8,9 @@ state_dir="${deploy_root}/.deployment"
 
 : "${GHCR_NAMESPACE:?GHCR_NAMESPACE is required}"
 : "${RELEASE_SHA:?RELEASE_SHA is required}"
+: "${API_RELEASE_SHA:=$RELEASE_SHA}"
+: "${PI_RELEASE_SHA:=$RELEASE_SHA}"
+: "${WEB_RELEASE_SHA:=$RELEASE_SHA}"
 
 if [[ ! "$RELEASE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
   echo "RELEASE_SHA must be a full 40-character Git SHA" >&2
@@ -37,7 +40,7 @@ if [[ -f "${state_dir}/current_sha" ]]; then
   current_sha="$(<"${state_dir}/current_sha")"
 fi
 
-export GHCR_NAMESPACE RELEASE_SHA
+export GHCR_NAMESPACE RELEASE_SHA API_RELEASE_SHA PI_RELEASE_SHA WEB_RELEASE_SHA
 compose=(docker compose --env-file "$env_file" -f "$compose_file")
 compose_with_profiles=("${compose[@]}")
 if grep -Eq '^COMPOSE_PROFILES=reports([[:space:]]*)$' "$env_file"; then
@@ -126,19 +129,39 @@ else
   fi
 fi
 
-application_services=(api parse-worker pi-agent web)
-if grep -Eq '^COMPOSE_PROFILES=reports([[:space:]]*)$' "$env_file"; then
-  application_services+=(report-worker)
+read_state_sha() {
+  local component="$1"
+  local component_file="${state_dir}/${component}_sha"
+  if [[ -f "$component_file" ]]; then
+    <"$component_file"
+  else
+    printf '%s' "$current_sha"
+  fi
+}
+
+application_services=()
+if [[ "$(read_state_sha api)" != "$API_RELEASE_SHA" ]]; then
+  application_services+=(api parse-worker)
+  if grep -Eq '^COMPOSE_PROFILES=reports([[:space:]]*)$' "$env_file"; then
+    application_services+=(report-worker)
+  fi
+fi
+if [[ "$(read_state_sha pi)" != "$PI_RELEASE_SHA" ]]; then
+  application_services+=(pi-agent)
+fi
+if [[ "$(read_state_sha web)" != "$WEB_RELEASE_SHA" ]]; then
+  application_services+=(web)
 fi
 
-# Application containers must be recreated for every immutable RELEASE_SHA.
-# Without --force-recreate, Compose can keep an older API/Web container alive
-# while only starting newly added worker containers, producing a mixed release.
-"${compose_with_profiles[@]}" up -d \
-  --force-recreate \
-  --no-build \
-  --pull never \
-  "${application_services[@]}"
+if ((${#application_services[@]})); then
+  "${compose_with_profiles[@]}" up -d \
+    --force-recreate \
+    --no-build \
+    --pull never \
+    "${application_services[@]}"
+else
+  echo "Application images are unchanged; container recreation skipped."
+fi
 wait_for_services
 "${deploy_root}/bin/verify.sh" "$deploy_root"
 
@@ -146,6 +169,9 @@ if [[ -n "$current_sha" && "$current_sha" != "$RELEASE_SHA" ]]; then
   printf '%s\n' "$current_sha" > "${state_dir}/previous_sha"
 fi
 printf '%s\n' "$RELEASE_SHA" > "${state_dir}/current_sha"
+printf '%s\n' "$API_RELEASE_SHA" > "${state_dir}/api_sha"
+printf '%s\n' "$PI_RELEASE_SHA" > "${state_dir}/pi_sha"
+printf '%s\n' "$WEB_RELEASE_SHA" > "${state_dir}/web_sha"
 printf '%s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "${state_dir}/deployed_at"
 printf '%s\n' "$GHCR_NAMESPACE" > "${state_dir}/ghcr_namespace"
 

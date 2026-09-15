@@ -7,6 +7,9 @@ JENKINSFILE = ROOT / "deploy" / "jenkins" / "Jenkinsfile.production"
 def test_production_pipeline_only_streams_missing_or_changed_images() -> None:
     pipeline = JENKINSFILE.read_text(encoding="utf-8")
 
+    assert "Select changed application images" in pipeline
+    assert ".production-build-components" in pipeline
+    assert "Build changed application images locally" in pipeline
     assert "docker image inspect --format '{{.Id}}'" in pipeline
     assert 'actual_id="$(docker image inspect --format "{{.Id}}"' in pipeline
     assert 'if [ "$actual_id" != "$expected_id" ]; then' in pipeline

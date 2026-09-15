@@ -214,4 +214,41 @@ EOF
 
         currentBuild.description = "master ${env.SOURCE_SHORT} / Production / b${env.BUILD_NUMBER}"
     }
+    stage('Select changed application images') {
+      sh '''
+        set -eu
+        previous="$(cat "$DEPLOY_ROOT/.deployment/current_sha" 2>/dev/null || true)"
+        if [ -z "$previous" ] || ! git cat-file -e "$previous^{commit}" 2>/dev/null || ! git merge-base --is-ancestor "$previous" "$SOURCE_SHA"; then changed='*'; else changed="$(git diff --name-only "$previous" "$SOURCE_SHA")"; fi
+        needs() { printf '%s\\n' "$changed" | grep -Eq "$1"; }
+        : > .production-build-components
+        if [ "$changed" = '*' ] || needs '^(Dockerfile|pyproject.toml|uv.lock|README.md|alembic.ini|app/|reporting/|migrations/|docker/)'; then echo api >> .production-build-components; fi
+        if [ "$changed" = '*' ] || needs '^(third_party/pi/|apps/pi-service/|deploy/jenkins/Dockerfile.pi$)'; then echo pi >> .production-build-components; fi
+        if [ "$changed" = '*' ] || needs '^(frontend/|deploy/production/Dockerfile.frontend$|deploy/production/nginx.conf$)'; then echo web >> .production-build-components; fi
+        for component in api pi web; do
+          current="$(cat "$DEPLOY_ROOT/.deployment/${component}_sha" 2>/dev/null || cat "$DEPLOY_ROOT/.deployment/current_sha" 2>/dev/null || true)"
+          case "$component" in api) var=API_RELEASE_SHA;; pi) var=PI_RELEASE_SHA;; web) var=WEB_RELEASE_SHA;; esac
+          if grep -qx "$component" .production-build-components || [ -z "$current" ]; then eval "export $var='$SOURCE_SHA'"; else eval "export $var='$current'"; fi
+        done
+        printf 'API_RELEASE_SHA=%s\\nPI_RELEASE_SHA=%s\\nWEB_RELEASE_SHA=%s\\n' "$API_RELEASE_SHA" "$PI_RELEASE_SHA" "$WEB_RELEASE_SHA" > .production-images.env
+      '''
+    }
+    stage('Build changed application images locally') {
+      sh '''
+        set -eu; . ./.production-images.env
+        if grep -qx api .production-build-components; then test -r "$NLTK_BUNDLE"; printf '%s  %s\\n' "$NLTK_BUNDLE_SHA256" "$NLTK_BUNDLE" | sha256sum -c -; rm -rf .build-cache/nltk_data; mkdir -p .build-cache/nltk_data; tar -xzf "$NLTK_BUNDLE" --strip-components=1 -C .build-cache/nltk_data; docker build --build-arg NLTK_ASSETS_MODE=cache -t "$IMAGE_NAMESPACE/enerledger-api:$API_RELEASE_SHA" .; fi
+        if grep -qx pi .production-build-components; then docker build -f deploy/jenkins/Dockerfile.pi -t "$IMAGE_NAMESPACE/enerledger-pi:$PI_RELEASE_SHA" .; fi
+        if grep -qx web .production-build-components; then docker build -f deploy/production/Dockerfile.frontend -t "$IMAGE_NAMESPACE/enerledger-web:$WEB_RELEASE_SHA" .; fi
+      '''
+    }
+    stage('Deploy and verify locally') {
+      sh '''
+        set -eu; . ./.production-images.env
+        install -d -m 750 "$DEPLOY_ROOT/bin"
+        install -m 640 deploy/production/docker-compose.yml "$DEPLOY_ROOT/docker-compose.yml"
+        install -m 750 deploy/production/scripts/{deploy,rollback,validate-env,verify}.sh "$DEPLOY_ROOT/bin/"
+        SKIP_PULL=true GHCR_NAMESPACE="$IMAGE_NAMESPACE" RELEASE_SHA="$SOURCE_SHA" API_RELEASE_SHA="$API_RELEASE_SHA" PI_RELEASE_SHA="$PI_RELEASE_SHA" WEB_RELEASE_SHA="$WEB_RELEASE_SHA" "$DEPLOY_ROOT/bin/deploy.sh" "$DEPLOY_ROOT"
+      '''
+    }
+    currentBuild.description = "master ${env.SOURCE_SHORT} / Production / local build"
+  }
 }
