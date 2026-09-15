@@ -7,7 +7,7 @@ node {
         env.PRODUCTION_USER = 'deploy'
         env.PRODUCTION_SSH_KEY = '/opt/tolink/jenkins-secrets/enerledger-production/id_ed25519'
         env.PRODUCTION_KNOWN_HOSTS = '/opt/tolink/jenkins-secrets/enerledger-production/known_hosts'
-        env.NLTK_BUNDLE = '/opt/tolink/jenkins-cache/enerledger-nltk/nltk-data-v1.tar.gz'
+        env.NLTK_BUNDLE = '/opt/enerledger-jenkins/cache/enerledger-nltk/nltk-data-v1.tar.gz'
         env.NLTK_BUNDLE_SHA256 = 'b2a01515e237cf8746fd659fb66e526b3fba9d6c3d046176de8fdc5035a5040f'
 
         stage('Checkout master') {
