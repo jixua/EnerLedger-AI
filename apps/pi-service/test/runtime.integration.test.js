@@ -49,6 +49,27 @@ function streamCompletion(response, delta, finishReason = null) {
   response.end("data: [DONE]\n\n");
 }
 
+function streamTextCompletion(response, chunks) {
+  response.writeHead(200, { "Content-Type": "text/event-stream" });
+  chunks.forEach((content, index) => {
+    response.write(`data: ${JSON.stringify({
+      id: "mock-completion",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "mock-agent-model",
+      choices: [{ index: 0, delta: { ...(index === 0 ? { role: "assistant" } : {}), content }, finish_reason: null }],
+    })}\n\n`);
+  });
+  response.write(`data: ${JSON.stringify({
+    id: "mock-completion",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "mock-agent-model",
+    choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+  })}\n\n`);
+  response.end("data: [DONE]\n\n");
+}
+
 test("Pi runtime reads workflow, runs hybrid recall and emits cited answer", async () => {
   let modelCalls = 0;
   const modelServer = await listen(async (request, response) => {
@@ -82,10 +103,25 @@ test("Pi runtime reads workflow, runs hybrid recall and emits cited answer", asy
       }, "tool_calls");
       return;
     }
-    streamCompletion(response, {
-      role: "assistant",
-      content: "天然气燃烧排放按活动数据乘以排放因子核算。[片段1]",
-    }, "stop");
+    if (modelCalls === 3) {
+      streamCompletion(response, {
+        role: "assistant",
+        tool_calls: [{
+          index: 0,
+          id: "hybrid-recall-again",
+          type: "function",
+          function: {
+            name: "hybrid_recall",
+            arguments: JSON.stringify({ query: "天然气燃烧排放核算", intent: "calculation_basis", knowledge_base_refs: [] }),
+          },
+        }],
+      }, "tool_calls");
+      return;
+    }
+    streamTextCompletion(response, [
+      "天然气燃烧排放按活动数据",
+      "乘以排放因子核算。[片段1]",
+    ]);
   });
 
   let recallCalls = 0;
@@ -158,15 +194,20 @@ test("Pi runtime reads workflow, runs hybrid recall and emits cited answer", asy
     ]);
   }
 
-  assert.equal(modelCalls, 3);
+  assert.equal(modelCalls, 4);
   assert.equal(recallCalls, 1);
   assert.deepEqual(emitted.map((event) => event.type), [
     "recall_done",
     "answer_delta",
+    "answer_delta",
     "answer_done",
   ]);
-  assert.equal(emitted[2].data.answer, "天然气燃烧排放按活动数据乘以排放因子核算。[片段1]");
-  assert.equal(emitted[2].data.hits[0].chunk_id, "chunk-1");
+  assert.deepEqual(emitted.slice(1, 3).map((event) => event.data.text), [
+    "天然气燃烧排放按活动数据",
+    "乘以排放因子核算。[片段1]",
+  ]);
+  assert.equal(emitted[3].data.answer, "天然气燃烧排放按活动数据乘以排放因子核算。[片段1]");
+  assert.equal(emitted[3].data.hits[0].chunk_id, "chunk-1");
 });
 
 test("Pi runtime can answer a greeting without recall", async () => {
