@@ -29,3 +29,12 @@ def test_production_pipeline_uses_posix_compatible_script_installation() -> None
     assert "scripts/{deploy,rollback,validate-env,verify}.sh" not in pipeline
     for script in ("deploy", "rollback", "validate-env", "verify"):
         assert f"deploy/production/scripts/{script}.sh" in pipeline
+
+
+def test_production_pipeline_fetches_only_master_history() -> None:
+    pipeline = JENKINSFILE.read_text(encoding="utf-8")
+
+    assert "+refs/heads/master:refs/remotes/origin/master" in pipeline
+    assert "refs/remotes/origin/master" in pipeline
+    assert "honorRefspec: true" in pipeline
+    assert "+refs/heads/*:refs/remotes/origin/*" not in pipeline
