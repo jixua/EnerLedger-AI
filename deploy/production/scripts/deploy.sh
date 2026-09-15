@@ -126,7 +126,19 @@ else
   fi
 fi
 
-"${compose_with_profiles[@]}" up -d --no-build --pull never
+application_services=(api parse-worker pi-agent web)
+if grep -Eq '^COMPOSE_PROFILES=reports([[:space:]]*)$' "$env_file"; then
+  application_services+=(report-worker)
+fi
+
+# Application containers must be recreated for every immutable RELEASE_SHA.
+# Without --force-recreate, Compose can keep an older API/Web container alive
+# while only starting newly added worker containers, producing a mixed release.
+"${compose_with_profiles[@]}" up -d \
+  --force-recreate \
+  --no-build \
+  --pull never \
+  "${application_services[@]}"
 wait_for_services
 "${deploy_root}/bin/verify.sh" "$deploy_root"
 

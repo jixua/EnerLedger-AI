@@ -143,7 +143,10 @@ node {
                 set -eu
                 target="$PRODUCTION_USER@$PRODUCTION_HOST"
                 image_list="/tmp/enerledger-production-images-$BUILD_NUMBER.txt"
-                trap 'rm -f "$image_list"' EXIT
+                image_manifest="/tmp/enerledger-production-image-manifest-$BUILD_NUMBER.txt"
+                remote_scan="/tmp/enerledger-production-image-scan-$BUILD_NUMBER.txt"
+                changed_images="/tmp/enerledger-production-changed-images-$BUILD_NUMBER.txt"
+                trap 'rm -f "$image_list" "$image_manifest" "$remote_scan" "$changed_images"' EXIT
                 cat >"$image_list" <<EOF
 $IMAGE_NAMESPACE/enerledger-api:$SOURCE_SHA
 $IMAGE_NAMESPACE/enerledger-pi:$SOURCE_SHA
@@ -155,10 +158,36 @@ $IMAGE_NAMESPACE/enerledger-qdrant:v1.17.1
 $IMAGE_NAMESPACE/enerledger-manticore:27.1.5
 $IMAGE_NAMESPACE/enerledger-rabbitmq:4.1.8-management-alpine
 EOF
+                : >"$image_manifest"
                 while IFS= read -r image; do
-                    docker image inspect "$image" >/dev/null
+                    local_id="$(docker image inspect --format '{{.Id}}' "$image")"
+                    printf '%s %s\n' "$image" "$local_id" >>"$image_manifest"
                 done <"$image_list"
-                xargs docker save <"$image_list" | gzip -1 | \
+
+                ssh -i "$PRODUCTION_SSH_KEY" \
+                  -o UserKnownHostsFile="$PRODUCTION_KNOWN_HOSTS" \
+                  -o StrictHostKeyChecking=yes \
+                  -o ServerAliveInterval=30 \
+                  -o ServerAliveCountMax=10 \
+                  -p "$PRODUCTION_PORT" "$target" '
+                    while IFS=" " read -r image expected_id; do
+                        test -n "$image" || continue
+                        actual_id="$(docker image inspect --format "{{.Id}}" "$image" 2>/dev/null || true)"
+                        if [ "$actual_id" != "$expected_id" ]; then
+                            printf "changed:%s\n" "$image"
+                        fi
+                    done
+                  ' <"$image_manifest" >"$remote_scan"
+                sed -n 's/^changed://p' "$remote_scan" >"$changed_images"
+
+                if [ ! -s "$changed_images" ]; then
+                    echo 'Production already has all required images; transfer skipped.'
+                    exit 0
+                fi
+
+                changed_count="$(wc -l <"$changed_images" | tr -d ' ')"
+                echo "Streaming $changed_count changed production image(s)."
+                xargs docker save <"$changed_images" | gzip -1 | \
                   ssh -i "$PRODUCTION_SSH_KEY" \
                     -o UserKnownHostsFile="$PRODUCTION_KNOWN_HOSTS" \
                     -o StrictHostKeyChecking=yes \
