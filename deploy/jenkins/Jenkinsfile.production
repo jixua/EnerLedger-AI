@@ -1,217 +1,50 @@
 node {
-    timestamps {
-        env.DEPLOY_ROOT = '/opt/enerledger-ai'
-        env.IMAGE_NAMESPACE = 'ghcr.io/jixua'
-        env.PRODUCTION_HOST = '1.15.66.7'
-        env.PRODUCTION_PORT = '18631'
-        env.PRODUCTION_USER = 'deploy'
-        env.PRODUCTION_SSH_KEY = '/opt/tolink/jenkins-secrets/enerledger-production/id_ed25519'
-        env.PRODUCTION_KNOWN_HOSTS = '/opt/tolink/jenkins-secrets/enerledger-production/known_hosts'
-        env.NLTK_BUNDLE = '/opt/tolink/jenkins-cache/enerledger-nltk/nltk-data-v1.tar.gz'
-        env.NLTK_BUNDLE_SHA256 = 'b2a01515e237cf8746fd659fb66e526b3fba9d6c3d046176de8fdc5035a5040f'
-
-        stage('Checkout master') {
-            deleteDir()
-            checkout([$class: 'GitSCM',
-                branches: [[name: 'refs/remotes/origin/master']],
-                userRemoteConfigs: [[
-                    credentialsId: 'git-cred',
-                    url: 'ssh://git@ssh.github.com:443/jixua/EnerLedger-AI.git',
-                    refspec: '+refs/heads/master:refs/remotes/origin/master'
-                ]],
-                extensions: [
-                    [$class: 'CloneOption', depth: 1, honorRefspec: true, noTags: true, shallow: true],
-                    [$class: 'PruneStaleBranch']
-                ]
-            ])
-            env.SOURCE_SHA = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
-            env.SOURCE_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
-            sh '''
-                set -eu
-                test "$(git rev-parse HEAD)" = "$SOURCE_SHA"
-                test "$(git rev-parse refs/remotes/origin/master)" = "$SOURCE_SHA"
-                test -f deploy/production/docker-compose.yml
-                test -f deploy/production/scripts/deploy.sh
-            '''
-        }
-
-        stage('Build immutable application images') {
-            sh '''
-                set -eu
-                test -r "$NLTK_BUNDLE"
-                test "$(stat -c '%a' "$NLTK_BUNDLE")" = 600
-                printf '%s  %s\n' "$NLTK_BUNDLE_SHA256" "$NLTK_BUNDLE" | sha256sum -c -
-                mkdir -p .build-cache/nltk_data
-                tar -xzf "$NLTK_BUNDLE" --strip-components=1 -C .build-cache/nltk_data
-                docker build \
-                  --build-arg NLTK_ASSETS_MODE=cache \
-                  --label "org.opencontainers.image.revision=$SOURCE_SHA" \
-                  --label "org.opencontainers.image.source=https://github.com/jixua/EnerLedger-AI" \
-                  -f Dockerfile \
-                  -t "$IMAGE_NAMESPACE/enerledger-api:$SOURCE_SHA" .
-                docker build \
-                  --label "org.opencontainers.image.revision=$SOURCE_SHA" \
-                  --label "org.opencontainers.image.source=https://github.com/jixua/EnerLedger-AI" \
-                  -f deploy/jenkins/Dockerfile.pi \
-                  -t "$IMAGE_NAMESPACE/enerledger-pi:$SOURCE_SHA" .
-                docker build \
-                  --label "org.opencontainers.image.revision=$SOURCE_SHA" \
-                  --label "org.opencontainers.image.source=https://github.com/jixua/EnerLedger-AI" \
-                  -f deploy/production/Dockerfile.frontend \
-                  -t "$IMAGE_NAMESPACE/enerledger-web:$SOURCE_SHA" .
-            '''
-        }
-
-        stage('Prepare pinned middleware images') {
-            sh '''
-                set -eu
-                pull_and_tag() {
-                    source="$1"
-                    target="$2"
-                    docker pull --platform linux/amd64 "$source"
-                    docker tag "$source" "$target"
-                }
-
-                pull_and_tag \
-                  'docker.io/library/mysql@sha256:63823b8e2cbe4ae0c558155e02d00beba56130fbc3d147efccbdb328ae2dbb9e' \
-                  "$IMAGE_NAMESPACE/enerledger-mysql:8.0.42"
-                pull_and_tag \
-                  'quay.io/minio/minio@sha256:14cea493d9a34af32f524e538b8346cf79f3321eff8e708c1e2960462bd8936e' \
-                  "$IMAGE_NAMESPACE/enerledger-minio:RELEASE.2025-09-07T16-13-09Z"
-                pull_and_tag \
-                  'quay.io/minio/mc@sha256:a7fe349ef4bd8521fb8497f55c6042871b2ae640607cf99d9bede5e9bdf11727' \
-                  "$IMAGE_NAMESPACE/enerledger-minio-mc:RELEASE.2025-08-13T08-35-41Z"
-                pull_and_tag \
-                  'docker.io/qdrant/qdrant@sha256:94728574965d17c6485dd361aa3c0818b325b9016dac5ea6afec7b4b2700865f' \
-                  "$IMAGE_NAMESPACE/enerledger-qdrant:v1.17.1"
-                pull_and_tag \
-                  'docker.io/manticoresearch/manticore@sha256:511cfcbe22669e101fdc3818afc6ef709cf659e300f9a83d2cf4291421081228' \
-                  "$IMAGE_NAMESPACE/enerledger-manticore:27.1.5"
-                pull_and_tag \
-                  'docker.io/library/rabbitmq@sha256:eb6736723c5d0831ab12d29e7a2b8ee1082f744370c2a784b50b84b3b4d6d030' \
-                  "$IMAGE_NAMESPACE/enerledger-rabbitmq:4.1.8-management-alpine"
-            '''
-        }
-
-        stage('Validate deployment bundle') {
-            sh '''
-                set -eu
-                for script in deploy/production/scripts/*.sh; do
-                    bash -n "$script"
-                done
-                test -r "$PRODUCTION_SSH_KEY"
-                test -r "$PRODUCTION_KNOWN_HOSTS"
-                test "$(stat -c '%a' "$PRODUCTION_SSH_KEY")" = 600
-                test "$(stat -c '%a' "$PRODUCTION_KNOWN_HOSTS")" = 600
-            '''
-        }
-
-        stage('Sync deployment contract') {
-            sh '''
-                set -eu
-                target="$PRODUCTION_USER@$PRODUCTION_HOST"
-                ssh -i "$PRODUCTION_SSH_KEY" \
-                  -o UserKnownHostsFile="$PRODUCTION_KNOWN_HOSTS" \
-                  -o StrictHostKeyChecking=yes \
-                  -p "$PRODUCTION_PORT" "$target" \
-                  "mkdir -p '$DEPLOY_ROOT/bin'"
-                scp -i "$PRODUCTION_SSH_KEY" \
-                  -o UserKnownHostsFile="$PRODUCTION_KNOWN_HOSTS" \
-                  -o StrictHostKeyChecking=yes \
-                  -P "$PRODUCTION_PORT" \
-                  deploy/production/docker-compose.yml \
-                  "$target:$DEPLOY_ROOT/docker-compose.yml"
-                scp -i "$PRODUCTION_SSH_KEY" \
-                  -o UserKnownHostsFile="$PRODUCTION_KNOWN_HOSTS" \
-                  -o StrictHostKeyChecking=yes \
-                  -P "$PRODUCTION_PORT" \
-                  deploy/production/scripts/deploy.sh \
-                  deploy/production/scripts/rollback.sh \
-                  deploy/production/scripts/validate-env.sh \
-                  deploy/production/scripts/verify.sh \
-                  "$target:$DEPLOY_ROOT/bin/"
-                ssh -i "$PRODUCTION_SSH_KEY" \
-                  -o UserKnownHostsFile="$PRODUCTION_KNOWN_HOSTS" \
-                  -o StrictHostKeyChecking=yes \
-                  -p "$PRODUCTION_PORT" "$target" \
-                  "chmod 750 '$DEPLOY_ROOT'/bin/*.sh"
-            '''
-        }
-
-        stage('Stream images to production') {
-            sh '''
-                set -eu
-                target="$PRODUCTION_USER@$PRODUCTION_HOST"
-                image_list="/tmp/enerledger-production-images-$BUILD_NUMBER.txt"
-                image_manifest="/tmp/enerledger-production-image-manifest-$BUILD_NUMBER.txt"
-                remote_scan="/tmp/enerledger-production-image-scan-$BUILD_NUMBER.txt"
-                changed_images="/tmp/enerledger-production-changed-images-$BUILD_NUMBER.txt"
-                trap 'rm -f "$image_list" "$image_manifest" "$remote_scan" "$changed_images"' EXIT
-                cat >"$image_list" <<EOF
-$IMAGE_NAMESPACE/enerledger-api:$SOURCE_SHA
-$IMAGE_NAMESPACE/enerledger-pi:$SOURCE_SHA
-$IMAGE_NAMESPACE/enerledger-web:$SOURCE_SHA
-$IMAGE_NAMESPACE/enerledger-mysql:8.0.42
-$IMAGE_NAMESPACE/enerledger-minio:RELEASE.2025-09-07T16-13-09Z
-$IMAGE_NAMESPACE/enerledger-minio-mc:RELEASE.2025-08-13T08-35-41Z
-$IMAGE_NAMESPACE/enerledger-qdrant:v1.17.1
-$IMAGE_NAMESPACE/enerledger-manticore:27.1.5
-$IMAGE_NAMESPACE/enerledger-rabbitmq:4.1.8-management-alpine
-EOF
-                : >"$image_manifest"
-                while IFS= read -r image; do
-                    local_id="$(docker image inspect --format '{{.Id}}' "$image")"
-                    printf '%s %s\n' "$image" "$local_id" >>"$image_manifest"
-                done <"$image_list"
-
-                ssh -i "$PRODUCTION_SSH_KEY" \
-                  -o UserKnownHostsFile="$PRODUCTION_KNOWN_HOSTS" \
-                  -o StrictHostKeyChecking=yes \
-                  -o ServerAliveInterval=30 \
-                  -o ServerAliveCountMax=10 \
-                  -p "$PRODUCTION_PORT" "$target" '
-                    while IFS=" " read -r image expected_id; do
-                        test -n "$image" || continue
-                        actual_id="$(docker image inspect --format "{{.Id}}" "$image" 2>/dev/null || true)"
-                        if [ "$actual_id" != "$expected_id" ]; then
-                            printf "changed:%s\n" "$image"
-                        fi
-                    done
-                  ' <"$image_manifest" >"$remote_scan"
-                sed -n 's/^changed://p' "$remote_scan" >"$changed_images"
-
-                if [ ! -s "$changed_images" ]; then
-                    echo 'Production already has all required images; transfer skipped.'
-                    exit 0
-                fi
-
-                changed_count="$(wc -l <"$changed_images" | tr -d ' ')"
-                echo "Streaming $changed_count changed production image(s)."
-                xargs docker save <"$changed_images" | gzip -1 | \
-                  ssh -i "$PRODUCTION_SSH_KEY" \
-                    -o UserKnownHostsFile="$PRODUCTION_KNOWN_HOSTS" \
-                    -o StrictHostKeyChecking=yes \
-                    -o ServerAliveInterval=30 \
-                    -o ServerAliveCountMax=10 \
-                    -p "$PRODUCTION_PORT" "$target" \
-                    'gzip -dc | docker load'
-            '''
-        }
-
-        stage('Deploy and verify production') {
-            sh '''
-                set -eu
-                target="$PRODUCTION_USER@$PRODUCTION_HOST"
-                ssh -i "$PRODUCTION_SSH_KEY" \
-                  -o UserKnownHostsFile="$PRODUCTION_KNOWN_HOSTS" \
-                  -o StrictHostKeyChecking=yes \
-                  -o ServerAliveInterval=30 \
-                  -o ServerAliveCountMax=10 \
-                  -p "$PRODUCTION_PORT" "$target" \
-                  "SKIP_PULL=true GHCR_NAMESPACE='$IMAGE_NAMESPACE' RELEASE_SHA='$SOURCE_SHA' '$DEPLOY_ROOT/bin/deploy.sh' '$DEPLOY_ROOT'"
-            '''
-        }
-
-        currentBuild.description = "master ${env.SOURCE_SHORT} / Production / b${env.BUILD_NUMBER}"
+  timestamps {
+    env.DEPLOY_ROOT = '/opt/enerledger-ai'
+    env.IMAGE_NAMESPACE = 'ghcr.io/jixua'
+    env.NLTK_BUNDLE = '/opt/enerledger-jenkins/cache/enerledger-nltk/nltk-data-v1.tar.gz'
+    env.NLTK_BUNDLE_SHA256 = 'b2a01515e237cf8746fd659fb66e526b3fba9d6c3d046176de8fdc5035a5040f'
+    stage('Checkout master') {
+      deleteDir()
+      checkout([$class: 'GitSCM', branches: [[name: '*/master']], userRemoteConfigs: [[url: 'https://github.com/jixua/EnerLedger-AI.git']], extensions: [[$class: 'CloneOption', depth: 100, noTags: true, shallow: true]]])
+      env.SOURCE_SHA = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+      env.SOURCE_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
     }
+    stage('Select changed application images') {
+      sh '''
+        set -eu
+        previous="$(cat "$DEPLOY_ROOT/.deployment/current_sha" 2>/dev/null || true)"
+        if [ -z "$previous" ] || ! git cat-file -e "$previous^{commit}" 2>/dev/null || ! git merge-base --is-ancestor "$previous" "$SOURCE_SHA"; then changed='*'; else changed="$(git diff --name-only "$previous" "$SOURCE_SHA")"; fi
+        needs() { printf '%s\\n' "$changed" | grep -Eq "$1"; }
+        : > .production-build-components
+        if [ "$changed" = '*' ] || needs '^(Dockerfile|pyproject.toml|uv.lock|README.md|alembic.ini|app/|reporting/|migrations/|docker/)'; then echo api >> .production-build-components; fi
+        if [ "$changed" = '*' ] || needs '^(third_party/pi/|apps/pi-service/|deploy/jenkins/Dockerfile.pi$)'; then echo pi >> .production-build-components; fi
+        if [ "$changed" = '*' ] || needs '^(frontend/|deploy/production/Dockerfile.frontend$|deploy/production/nginx.conf$)'; then echo web >> .production-build-components; fi
+        for component in api pi web; do
+          current="$(cat "$DEPLOY_ROOT/.deployment/${component}_sha" 2>/dev/null || cat "$DEPLOY_ROOT/.deployment/current_sha" 2>/dev/null || true)"
+          case "$component" in api) var=API_RELEASE_SHA;; pi) var=PI_RELEASE_SHA;; web) var=WEB_RELEASE_SHA;; esac
+          if grep -qx "$component" .production-build-components || [ -z "$current" ]; then eval "export $var='$SOURCE_SHA'"; else eval "export $var='$current'"; fi
+        done
+        printf 'API_RELEASE_SHA=%s\\nPI_RELEASE_SHA=%s\\nWEB_RELEASE_SHA=%s\\n' "$API_RELEASE_SHA" "$PI_RELEASE_SHA" "$WEB_RELEASE_SHA" > .production-images.env
+      '''
+    }
+    stage('Build changed application images locally') {
+      sh '''
+        set -eu; . ./.production-images.env
+        if grep -qx api .production-build-components; then test -r "$NLTK_BUNDLE"; printf '%s  %s\\n' "$NLTK_BUNDLE_SHA256" "$NLTK_BUNDLE" | sha256sum -c -; rm -rf .build-cache/nltk_data; mkdir -p .build-cache/nltk_data; tar -xzf "$NLTK_BUNDLE" --strip-components=1 -C .build-cache/nltk_data; docker build --build-arg NLTK_ASSETS_MODE=cache -t "$IMAGE_NAMESPACE/enerledger-api:$API_RELEASE_SHA" .; fi
+        if grep -qx pi .production-build-components; then docker build -f deploy/jenkins/Dockerfile.pi -t "$IMAGE_NAMESPACE/enerledger-pi:$PI_RELEASE_SHA" .; fi
+        if grep -qx web .production-build-components; then docker build -f deploy/production/Dockerfile.frontend -t "$IMAGE_NAMESPACE/enerledger-web:$WEB_RELEASE_SHA" .; fi
+      '''
+    }
+    stage('Deploy and verify locally') {
+      sh '''
+        set -eu; . ./.production-images.env
+        install -d -m 750 "$DEPLOY_ROOT/bin"
+        install -m 640 deploy/production/docker-compose.yml "$DEPLOY_ROOT/docker-compose.yml"
+        install -m 750 deploy/production/scripts/{deploy,rollback,validate-env,verify}.sh "$DEPLOY_ROOT/bin/"
+        SKIP_PULL=true GHCR_NAMESPACE="$IMAGE_NAMESPACE" RELEASE_SHA="$SOURCE_SHA" API_RELEASE_SHA="$API_RELEASE_SHA" PI_RELEASE_SHA="$PI_RELEASE_SHA" WEB_RELEASE_SHA="$WEB_RELEASE_SHA" "$DEPLOY_ROOT/bin/deploy.sh" "$DEPLOY_ROOT"
+      '''
+    }
+    currentBuild.description = "master ${env.SOURCE_SHORT} / Production / local build"
+  }
 }
