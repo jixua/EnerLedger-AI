@@ -13,7 +13,7 @@ import { createEnerLedgerClient } from "../tools/enerledger-client.js";
 
 const SYSTEM_PROMPT = `你是能碳会计 AI 智能体的知识库 Agent，只能服务当前已授权运行。
 系统会在每轮开始前加载知识库工作流；你必须遵循其中的检索、引用和安全规则。
-寒暄、能力介绍和纯交互请求无需检索；回答资料、政策、标准或核算依据前必须调用 hybrid_recall。
+寒暄、能力介绍和纯交互请求无需检索；回答资料、政策、标准或核算依据前必须调用 hybrid_recall；每轮最多调用一次，该工具已经完成多路召回、融合排序和 TopK 截断。
 当召回片段上下文不完整、指代不清、公式或表格被截断时调用 expand_evidence。
 当用户要求总结整篇、梳理结构、跨章节比较或完整阅读时，先调用 get_document_outline，再按需调用 read_document_section；未读完分页时不得声称已读全文。
 用户未限定知识库时使用当前运行的全部授权知识库；需要解析知识库名称时调用 get_retrieval_scope。
@@ -113,10 +113,11 @@ export async function executeAgentRun({ config, runId, content, history, model, 
   const workflowText = await loadWorkflowText();
   let skillRead = Boolean(workflowText.trim());
   let lastRecall = { hits: [], failed_sources: [], elapsed_ms: 0 };
+  let lastRecallToolResult = null;
   const allHitsByEvidence = new Map();
   let finalText = "";
+  let streamedText = "";
   let finalAssistantMessage;
-  let streamedAnswer = false;
 
   const trackEvidenceChunks = (chunks = []) => {
     const mergedChunks = [];
@@ -194,6 +195,12 @@ export async function executeAgentRun({ config, runId, content, history, model, 
     }, ["query"]),
     execute: async (_toolCallId, params) => {
       if (!skillRead) throw new Error("WORKFLOW_SKILL_REQUIRED");
+      if (lastRecallToolResult) {
+        return {
+          content: [{ type: "text", text: lastRecallToolResult.context }],
+          details: { ...lastRecallToolResult.details, reused: true },
+        };
+      }
       lastRecall = await client.hybridRecall(
         params.query.trim(),
         params.intent ?? "fact_lookup",
@@ -213,13 +220,18 @@ export async function executeAgentRun({ config, runId, content, history, model, 
       const context = (lastRecall.evidence_blocks ?? []).map((block) =>
         `<evidence evidence_id="${block.evidence_id}" citation="片段${block.citation_index}">\n知识库：${block.knowledge_base_name ?? "未命名"}；文件：${block.filename}${block.page ? `，页码：${block.page}` : ""}\n${block.content}\n</evidence>`
       ).join("\n\n");
+      const details = {
+        candidateCount: lastRecall.hits?.length ?? 0,
+        contextCount: lastRecall.evidence_blocks?.length ?? 0,
+        degraded: lastRecall.retrieval?.degraded ?? false,
+      };
+      lastRecallToolResult = {
+        context: context || "当前授权范围没有检索到可用片段。",
+        details,
+      };
       return {
-        content: [{ type: "text", text: context || "当前授权范围没有检索到可用片段。" }],
-        details: {
-          candidateCount: lastRecall.hits?.length ?? 0,
-          contextCount: lastRecall.evidence_blocks?.length ?? 0,
-          degraded: lastRecall.retrieval?.degraded ?? false,
-        },
+        content: [{ type: "text", text: lastRecallToolResult.context }],
+        details,
       };
     },
   });
@@ -328,11 +340,15 @@ export async function executeAgentRun({ config, runId, content, history, model, 
   });
 
   const unsubscribe = session.subscribe((event) => {
-    if (event.type === "message_update" && event.message.role === "assistant") {
-      const update = event.assistantMessageEvent;
-      if (update?.type === "text_delta" && update.delta) {
-        streamedAnswer = true;
-        emit("answer_delta", { text: update.delta });
+    if (
+      event.type === "message_update" &&
+      event.message.role === "assistant" &&
+      event.assistantMessageEvent?.type === "text_delta"
+    ) {
+      const delta = event.assistantMessageEvent.delta ?? "";
+      if (delta) {
+        streamedText += delta;
+        emit("answer_delta", { text: delta });
       }
     }
     if (event.type === "message_end" && event.message.role === "assistant") {
@@ -354,7 +370,8 @@ export async function executeAgentRun({ config, runId, content, history, model, 
     assertCompleted(finalAssistantMessage);
     if (!skillRead) throw new Error("WORKFLOW_SKILL_REQUIRED");
     if (!finalText.trim()) throw new Error("AGENT_EMPTY_RESPONSE");
-    if (!streamedAnswer) emit("answer_delta", { text: finalText });
+    // 兼容不提供 message_update/text_delta 的模型代理；正常路径已逐增量发送。
+    if (!streamedText) emit("answer_delta", { text: finalText });
     const resultUsage = usage(session.getSessionStats());
     emit("answer_done", {
       request_id: runId,

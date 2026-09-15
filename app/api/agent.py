@@ -768,10 +768,13 @@ async def internal_agent_recall(
             ),
             timeout=settings.RECALL_STREAM_TIMEOUT_MS / 1000,
         )
+        # 与普通 RAG 生成链路保持一致：只允许重排后的 final TopN 进入
+        # 生成上下文；rerank 未启用或失败时，reranker 已按融合顺序软降级。
+        context_hits = rerank_response.hits
         assembled = assemble_context(
-            rerank_response.hits,
+            context_hits,
             contents,
-            settings.RECALL_GENERATION_CONTEXT_TOKEN_BUDGET,
+            recall_config.recall_context_token_budget,
         )
         selected_chunk_ids = {block.chunk_id for block in assembled.blocks}
         evidence_by_chunk = {}
