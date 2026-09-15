@@ -21,3 +21,11 @@ def test_production_pipeline_preserves_component_revisions_when_paths_do_not_cha
     assert "API_RELEASE_SHA" in pipeline
     assert "PI_RELEASE_SHA" in pipeline
     assert "WEB_RELEASE_SHA" in pipeline
+
+
+def test_production_pipeline_uses_posix_compatible_script_installation() -> None:
+    pipeline = JENKINSFILE.read_text(encoding="utf-8")
+
+    assert "scripts/{deploy,rollback,validate-env,verify}.sh" not in pipeline
+    for script in ("deploy", "rollback", "validate-env", "verify"):
+        assert f"deploy/production/scripts/{script}.sh" in pipeline
