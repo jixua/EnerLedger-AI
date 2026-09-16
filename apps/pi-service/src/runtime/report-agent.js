@@ -120,6 +120,8 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
   let templateLoaded = false;
   let toolCalls = 0;
   let submitted = null;
+  let submittedIr = null;
+  let submittedCoverage = null;
   let lastValidation = null;
   let clarification = null;
   let finalAssistantMessage;
@@ -349,11 +351,16 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
         throw new Error("REPORT_AGENT_CUSTOM_TEMPLATE_INCOMPLETE");
       }
       if (submitted) throw new Error("REPORT_IR_ALREADY_SUBMITTED");
-      submitted = await client.submit(params.report_ir, {
+      const coverage = {
         complete: true,
         manifest_hash: chunkManifestHash,
         chunks: observedChunks,
-      });
+      };
+      // 应用侧不再回显 report_ir / coverage（避免重复占用上下文），
+      // 这里保存自己提交的对象作为最终结果来源。
+      submittedIr = params.report_ir;
+      submittedCoverage = coverage;
+      submitted = await client.submit(params.report_ir, coverage);
       return textResult({ accepted: true, validation: submitted.validation_report });
     }),
   });
@@ -423,7 +430,7 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
     if (clarification) {
       return { outcome: "NEEDS_INPUT", clarification, toolCalls };
     }
-    if (!submitted?.report_ir) {
+    if (!submitted?.accepted || !submittedIr) {
       // 诊断：会话在未提交 ReportIR 的情况下结束——记录最后一轮模型输出与校验状态。
       const lastMessageText = (finalAssistantMessage?.content ?? [])
         .map((part) => (part.type === "text" ? part.text : `[${part.type}]`))
@@ -452,10 +459,10 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
     }
     return {
       outcome: "SUBMITTED",
-      reportIr: submitted.report_ir,
+      reportIr: submittedIr,
       validationReport: submitted.validation_report,
       manifest: submitted.manifest,
-      coverage: submitted.coverage,
+      coverage: submittedCoverage,
       toolCalls,
     };
   } finally {

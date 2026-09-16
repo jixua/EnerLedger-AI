@@ -101,6 +101,26 @@ _STRUCTURE_HINT_KEYS = (
 )
 _TABLE_HINT_KEYS = ("title", "row_count", "column_count", "header_row_count", "source_pages")
 
+# 单次校验回传给模型的最大错误/警告条数。
+MAX_VALIDATION_ITEMS = 40
+
+
+def _trim_validation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """限制回传给模型的校验错误条数。
+
+    一次严重不完整的 ReportIR 可能触发成百上千条错误，逐条回传会把这些文本
+    永久留在模型上下文里（并挤掉后续修复所需的空间）。
+    """
+    trimmed = dict(payload)
+    for key in ("errors", "warnings"):
+        items = payload.get(key) or []
+        if len(items) > MAX_VALIDATION_ITEMS:
+            trimmed[key] = [
+                *items[:MAX_VALIDATION_ITEMS],
+                f"（其余 {len(items) - MAX_VALIDATION_ITEMS} 条同类信息已省略）",
+            ]
+    return trimmed
+
 
 def _structure_hint(raw: Any) -> dict[str, Any]:
     """把分片的结构元数据裁剪成「轻量提示」再交给报告 Agent。
@@ -529,7 +549,7 @@ async def validate_candidate_report(
         template=_template_for_run(run),
         evidence_context=evidence_context,
     )
-    return validation.to_dict()
+    return _trim_validation_payload(validation.to_dict())
 
 
 @router.post("/runs/{run_id}/submit")
@@ -551,8 +571,8 @@ async def submit_candidate_report(
             status_code=422,
             detail={
                 "code": "REPORT_IR_VALIDATION_FAILED",
-                **validation.to_dict(),
-                "coverage_errors": coverage_errors,
+                **_trim_validation_payload(validation.to_dict()),
+                "coverage_errors": coverage_errors[:MAX_VALIDATION_ITEMS],
             },
         )
     encoded = json.dumps(
@@ -568,10 +588,10 @@ async def submit_candidate_report(
         "chunk_manifest_sha256": chunk_manifest.content_hash,
         "chunk_count": len(chunk_manifest.items),
     }
+    # 不回显 report_ir / coverage：模型刚提交过它们，回显只是把同一份大对象再占用
+    # 一次上下文（coverage 在大文档上可达数万 token）。pi 侧用自己提交的对象继续。
     return {
         "accepted": True,
-        "report_ir": payload.report_ir,
-        "validation_report": validation.to_dict(),
+        "validation_report": _trim_validation_payload(validation.to_dict()),
         "manifest": manifest,
-        "coverage": payload.coverage,
     }

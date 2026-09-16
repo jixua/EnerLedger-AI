@@ -683,6 +683,9 @@ class Settings(BaseSettings):
     # 单页分片返回的字符上限：分片正文长度差异极大（实测单条最长 1.7 万字符），
     # 只按条数分页会让一次返回达到几十万字符。
     REPORT_AGENT_CHUNK_PAGE_MAX_CHARS: int = Field(default=24000, ge=1000, le=200000)
+    # 单个补充答案的长度上限：答案会随 get_run_clarifications 进入模型上下文，
+    # 不限制的话一个粘贴超大文本的答案就能把窗口挤掉。
+    REPORT_ANSWER_MAX_CHARS: int = Field(default=4000, ge=100, le=100000)
     REPORT_MODEL_ALLOWED_HOSTS: str = ""
     REPORT_MODEL_ALLOW_PRIVATE_ENDPOINTS: bool = False
     MINIO_ENDPOINT: str = "localhost:9000"

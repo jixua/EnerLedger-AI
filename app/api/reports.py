@@ -78,6 +78,17 @@ class ReportAnswerItem(BaseModel):
     value: Any
     notes: str | None = Field(default=None, max_length=1000)
 
+    @field_validator("value")
+    @classmethod
+    def _limit_answer_size(cls, value: Any) -> Any:
+        encoded = json.dumps(value, ensure_ascii=False, default=str)
+        if len(encoded) > settings.REPORT_ANSWER_MAX_CHARS:
+            raise ValueError(
+                f"补充内容过长（上限 {settings.REPORT_ANSWER_MAX_CHARS} 字符），"
+                "请精简后重新提交"
+            )
+        return value
+
 
 class ReportAnswersRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
