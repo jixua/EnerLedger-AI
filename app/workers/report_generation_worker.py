@@ -26,6 +26,12 @@ from app.rag.observability.logging import logger, safe_exception_stack, setup_lo
 from app.rag.services.mq_service import MQService
 from app.services.document_queue import DOCUMENT_STATUS_READY
 from app.services.report_agent_tokens import issue_report_agent_token
+from app.services.report_budget import (
+    ReportDocumentTooLargeError,
+    assert_document_fits_context,
+    load_document_payload_stats,
+    report_context_budget,
+)
 from app.services.report_ir import build_fixture_report_ir, validate_report_ir
 from app.services.report_queue import ReportRunClaim, ReportRunQueueService
 from app.services.report_source_context import (
@@ -182,6 +188,39 @@ class PiReportProcessor:
                 error = PiReportProcessorError("冻结的用户模板分片已经变化", retryable=False)
                 error.error_code = "REPORT_CUSTOM_TEMPLATE_CHANGED"
                 raise error
+        # 与创建任务时同一套上下文预算：重试、历史任务等任何执行路径都不允许在
+        # 「一轮读不完」的情况下调用模型（必然以输出截断告终）。
+        source_chunks, source_chars = await load_document_payload_stats(
+            db, document_id=int(run.document_id), document_version=int(run.document_version)
+        )
+        custom_chunks = custom_chars = 0
+        if run.custom_template_document_id:
+            custom_chunks, custom_chars = await load_document_payload_stats(
+                db,
+                document_id=int(run.custom_template_document_id),
+                document_version=int(run.custom_template_document_version or 0),
+            )
+        try:
+            estimated_tokens = assert_document_fits_context(
+                content_chars=source_chars + custom_chars,
+                chunk_count=source_chunks + custom_chunks,
+            )
+        except ReportDocumentTooLargeError as exc:
+            error = PiReportProcessorError(str(exc), retryable=False)
+            error.error_code = exc.code
+            raise error from exc
+        budget = report_context_budget()
+        logger.info(
+            "报告任务上下文预算检查通过 run_id={} 估算tokens={} 分片数={} "
+            "模型窗口={} 最大输出={} 预留={} prompt预算={}",
+            run.id,
+            estimated_tokens,
+            source_chunks + custom_chunks,
+            budget.window_tokens,
+            budget.max_output_tokens,
+            budget.reserve_tokens,
+            budget.prompt_tokens,
+        )
         model = await db.scalar(
             select(LLMModelConfigDB).where(LLMModelConfigDB.id == run.llm_config_id)
         )

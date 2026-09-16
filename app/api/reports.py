@@ -18,7 +18,13 @@ from app.domain.time import utc_now
 from app.rag.config import settings
 from app.rag.database import get_db
 from app.rag.models.db_models import LLMModelConfigDB
+from app.rag.observability.logging import logger
 from app.services.document_queue import DOCUMENT_STATUS_READY
+from app.services.report_budget import (
+    ReportDocumentTooLargeError,
+    assert_document_fits_context,
+    load_document_payload_stats,
+)
 from app.services.report_dispatch import ReportRunDispatcher, mark_report_dispatch_pending
 from app.services.report_ir import validate_report_field_value
 from app.services.report_model_policy import (
@@ -228,6 +234,35 @@ async def create_report(
                 status_code=409,
                 detail={"code": "CUSTOM_TEMPLATE_EMPTY", "message": "上传模板没有可读内容"},
             )
+
+    # 报告 Agent 必须在一轮会话里读完整个文档，超出模型上下文预算的任务注定截断失败。
+    # 与其等几十分钟后报 REPORT_IR_NOT_SUBMITTED，不如在创建时就明确拒绝。
+    source_chunks, source_chars = await load_document_payload_stats(
+        db, document_id=int(document.id), document_version=int(document.version)
+    )
+    if custom_template is not None:
+        custom_chunks, custom_chars = await load_document_payload_stats(
+            db,
+            document_id=int(custom_template.id),
+            document_version=int(custom_template.version),
+        )
+    else:
+        custom_chunks = custom_chars = 0
+    try:
+        estimated_tokens = assert_document_fits_context(
+            content_chars=source_chars + custom_chars,
+            chunk_count=source_chunks + custom_chunks,
+        )
+    except ReportDocumentTooLargeError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    logger.info(
+        "报告任务上下文预算检查通过 run_estimate_tokens={} 分片数={}",
+        estimated_tokens,
+        source_chunks + custom_chunks,
+    )
 
     llm_config = await db.scalar(
         select(LLMModelConfigDB).where(LLMModelConfigDB.id == payload.llm_config_id)

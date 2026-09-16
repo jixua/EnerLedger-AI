@@ -10,19 +10,26 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from fastapi import HTTPException
 
 os.environ.setdefault("ADMIN_PASSWORD_HASH", "scrypt:test-only")
 
 import app.api.reports as reports_api
-from app.api.report_agent_internal import get_run_clarifications
+from app.api.report_agent_internal import _chunk_page, get_run_clarifications
 from app.api.reports import ReportCreateRequest, create_report
 from app.domain.models import Document, ReportQuestion, ReportRun
+from app.rag.config import settings
 from app.rag.core.mq.messages import ReportGenerationMessage
 from app.rag.models.db_models import LLMModelConfigDB
 from app.services.report_agent_tokens import (
     ReportAgentTokenError,
     issue_report_agent_token,
     verify_report_agent_token,
+)
+from app.services.report_budget import (
+    ReportDocumentTooLargeError,
+    assert_document_fits_context,
+    estimate_document_tokens,
 )
 from app.services.report_calculations import execute_registered_formula
 from app.services.report_ir import (
@@ -63,8 +70,12 @@ def _document() -> Document:
     )
 
 
-def _run() -> ReportRun:
-    return ReportRun(
+async def _load_payload_stats(_db, *, document_id, document_version):
+    """默认的文档规模统计：很小的文档，必然通过上下文预算检查。"""
+    return 4, 1200
+
+
+def _run() -> ReportRun:    return ReportRun(
         id="run-1",
         user_id=11,
         dataset_id=3,
@@ -341,6 +352,7 @@ async def test_create_report_freezes_document_template_and_model(
         return None, SimpleNamespace(items=({"chunk_id": "c1"},), content_hash="b" * 64)
 
     monkeypatch.setattr(reports_api, "load_report_source_context", load_source_context)
+    monkeypatch.setattr(reports_api, "load_document_payload_stats", _load_payload_stats)
     model = LLMModelConfigDB(
         id=5,
         scope="USER",
@@ -405,6 +417,7 @@ async def test_create_report_freezes_uploaded_template_manifest(
         return SimpleNamespace(items=({"chunk_id": "template-1"},), content_hash="c" * 64)
 
     monkeypatch.setattr(reports_api, "load_report_source_context", load_source_context)
+    monkeypatch.setattr(reports_api, "load_document_payload_stats", _load_payload_stats)
     monkeypatch.setattr(reports_api, "load_document_chunk_manifest", load_custom_manifest)
     custom_template = Document(
         id=8,
@@ -458,3 +471,70 @@ async def test_create_report_freezes_uploaded_template_manifest(
         "chunk_manifest_sha256": "c" * 64,
         "chunk_count": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_create_report_rejects_document_beyond_context_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一轮读不完的文档必须在创建时就明确拒绝，而不是跑到一半截断失败。"""
+
+    template = ReportTemplateRegistry(_reporting_root()).get("R2")
+
+    class Registry:
+        def get(self, report_type):
+            return template
+
+    monkeypatch.setattr(reports_api, "report_template_registry", Registry())
+
+    async def load_payload_stats(_db, *, document_id, document_version):
+        # 本地真实存在的一份 829 分片 / 144 万字符文档：约 72 万 tokens。
+        return 829, 1_441_668
+
+    monkeypatch.setattr(reports_api, "load_document_payload_stats", load_payload_stats)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await create_report(
+            document_id=7,
+            payload=ReportCreateRequest(report_type="R2", llm_config_id=5),
+            user_id=11,
+            db=_Session([_document()]),
+        )
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["code"] == "REPORT_DOCUMENT_TOO_LARGE"
+    assert "请拆分文档" in excinfo.value.detail["message"]
+
+
+def test_chunk_page_limits_page_by_char_budget() -> None:
+    """分页必须按字符预算截断：分片正文长度差异极大，只按条数会让单次返回爆掉上下文。"""
+    budget = settings.REPORT_AGENT_CHUNK_PAGE_MAX_CHARS
+
+    def row(content: str):
+        return SimpleNamespace(content=content)
+
+    rows = [row("文" * (budget // 3)) for _ in range(10)]
+    page, has_more = _chunk_page(rows, page_limit=10)
+    assert len(page) == 2
+    assert has_more is True
+
+    page, has_more = _chunk_page(rows[:2], page_limit=10)
+    assert len(page) == 2
+    assert has_more is False
+
+
+def test_chunk_page_always_returns_one_chunk_for_oversized_chunk() -> None:
+    """单条超预算也必须返回，否则游标永远无法前进。"""
+    budget = settings.REPORT_AGENT_CHUNK_PAGE_MAX_CHARS
+    rows = [SimpleNamespace(content="文" * (budget * 3))]
+    page, has_more = _chunk_page(rows, page_limit=10)
+    assert len(page) == 1
+    assert has_more is False
+
+
+def test_document_budget_estimate_grows_with_content_and_rejects_oversized() -> None:
+    small = estimate_document_tokens(content_chars=2_000, chunk_count=4)
+    large = estimate_document_tokens(content_chars=400_000, chunk_count=200)
+    assert small < large
+    assert assert_document_fits_context(content_chars=2_000, chunk_count=4) == small
+    with pytest.raises(ReportDocumentTooLargeError):
+        assert_document_fits_context(content_chars=400_000, chunk_count=200)

@@ -674,6 +674,15 @@ class Settings(BaseSettings):
     # 推理模型的思维链也计入输出预算：默认的 8192 会把输出截断在提交之前。
     REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS: int = Field(default=32768, ge=1024, le=131072)
     REPORT_AGENT_MODEL_CONTEXT_WINDOW: int = Field(default=128000, ge=8192, le=1048576)
+    # 报告 Agent 必须在一轮会话里读完全部分片，prompt 会随读取累积：
+    #   prompt 预算 = 上下文窗口 − 最大输出 − 预留（留给 Agent 自己回传的台账/IR 与校验轮次）
+    # 文档超出预算时在创建任务时就明确拒绝，而不是跑几十分钟后截断失败。
+    REPORT_AGENT_CONTEXT_RESERVE_TOKENS: int = Field(default=24000, ge=0, le=200000)
+    # 固定开销估算：模板定义 + Skill + ir_schema + 补充问答 + 系统提示。
+    REPORT_AGENT_PROMPT_OVERHEAD_TOKENS: int = Field(default=12000, ge=0, le=200000)
+    # 单页分片返回的字符上限：分片正文长度差异极大（实测单条最长 1.7 万字符），
+    # 只按条数分页会让一次返回达到几十万字符。
+    REPORT_AGENT_CHUNK_PAGE_MAX_CHARS: int = Field(default=24000, ge=1000, le=200000)
     REPORT_MODEL_ALLOWED_HOSTS: str = ""
     REPORT_MODEL_ALLOW_PRIVATE_ENDPOINTS: bool = False
     MINIO_ENDPOINT: str = "localhost:9000"
@@ -788,6 +797,14 @@ class Settings(BaseSettings):
         if self.REPORT_AGENT_RUN_TOKEN_TTL_SECONDS <= self.REPORT_AGENT_RUN_TIMEOUT_SECONDS:
             raise ValueError(
                 "REPORT_AGENT_RUN_TOKEN_TTL_SECONDS must exceed REPORT_AGENT_RUN_TIMEOUT_SECONDS"
+            )
+        if (
+            self.REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS + self.REPORT_AGENT_CONTEXT_RESERVE_TOKENS
+            >= self.REPORT_AGENT_MODEL_CONTEXT_WINDOW
+        ):
+            raise ValueError(
+                "REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS + REPORT_AGENT_CONTEXT_RESERVE_TOKENS "
+                "must be less than REPORT_AGENT_MODEL_CONTEXT_WINDOW"
             )
         try:
             retry_delays = [
