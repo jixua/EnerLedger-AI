@@ -38,6 +38,14 @@ from app.rag.core.llm.runtime_repository import RuntimeConfigRepository
 from app.rag.core.llm.user_model_resolver import aresolve_model
 from app.rag.core.pipeline.chunk_content import fetch_chunk_sources
 from app.rag.core.pipeline.recall.generation import assemble_context
+from app.rag.core.prompts import (
+    REPORT_CLARIFICATION_FALLBACK,
+    REPORT_CLARIFICATION_MAX_OUTPUT_TOKENS,
+    REPORT_CLARIFICATION_SYSTEM_PROMPT,
+    REPORT_CLARIFICATION_TIMEOUT_SECONDS,
+    build_report_clarification_user_prompt,
+    clean_report_clarification,
+)
 from app.rag.database import get_db, get_db_context
 from app.rag.models.chunk_record import ChunkRecordDB
 from app.services.agent_conversations import finish_turn, start_turn
@@ -62,6 +70,49 @@ def _sse_error(code: str, message: str) -> str:
 def _sse_event(name: str, payload: dict) -> str:
     # payload 可能携带原始 datetime（如报告对象字段），统一降级为字符串保证事件可序列化。
     return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+
+
+async def _report_clarification_reply(
+    *,
+    db: AsyncSession,
+    user_id: int,
+    config_id: int,
+    filename: str,
+    candidates: list[dict],
+) -> str:
+    """报告类型不明确时，用本轮对话模型生成确认说明；任何失败回落固定文案。"""
+
+    try:
+        resolved = await aresolve_model(
+            user_id=user_id, config_id=config_id, capability="CHAT", db=db
+        )
+    except LLMConfigResolutionError:
+        return REPORT_CLARIFICATION_FALLBACK
+    try:
+        result = await asyncio.wait_for(
+            resolved.provider.generate(
+                prompt=build_report_clarification_user_prompt(
+                    filename=filename, candidates=candidates
+                ),
+                system_prompt=REPORT_CLARIFICATION_SYSTEM_PROMPT,
+                temperature=0.2,
+                max_tokens=REPORT_CLARIFICATION_MAX_OUTPUT_TOKENS,
+            ),
+            timeout=REPORT_CLARIFICATION_TIMEOUT_SECONDS,
+        )
+        return clean_report_clarification(result.content) or REPORT_CLARIFICATION_FALLBACK
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 确认说明为增强项，失败回落固定文案
+        logger.bind(
+            event="report_clarification_generation_failed",
+            outcome="degraded",
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:200],
+        ).warning("[agent] report clarification generation failed")
+        return REPORT_CLARIFICATION_FALLBACK
+    finally:
+        await aclose_dataset_execution_contexts([], extra_models=[resolved])
 
 
 class AgentAttachment(BaseModel):
@@ -1029,7 +1080,13 @@ async def agent_stream(
             "user_instructions": body.query[:2000],
             "classification": classification.to_dict(),
         }
-        answer = "我还不能可靠判断报告类型，请从下面的候选中选择一项后继续。"
+        answer = await _report_clarification_reply(
+            db=db,
+            user_id=user_id,
+            config_id=config_id,
+            filename=source_documents[0].filename,
+            candidates=list(classification.candidates),
+        )
         await finish_turn(
             db, turn=turn, content=answer, status="NEEDS_INPUT", interaction=interaction
         )
