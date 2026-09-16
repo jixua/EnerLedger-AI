@@ -30,12 +30,16 @@ class ReportContextBudget:
     window_tokens: int
     max_output_tokens: int
     reserve_tokens: int
+    thinking_reserve_tokens: int = 0
 
     @property
     def prompt_tokens(self) -> int:
         """留给 prompt 的 token 预算。"""
         return max(
-            self.window_tokens - self.max_output_tokens - self.reserve_tokens,
+            self.window_tokens
+            - self.max_output_tokens
+            - self.reserve_tokens
+            - self.thinking_reserve_tokens,
             0,
         )
 
@@ -60,6 +64,13 @@ def report_context_budget() -> ReportContextBudget:
         window_tokens=settings.REPORT_AGENT_MODEL_CONTEXT_WINDOW,
         max_output_tokens=settings.REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
         reserve_tokens=settings.REPORT_AGENT_CONTEXT_RESERVE_TOKENS,
+        # 开启思考时，思考会随轮次累积进 prompt，且不受我们控制：多扣一份预留，
+        # 让「装不下」继续表现为创建时拒绝，而不是运行到一半失败。
+        thinking_reserve_tokens=(
+            settings.REPORT_AGENT_THINKING_RESERVE_TOKENS
+            if settings.REPORT_AGENT_MODEL_THINKING
+            else 0
+        ),
     )
 
 

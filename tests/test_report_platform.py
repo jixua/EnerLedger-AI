@@ -538,3 +538,15 @@ def test_document_budget_estimate_grows_with_content_and_rejects_oversized() -> 
     assert assert_document_fits_context(content_chars=2_000, chunk_count=4) == small
     with pytest.raises(ReportDocumentTooLargeError):
         assert_document_fits_context(content_chars=400_000, chunk_count=200)
+
+
+def test_thinking_reserve_shrinks_prompt_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """开启思考后要少收一批文档：思考会随轮次累积进 prompt，且不受我们控制。"""
+    document = {"content_chars": 50_000, "chunk_count": 70}
+
+    monkeypatch.setattr(settings, "REPORT_AGENT_MODEL_THINKING", False)
+    assert assert_document_fits_context(**document) > 0
+
+    monkeypatch.setattr(settings, "REPORT_AGENT_MODEL_THINKING", True)
+    with pytest.raises(ReportDocumentTooLargeError):
+        assert_document_fits_context(**document)

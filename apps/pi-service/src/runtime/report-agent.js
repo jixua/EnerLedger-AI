@@ -90,10 +90,11 @@ async function configuredModel(config, modelConfig) {
       contextWindow: Number(modelConfig.contextWindow) || 128000,
       maxTokens: Number(modelConfig.maxTokens) || 32768,
       // 报告任务有 7~10 轮工具调用，而 pi 会把上一轮 assistant 的 reasoning_content
-      // 原样回传：思考会随每轮累积并把上下文吃满（实测一次失败会话 prompt 已达 124k/128k，
-      // 最后一轮只剩 1 个 token 输出预算，stopReason=length、output=1）。
-      // 关闭模型的思考输出，换取长任务的上下文余量；需要恢复思考时删掉这段即可。
-      samplingParams: { thinking: { type: "disabled" } },
+      // 原样回传：思考会随每轮累积进 prompt，且总量无法预估（实测中等文档到 124k/128k
+      // 就再也放不下输出）。默认关闭，由应用侧 REPORT_AGENT_MODEL_THINKING 决定是否放开。
+      ...(modelConfig.thinking === true
+        ? {}
+        : { samplingParams: { thinking: { type: "disabled" } } }),
     }],
   });
   await modelRuntime.setRuntimeApiKey(provider, modelConfig.apiKey);
@@ -111,8 +112,7 @@ function assertCompleted(message) {
   if (message.stopReason === "aborted") throw new Error("REPORT_AGENT_ABORTED");
 }
 
-export async function executeReportAgentRun({ config, runId, runToken, model, signal }) {
-  const client = createEnerLedgerClient(config, runId, runToken, signal);
+export async function executeReportAgentRun({ config, runId, runToken, model, signal }) {  const client = createEnerLedgerClient(config, runId, runToken, signal);
   const { modelRuntime, model: resolvedModel } = await configuredModel(config, model);
   let skillsLoaded = false;
   let contextLoaded = false;
@@ -122,6 +122,8 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
   let submitted = null;
   let submittedIr = null;
   let submittedCoverage = null;
+  // 会话里出现过的最大 prompt 量（含缓存命中与当轮输出），用于评估距上下文窗口的余量。
+  let peakPromptTokens = 0;
   let lastValidation = null;
   let clarification = null;
   let finalAssistantMessage;
@@ -419,6 +421,13 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
   const unsubscribe = session.subscribe((event) => {
     if (event.type === "message_end" && event.message.role === "assistant") {
       finalAssistantMessage = event.message;
+      const usage = event.message.usage;
+      if (usage) {
+        peakPromptTokens = Math.max(
+          peakPromptTokens,
+          (usage.input ?? 0) + (usage.cacheRead ?? 0) + (usage.output ?? 0),
+        );
+      }
     }
   });
   const abort = () => void session.abort();
@@ -428,6 +437,13 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
     assertCompleted(finalAssistantMessage);
     if (!skillsLoaded) throw new Error("REPORT_SKILLS_REQUIRED");
     if (clarification) {
+      console.log(JSON.stringify({
+        event: "report_needs_input",
+        runId,
+        toolCalls,
+        peakPromptTokens,
+        thinking: model.thinking === true ? "enabled" : "disabled",
+      }));
       return { outcome: "NEEDS_INPUT", clarification, toolCalls };
     }
     if (!submitted?.accepted || !submittedIr) {
@@ -443,8 +459,10 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
         // usage 决定失败性质：output 达到请求上限＝推理烧光输出预算；
         // output 低于上限而 input 逼近上下文窗口＝输入过大被服务端钳制。
         usage: finalAssistantMessage?.usage ?? null,
+        peakPromptTokens,
         maxTokens: resolvedModel.maxTokens,
         contextWindow: resolvedModel.contextWindow,
+        thinking: model.thinking === true ? "enabled" : "disabled",
         lastValidation,
         lastMessage: lastMessageText.slice(0, 1200),
         toolTraceTotalChars: toolTrace.reduce(
@@ -457,6 +475,16 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
       }));
       throw new Error("REPORT_IR_NOT_SUBMITTED");
     }
+    console.log(JSON.stringify({
+      event: "report_ir_submitted",
+      runId,
+      toolCalls,
+      peakPromptTokens,
+      contextWindow: resolvedModel.contextWindow,
+      maxTokens: resolvedModel.maxTokens,
+      thinking: config.reportModelThinking ? "enabled" : "disabled",
+      usage: finalAssistantMessage?.usage ?? null,
+    }));
     return {
       outcome: "SUBMITTED",
       reportIr: submittedIr,

@@ -273,6 +273,8 @@ class PiReportProcessor:
                 # 否则 pi 侧会退回 8192 默认值并把输出截断（stopReason=length）。
                 "maxTokens": settings.REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
                 "contextWindow": settings.REPORT_AGENT_MODEL_CONTEXT_WINDOW,
+                # 思考开关跟随应用设置；开启时预算闸门会同步多扣一份预留。
+                "thinking": settings.REPORT_AGENT_MODEL_THINKING,
             },
         }
         await db.rollback()

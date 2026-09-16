@@ -678,6 +678,12 @@ class Settings(BaseSettings):
     #   prompt 预算 = 上下文窗口 − 最大输出 − 预留（留给 Agent 自己回传的台账/IR 与校验轮次）
     # 文档超出预算时在创建任务时就明确拒绝，而不是跑几十分钟后截断失败。
     REPORT_AGENT_CONTEXT_RESERVE_TOKENS: int = Field(default=24000, ge=0, le=200000)
+    # 报告 Agent 是否允许模型输出思考（reasoning_content）。默认关闭：
+    # pi 会把上一轮的思考原样回传，prompt 随轮次持续增长且无法预估——实测一份
+    # 估算 4 万 token 的文档，开启思考后峰值 prompt 达到 12.4 万（窗口 12.8 万），
+    # 最后一轮没有输出空间而失败。开启时会额外扣减下面这份预留，只有小文档能通过。
+    REPORT_AGENT_MODEL_THINKING: bool = False
+    REPORT_AGENT_THINKING_RESERVE_TOKENS: int = Field(default=48000, ge=0, le=200000)
     # 固定开销估算：模板定义 + Skill + ir_schema + 补充问答 + 系统提示。
     REPORT_AGENT_PROMPT_OVERHEAD_TOKENS: int = Field(default=12000, ge=0, le=200000)
     # 单页分片返回的字符上限：分片正文长度差异极大（实测单条最长 1.7 万字符），
@@ -808,6 +814,16 @@ class Settings(BaseSettings):
             raise ValueError(
                 "REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS + REPORT_AGENT_CONTEXT_RESERVE_TOKENS "
                 "must be less than REPORT_AGENT_MODEL_CONTEXT_WINDOW"
+            )
+        if self.REPORT_AGENT_MODEL_THINKING and (
+            self.REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS
+            + self.REPORT_AGENT_CONTEXT_RESERVE_TOKENS
+            + self.REPORT_AGENT_THINKING_RESERVE_TOKENS
+            >= self.REPORT_AGENT_MODEL_CONTEXT_WINDOW
+        ):
+            raise ValueError(
+                "开启 REPORT_AGENT_MODEL_THINKING 时，最大输出 + 上下文预留 + 思考预留 "
+                "必须小于模型上下文窗口，否则没有文档能通过预算闸门"
             )
         try:
             retry_delays = [
