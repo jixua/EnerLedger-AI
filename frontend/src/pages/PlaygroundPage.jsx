@@ -361,7 +361,9 @@ export function PlaygroundPage() {
   }
 
   async function openConversation(id) {
-    if (!id || isRunning) return;
+    if (!id) return;
+    // 生成中的后台流与当前视图解绑：其事件不再更新界面，完成后仍会持久化到该对话。
+    activeAssistantRef.current = null;
     setHistoryLoading(true);
     setAttachmentError("");
     try {
@@ -803,7 +805,7 @@ export function PlaygroundPage() {
   return (
     <div className="conversation-workspace">
       <aside className="conversation-history" aria-label="历史对话">
-        <header><span>最近对话</span><button type="button" aria-label="新建对话" onClick={() => { setConversationId(null); setMessages([]); setAttachments([]); }}><Plus size={15} /></button></header>
+        <header><span>最近对话</span><button type="button" aria-label="新建对话" onClick={() => { activeAssistantRef.current = null; setConversationId(null); setMessages([]); setAttachments([]); }}><Plus size={15} /></button></header>
         <div className="conversation-history__list">
           {historyLoading ? <p>正在读取…</p> : conversations.length ? conversations.map((item) => (
             <button type="button" className={item.conversation_id === conversationId ? "is-active" : ""} key={item.conversation_id} onClick={() => openConversation(item.conversation_id)}>
