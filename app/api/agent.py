@@ -60,7 +60,8 @@ def _sse_error(code: str, message: str) -> str:
 
 
 def _sse_event(name: str, payload: dict) -> str:
-    return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    # payload 可能携带原始 datetime（如报告对象字段），统一降级为字符串保证事件可序列化。
+    return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
 
 
 class AgentAttachment(BaseModel):
