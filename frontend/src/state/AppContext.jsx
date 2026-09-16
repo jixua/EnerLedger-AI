@@ -151,17 +151,22 @@ export function AppProvider({ children }) {
     }
 
     try {
-      const [nextDatasets, nextModels, nextDocuments, nextHealth] = await Promise.all([
-        listDatasets(),
-        listModelConfigs({ includeInactive: !isReviewer }),
-        isReviewer ? Promise.resolve([]) : listAllDocuments(),
-        isReviewer ? Promise.resolve({ status: "restricted" }) : getSystemStatus(),
+      // 慢接口不阻塞其余数据：每个请求各自完成就立即落地（弱网下文档列表可能明显滞后）。
+      const applyResult = (request, apply) => request
+        .then((value) => { if (mounted.current) apply(value); })
+        .catch((error) => { if (mounted.current) setLastError(normalizeMessage(error)); });
+      await Promise.all([
+        applyResult(listDatasets(), setDatasets),
+        applyResult(listModelConfigs({ includeInactive: !isReviewer }), setModels),
+        applyResult(
+          isReviewer ? Promise.resolve([]) : listAllDocuments(),
+          (documents) => setDocuments(groupDocuments(documents)),
+        ),
+        applyResult(
+          isReviewer ? Promise.resolve({ status: "restricted" }) : getSystemStatus(),
+          setHealth,
+        ),
       ]);
-      if (!mounted.current) return;
-      setDatasets(nextDatasets);
-      setModels(nextModels);
-      setDocuments(groupDocuments(nextDocuments));
-      setHealth(nextHealth);
     } catch (error) {
       if (mounted.current) setLastError(normalizeMessage(error));
     } finally {
