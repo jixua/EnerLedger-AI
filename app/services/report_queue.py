@@ -110,6 +110,10 @@ class ReportRunQueueService:
             "finished_at": completed_at if state == "SUCCEEDED" else None,
             "updated_at": completed_at,
         }
+        if state == "NEEDS_INPUT":
+            # 「等用户补充」不是失败：每次问答往返都会重新认领一次任务，
+            # 如果计入尝试次数，多轮提问的任务会在第三轮被 MAX_ATTEMPTS 判死。
+            values["attempt_count"] = 0
         result = await db.execute(
             update(ReportRun)
             .where(
