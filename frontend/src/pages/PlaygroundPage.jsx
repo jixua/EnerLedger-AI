@@ -632,7 +632,7 @@ export function PlaygroundPage() {
             );
           })}
         </div>
-        <p className="composer-attachments-hint">附件将作为报告素材：发送后自动识别报告类型并创建报告任务（识别不确定时会弹出确认卡片）。</p>
+        <p className="composer-attachments-hint">附件将作为报告材料：发送后自动识别报告类型并创建报告任务（识别不确定时会弹出确认卡片）。</p>
         </>
       ) : null}
       <textarea
@@ -653,9 +653,9 @@ export function PlaygroundPage() {
       <div className="chat-composer__toolbar">
         <div className="chat-composer__controls" ref={controlsRef}>
           <div className="composer-selector composer-selector--attachment">
-            <button type="button" className="composer-selector__trigger composer-attachment-trigger" aria-label="上传文件" onClick={() => sourceFileRef.current?.click()}>
+            <button type="button" className="composer-selector__trigger composer-attachment-trigger" aria-label="上传报告材料" onClick={() => sourceFileRef.current?.click()}>
               {uploadingRole ? <LoaderCircle className="spin" size={15} /> : <Paperclip size={15} />}
-              <span>上传文件</span>
+              <span>上传报告材料</span>
             </button>
           </div>
           <div className={`composer-selector composer-selector--datasets${openSelector === "datasets" ? " is-open" : ""}`}>
