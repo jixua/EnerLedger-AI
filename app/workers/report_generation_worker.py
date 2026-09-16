@@ -230,6 +230,10 @@ class PiReportProcessor:
                 "protocol": model_snapshot["protocol"],
                 "baseUrl": model_snapshot["api_base_url"],
                 "apiKey": decrypt_api_key(model.api_key),
+                # 报告 Agent 一次要产出的 ReportIR 远大于对话回复，必须显式下发输出预算，
+                # 否则 pi 侧会退回 8192 默认值并把输出截断（stopReason=length）。
+                "maxTokens": settings.REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
+                "contextWindow": settings.REPORT_AGENT_MODEL_CONTEXT_WINDOW,
             },
         }
         await db.rollback()

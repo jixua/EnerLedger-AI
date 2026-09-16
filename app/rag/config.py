@@ -667,9 +667,13 @@ class Settings(BaseSettings):
     PI_SERVICE_URL: str = "http://127.0.0.1:8010"
     REPORT_AGENT_INTERNAL_TOKEN: str = ""
     REPORT_AGENT_RUN_TOKEN_SECRET: str = ""
-    REPORT_AGENT_RUN_TOKEN_TTL_SECONDS: int = Field(default=900, ge=60, le=3600)
-    REPORT_AGENT_RUN_TIMEOUT_SECONDS: float = Field(default=600, gt=0, le=3600)
+    REPORT_AGENT_RUN_TOKEN_TTL_SECONDS: int = Field(default=2700, ge=60, le=3600)
+    REPORT_AGENT_RUN_TIMEOUT_SECONDS: float = Field(default=1500, gt=0, le=3600)
     REPORT_AGENT_MAX_TOOL_CALLS: int = Field(default=80, ge=10, le=1000)
+    # 报告 Agent 需要在单次工具调用里产出完整 ReportIR（证据台账 + 字段台账 + 全文章节），
+    # 推理模型的思维链也计入输出预算：默认的 8192 会把输出截断在提交之前。
+    REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS: int = Field(default=32768, ge=1024, le=131072)
+    REPORT_AGENT_MODEL_CONTEXT_WINDOW: int = Field(default=128000, ge=8192, le=1048576)
     REPORT_MODEL_ALLOWED_HOSTS: str = ""
     REPORT_MODEL_ALLOW_PRIVATE_ENDPOINTS: bool = False
     MINIO_ENDPOINT: str = "localhost:9000"

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -64,6 +65,15 @@ def _report_ir_schema_validator() -> Draft202012Validator:
         (root / "field-ledger.schema.json").read_text(encoding="utf-8")
     )
     return Draft202012Validator(report_schema)
+
+
+def report_ir_contract_schema() -> dict[str, Any]:
+    """返回校验实际使用的 ReportIR JSON Schema（evidence / field_ledger 已内联）。
+
+    交给报告 Agent，让它在构造 ReportIR 前就看到精确字段名与取值枚举，
+    避免按猜测的字段名（如 evidence 的 value/answer/content）反复被校验拒绝。
+    """
+    return copy.deepcopy(_report_ir_schema_validator().schema)
 
 
 def _is_number(value: Any) -> bool:

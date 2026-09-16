@@ -22,7 +22,7 @@ from app.services.report_agent_tokens import (
     verify_report_agent_token,
 )
 from app.services.report_calculations import ReportCalculationError, execute_registered_formula
-from app.services.report_ir import validate_report_ir
+from app.services.report_ir import report_ir_contract_schema, validate_report_ir
 from app.services.report_source_context import (
     load_report_source_context,
     validate_chunk_coverage,
@@ -224,6 +224,8 @@ async def get_template_definition(
         "template_id": template.template_id,
         "template_version": template.version,
         "definition": template.definition,
+        # 与校验器同源的 ReportIR JSON Schema：Agent 必须按其中的字段名/枚举构造 IR。
+        "ir_schema": report_ir_contract_schema(),
         "common_skill": template.common_skill,
         "report_skill": template.report_skill,
     }
