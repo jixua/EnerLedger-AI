@@ -125,7 +125,8 @@ export function PlaygroundPage() {
   const [openSelector, setOpenSelector] = useState(null);
   const abortRef = useRef(null);
   const activeAssistantRef = useRef(null);
-  const messageEndRef = useRef(null);
+  const threadRef = useRef(null);
+  const stickToBottomRef = useRef(true);
   const controlsRef = useRef(null);
   const datasetTriggerRef = useRef(null);
   const modelTriggerRef = useRef(null);
@@ -321,7 +322,16 @@ export function PlaygroundPage() {
   }, [openSelector]);
 
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    // 切换会话时恢复"粘底"跟随。
+    stickToBottomRef.current = true;
+  }, [conversationId]);
+
+  useEffect(() => {
+    // 流式输出期间仅在用户位于底部时跟随；用户上滑阅读时保持当前位置。
+    if (!stickToBottomRef.current) return;
+    const el = threadRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   useEffect(() => {
@@ -508,6 +518,7 @@ export function PlaygroundPage() {
   async function submitQuestion(event) {
     event?.preventDefault();
     if (!canSubmit || typeof streamAgent !== "function") return;
+    stickToBottomRef.current = true;
 
     const prompt = question.trim();
     const idBase = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -816,7 +827,21 @@ export function PlaygroundPage() {
           </div>
         </main>
       ) : (
-        <main className="conversation-thread">
+        <main
+          className="conversation-thread"
+          ref={threadRef}
+          onScroll={(event) => {
+            // 滞回判定：流式增长会垫高"距底距离"，阈间保持现状避免状态抖断。
+            const el = event.currentTarget;
+            const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+            if (distance <= 250) stickToBottomRef.current = true;
+            else if (distance >= 400) stickToBottomRef.current = false;
+          }}
+          onWheel={(event) => {
+            // 滚轮向上即视为用户离开底部，立即停止跟随。
+            if (event.deltaY < 0) stickToBottomRef.current = false;
+          }}
+        >
           <div className="message-column">
             {messages.map((message) => message.role === "user" ? (
               <article className="chat-message chat-message--user" key={message.id}>
@@ -870,7 +895,6 @@ export function PlaygroundPage() {
                 </div>
               </article>
             ))}
-            <div ref={messageEndRef} />
           </div>
           <div className="conversation-composer-dock">{composer}</div>
         </main>
