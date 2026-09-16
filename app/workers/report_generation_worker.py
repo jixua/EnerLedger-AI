@@ -22,7 +22,7 @@ from app.rag.core.llm.encryption import decrypt_api_key
 from app.rag.core.mq.messages import ReportGenerationMessage, ReportGenerationPayload
 from app.rag.database import close_database, get_db_context, init_database
 from app.rag.models.db_models import LLMModelConfigDB
-from app.rag.observability.logging import logger, setup_logger
+from app.rag.observability.logging import logger, safe_exception_stack, setup_logger
 from app.rag.services.mq_service import MQService
 from app.services.document_queue import DOCUMENT_STATUS_READY
 from app.services.report_agent_tokens import issue_report_agent_token
@@ -248,6 +248,9 @@ class PiReportProcessor:
                 )
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise PiReportProcessorError("Pi Agent 服务暂时不可用") from exc
+        # 前面的 rollback 已使 run 实例过期；pi 调用（可能数分钟）结束后先异步刷新，
+        # 避免随后读取属性/传入校验触发同步懒加载（MissingGreenlet）。
+        await db.refresh(run)
         if response.status_code != 200:
             try:
                 code = str(response.json().get("error") or "PI_AGENT_REQUEST_FAILED")
@@ -462,6 +465,8 @@ class ReportGenerationWorker:
                 event="report_processing_failed",
                 run_id=claim.run_id,
                 error_type=type(exc).__name__,
+                error_message=str(exc)[:500],
+                stack_trace=safe_exception_stack(exc),
             ).error("报告 Worker 处理失败")
         finally:
             heartbeat_stop.set()
