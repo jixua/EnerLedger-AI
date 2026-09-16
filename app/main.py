@@ -20,6 +20,7 @@ from app.services.report_dispatch import run_report_dispatch_reconciler
 setup_logger()
 
 from app.api.agent import router as agent_router
+from app.api.agent_conversations import router as agent_conversations_router
 from app.api.auth import router as auth_router
 from app.api.crawler import router as crawler_router
 from app.api.crawler import submission_router
@@ -97,6 +98,7 @@ app.add_middleware(
 )
 app.include_router(auth_router)
 app.include_router(agent_router)
+app.include_router(agent_conversations_router)
 app.include_router(crawler_router)
 app.include_router(submission_router)
 app.include_router(llm_router)

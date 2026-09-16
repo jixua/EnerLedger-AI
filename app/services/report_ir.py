@@ -384,7 +384,10 @@ def validate_report_ir(
             continue
         section_id = str(section.get("section_id"))
         definition = section_definitions.get(section_id) or {}
-        if section.get("title") != definition.get("title"):
+        if (
+            run.custom_template_manifest is None
+            and section.get("title") != definition.get("title")
+        ):
             errors.append(f"章节 {section_id} 标题与模板不一致")
         for block in section.get("blocks") or []:
             block_evidence = set(block.get("evidence_ids") or [])

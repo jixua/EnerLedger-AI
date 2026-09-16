@@ -10,7 +10,7 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.models import ReportQuestion, ReportRun
+from app.domain.models import Document, ReportQuestion, ReportRun
 from app.rag.models.chunk_record import ChunkRecordDB
 from app.services.report_ir import ReportEvidenceContext
 
@@ -112,3 +112,29 @@ def validate_chunk_coverage(coverage: dict[str, Any], manifest: ReportChunkManif
     if coverage.get("manifest_hash") != manifest.content_hash:
         errors.append("Agent 分片 Manifest 哈希不一致")
     return errors
+
+
+async def load_document_chunk_manifest(
+    db: AsyncSession, *, document: Document
+) -> ReportChunkManifest:
+    chunks = (
+        await db.scalars(
+            select(ChunkRecordDB)
+            .where(
+                ChunkRecordDB.doc_id == document.id,
+                ChunkRecordDB.document_version == document.version,
+                ChunkRecordDB.user_id == document.user_id,
+                ChunkRecordDB.set_id == document.dataset_id,
+            )
+            .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
+        )
+    ).all()
+    items = tuple(
+        {
+            "chunk_id": str(chunk.chunk_id),
+            "chunk_index": int(chunk.chunk_index),
+            "content_hash": str(chunk.content_hash),
+        }
+        for chunk in chunks
+    )
+    return ReportChunkManifest(items=items, content_hash=_canonical_hash(items))

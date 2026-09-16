@@ -37,8 +37,8 @@ def test_agent_stream_body_treats_missing_or_empty_dataset_ids_as_all_scope() ->
     assert agent_module.AgentStreamBody(query="你好", dataset_ids=[]).dataset_ids == []
 
 
-def test_agent_stream_body_limits_history_to_five_messages() -> None:
-    history = [{"role": "user", "content": f"问题 {index}"} for index in range(6)]
+def test_agent_stream_body_keeps_legacy_history_bounded_to_ten_messages() -> None:
+    history = [{"role": "user", "content": f"问题 {index}"} for index in range(11)]
 
     with pytest.raises(ValidationError):
         agent_module.AgentStreamBody(query="你好", history=history)

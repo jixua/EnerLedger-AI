@@ -5,7 +5,9 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 from collections.abc import AsyncGenerator
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
@@ -14,7 +16,8 @@ from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.auth import get_shared_owner_user_id
+from app.api.reports import ReportCreateRequest, create_report
+from app.domain.auth import get_actor_user_id, get_shared_owner_user_id
 from app.domain.models import Dataset, Document
 from app.rag.application.recall_pipeline_provider import (
     aresolve_recall_execution,
@@ -37,19 +40,34 @@ from app.rag.core.pipeline.chunk_content import fetch_chunk_sources
 from app.rag.core.pipeline.recall.generation import assemble_context
 from app.rag.database import get_db, get_db_context
 from app.rag.models.chunk_record import ChunkRecordDB
+from app.services.agent_conversations import finish_turn, start_turn
 from app.services.agent_runs import agent_run_registry
+from app.services.document_queue import DOCUMENT_STATUS_READY
 from app.services.pi_agent_client import (
     PiAgentUnavailableError,
     pi_agent_readiness,
     stream_pi_agent,
 )
+from app.services.report_template_classifier import Classification, classify_document
 
 router = APIRouter(tags=["Pi Agent"])
+logger = logging.getLogger(__name__)
 
 
 def _sse_error(code: str, message: str) -> str:
     payload = json.dumps({"code": code, "message": message}, ensure_ascii=False)
     return f"event: error\ndata: {payload}\n\n"
+
+
+def _sse_event(name: str, payload: dict) -> str:
+    return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+class AgentAttachment(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    document_id: int = Field(gt=0)
+    role: Literal["SOURCE", "TEMPLATE"]
 
 
 class AgentHistoryMessage(BaseModel):
@@ -66,7 +84,9 @@ class AgentStreamBody(BaseModel):
     dataset_ids: list[int] | None = Field(default=None, max_length=20)
     doc_ids: list[int] | None = Field(default=None, max_length=100)
     llm_config_id: int | None = Field(default=None, gt=0)
-    history: list[AgentHistoryMessage] = Field(default_factory=list, max_length=5)
+    history: list[AgentHistoryMessage] = Field(default_factory=list, max_length=10)
+    conversation_id: str | None = Field(default=None, max_length=36)
+    attachments: list[AgentAttachment] = Field(default_factory=list, max_length=2)
 
     @field_validator("query")
     @classmethod
@@ -820,6 +840,7 @@ async def agent_stream(
     body: AgentStreamBody,
     request: Request,
     user_id: int = Depends(get_shared_owner_user_id),
+    actor_user_id: int = Depends(get_actor_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> StreamingResponse:
     if not settings.AGENT_ENABLED:
@@ -843,30 +864,298 @@ async def agent_stream(
     if runtime_config is None:  # guarded by aresolve_model; keeps type boundary explicit
         raise HTTPException(status_code=404, detail="模型配置不存在")
 
-    run_id = uuid4().hex
-    await agent_run_registry.register(
-        run_id=run_id,
-        user_id=user_id,
+    source_documents: list[Document] = []
+    template_documents: list[Document] = []
+    attachment_snapshots: list[dict] = []
+    if body.attachments:
+        attachment_ids = [item.document_id for item in body.attachments]
+        if len(set(attachment_ids)) != len(attachment_ids):
+            raise HTTPException(status_code=422, detail="附件不能重复")
+        owned = (
+            await db.scalars(
+                select(Document).where(
+                    Document.id.in_(attachment_ids),
+                    Document.user_id == user_id,
+                    Document.dataset_id.in_(dataset_ids),
+                )
+            )
+        ).all()
+        by_id = {int(document.id): document for document in owned}
+        if set(by_id) != set(attachment_ids):
+            raise HTTPException(status_code=404, detail="附件不存在或不在当前知识库范围")
+        for item in body.attachments:
+            document = by_id[item.document_id]
+            if document.status != DOCUMENT_STATUS_READY:
+                raise HTTPException(
+                    status_code=409,
+                    detail={
+                        "code": "AGENT_ATTACHMENT_NOT_READY",
+                        "message": f"{document.filename} 尚未解析完成，请稍后再发送",
+                    },
+                )
+            (source_documents if item.role == "SOURCE" else template_documents).append(document)
+            attachment_snapshots.append(
+                {
+                    "document_id": int(document.id),
+                    "document_version": int(document.version),
+                    "dataset_id": int(document.dataset_id),
+                    "filename": document.filename,
+                    "role": item.role,
+                }
+            )
+        if len(source_documents) != 1 or len(template_documents) > 1:
+            raise HTTPException(status_code=422, detail="报告对话需要一个源文件和最多一个模板文件")
+
+    conversation, turn, persisted_history = await start_turn(
+        db,
+        user_id=actor_user_id,
+        conversation_id=body.conversation_id,
+        user_content=body.query,
         dataset_ids=dataset_ids,
-        doc_ids=body.doc_ids,
-        scope_mode="selected" if body.dataset_ids else "all_accessible",
+        document_ids=list(body.doc_ids or []),
+        llm_config_id=config_id,
+        attachments=attachment_snapshots,
     )
+
+    if source_documents:
+        try:
+            classification = await classify_document(db, document=source_documents[0])
+            if template_documents:
+                template_classification = await classify_document(
+                    db, document=template_documents[0]
+                )
+        except Exception as exc:
+            logger.exception("Report template classification failed", exc_info=exc)
+            await finish_turn(
+                db,
+                turn=turn,
+                content="报告类型识别失败，请稍后重试。",
+                status="FAILED",
+                error_code="REPORT_TEMPLATE_CLASSIFICATION_FAILED",
+                error_message="报告类型识别失败",
+            )
+            raise
+        if template_documents:
+            source_type = classification.selected_report_type
+            template_type = template_classification.selected_report_type
+            if template_type and source_type and template_type != source_type:
+                merged: dict[str, dict] = {}
+                for item in (
+                    *template_classification.candidates,
+                    *classification.candidates,
+                ):
+                    previous = merged.get(item["report_type"])
+                    if previous is None or item["score"] > previous["score"]:
+                        merged[item["report_type"]] = item
+                ranked_candidates = sorted(
+                    merged.values(),
+                    key=lambda item: (-item["score"], item["report_type"]),
+                )
+                classification = Classification(
+                    state="AMBIGUOUS",
+                    selected_report_type=None,
+                    candidates=tuple(ranked_candidates[:3]),
+                )
+            elif template_type:
+                classification = template_classification
+        if classification.state == "CONFIDENT":
+            report_type = str(classification.selected_report_type)
+            try:
+                report = await create_report(
+                    document_id=int(source_documents[0].id),
+                    payload=ReportCreateRequest(
+                        report_type=report_type,
+                        llm_config_id=config_id,
+                        custom_template_document_id=(
+                            int(template_documents[0].id) if template_documents else None
+                        ),
+                        user_instructions=body.query[:2000],
+                    ),
+                    user_id=user_id,
+                    db=db,
+                )
+            except Exception as exc:
+                logger.exception("Report creation from agent failed", exc_info=exc)
+                await finish_turn(
+                    db,
+                    turn=turn,
+                    content="报告任务创建失败，请检查文件状态后重试。",
+                    status="FAILED",
+                    error_code="REPORT_CREATION_FAILED",
+                    error_message="报告任务创建失败",
+                )
+                raise
+            answer = (
+                f"已识别为 {report_type}，并创建报告任务 {report['run_id'][:8]}。"
+                + ("生成时会参考你上传的模板版式与章节表达。" if template_documents else "")
+            )
+            await finish_turn(
+                db, turn=turn, content=answer, report_run_id=report["run_id"]
+            )
+
+            async def report_stream() -> AsyncGenerator[str, None]:
+                yield _sse_event(
+                    "conversation_started",
+                    {"conversation_id": conversation.id, "turn_id": turn.id},
+                )
+                yield _sse_event(
+                    "report_started",
+                    {"report_run": report, "classification": classification.to_dict()},
+                )
+                yield _sse_event("answer_delta", {"text": answer})
+                yield _sse_event("answer_done", {"answer": answer, "request_id": turn.id})
+
+            return StreamingResponse(report_stream(), media_type="text/event-stream")
+
+        options = [
+            {
+                "value": candidate["report_type"],
+                "label": f"{candidate['report_type']} · {candidate['name']}",
+                "description": (
+                    "命中：" + "、".join(candidate["matched_terms"][:4])
+                    if candidate["matched_terms"]
+                    else "当前材料特征不足，请按报告用途确认。"
+                ),
+            }
+            for candidate in classification.candidates
+        ]
+        interaction = {
+            "type": "TEMPLATE_SELECTION",
+            "status": "OPEN",
+            "title": "选择报告类型",
+            "question": "当前材料可能对应多类报告，请确认要生成哪一种？",
+            "options": options,
+            "source_document_id": int(source_documents[0].id),
+            "template_document_id": int(template_documents[0].id) if template_documents else None,
+            "llm_config_id": config_id,
+            "user_instructions": body.query[:2000],
+            "classification": classification.to_dict(),
+        }
+        answer = "我还不能可靠判断报告类型，请从下面的候选中选择一项后继续。"
+        await finish_turn(
+            db, turn=turn, content=answer, status="NEEDS_INPUT", interaction=interaction
+        )
+
+        async def clarification_stream() -> AsyncGenerator[str, None]:
+            yield _sse_event(
+                "conversation_started",
+                {"conversation_id": conversation.id, "turn_id": turn.id},
+            )
+            yield _sse_event("answer_delta", {"text": answer})
+            yield _sse_event("confirmation_required", {"interaction": interaction})
+            yield _sse_event("answer_done", {"answer": answer, "request_id": turn.id})
+
+        return StreamingResponse(clarification_stream(), media_type="text/event-stream")
+
+    run_id = uuid4().hex
+    try:
+        await agent_run_registry.register(
+            run_id=run_id,
+            user_id=user_id,
+            dataset_ids=dataset_ids,
+            doc_ids=body.doc_ids,
+            scope_mode="selected" if body.dataset_ids else "all_accessible",
+        )
+    except Exception as exc:
+        logger.exception("Agent run registration failed", exc_info=exc)
+        await finish_turn(
+            db,
+            turn=turn,
+            content="Agent 运行初始化失败，请稍后重试。",
+            status="FAILED",
+            error_code="AGENT_RUN_REGISTRATION_FAILED",
+            error_message="Agent 运行初始化失败",
+        )
+        raise
     payload = {
         "runId": run_id,
         "content": body.query,
-        "history": [message.model_dump() for message in body.history],
+        "history": persisted_history,
         "model": _model_payload(runtime_config),
     }
 
     async def event_stream() -> AsyncGenerator[str, None]:
+        answer = ""
+        terminal = False
+        failed = False
+        buffer = ""
         try:
+            yield _sse_event(
+                "conversation_started",
+                {"conversation_id": conversation.id, "turn_id": turn.id},
+            )
             async with asyncio.timeout(settings.AGENT_RUN_TIMEOUT_SECONDS):
                 async for chunk in stream_pi_agent(payload):
+                    buffer += chunk.replace("\r\n", "\n")
+                    while "\n\n" in buffer:
+                        frame, buffer = buffer.split("\n\n", 1)
+                        event_name = "message"
+                        data_lines = []
+                        for line in frame.splitlines():
+                            if line.startswith("event:"):
+                                event_name = line[6:].strip()
+                            elif line.startswith("data:"):
+                                data_lines.append(line[5:].strip())
+                        if data_lines:
+                            try:
+                                event_data = json.loads("\n".join(data_lines))
+                            except json.JSONDecodeError:
+                                event_data = {}
+                            if event_name == "answer_delta":
+                                answer += str(event_data.get("text") or "")
+                            elif event_name == "answer_done":
+                                answer = str(event_data.get("answer") or answer)
+                                terminal = True
+                            elif event_name == "error":
+                                failed = True
+                                await finish_turn(
+                                    db,
+                                    turn=turn,
+                                    content=answer,
+                                    status="FAILED",
+                                    error_code=str(event_data.get("code") or "AGENT_ERROR")[:64],
+                                    error_message=str(
+                                        event_data.get("message") or "Agent 执行失败"
+                                    )[:1000],
+                                )
                     yield chunk
+            if terminal and not failed:
+                await finish_turn(db, turn=turn, content=answer)
+            elif not failed:
+                await finish_turn(
+                    db,
+                    turn=turn,
+                    content=answer,
+                    status="FAILED",
+                    error_code="STREAM_INCOMPLETE",
+                    error_message="Agent 流在终态事件前结束",
+                )
         except TimeoutError:
+            await finish_turn(
+                db, turn=turn, content=answer, status="FAILED",
+                error_code="AGENT_TIMEOUT", error_message="Agent 执行超时",
+            )
             yield _sse_error("AGENT_TIMEOUT", "Agent 执行超时")
         except PiAgentUnavailableError:
+            await finish_turn(
+                db, turn=turn, content=answer, status="FAILED",
+                error_code="AGENT_UNAVAILABLE", error_message="Agent 服务暂不可用",
+            )
             yield _sse_error("AGENT_UNAVAILABLE", "Agent 服务暂不可用")
+        except asyncio.CancelledError:
+            await finish_turn(db, turn=turn, content=answer, status="CANCELLED")
+            raise
+        except Exception as exc:
+            logger.exception("Pi Agent stream failed unexpectedly", exc_info=exc)
+            await finish_turn(
+                db,
+                turn=turn,
+                content=answer,
+                status="FAILED",
+                error_code="AGENT_INTERNAL_ERROR",
+                error_message="Agent 执行时发生未预期错误",
+            )
+            yield _sse_error("AGENT_INTERNAL_ERROR", "Agent 执行时发生未预期错误")
         finally:
             await agent_run_registry.release(run_id)
 
