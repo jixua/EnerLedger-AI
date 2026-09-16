@@ -8,7 +8,6 @@ import {
   Copy,
   Database,
   FileText,
-  LayoutTemplate,
   LoaderCircle,
   MessageSquareText,
   Paperclip,
@@ -120,7 +119,6 @@ export function PlaygroundPage() {
   const [uploadingRole, setUploadingRole] = useState(null);
   const [attachmentError, setAttachmentError] = useState("");
   const [confirmationSelections, setConfirmationSelections] = useState({});
-  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [sourceMessageId, setSourceMessageId] = useState(null);
   const [activeCitationIndex, setActiveCitationIndex] = useState(null);
   const [copiedMessageId, setCopiedMessageId] = useState(null);
@@ -133,7 +131,6 @@ export function PlaygroundPage() {
   const modelTriggerRef = useRef(null);
   const sourceCardRefs = useRef(new Map());
   const sourceFileRef = useRef(null);
-  const templateFileRef = useRef(null);
 
   const retrievalReadyCounts = useMemo(() => {
     const counts = new Map();
@@ -193,10 +190,7 @@ export function PlaygroundPage() {
     (attachment) => String(attachment.document?.status || "").toUpperCase() === "FAILED",
   );
   const attachmentRolesValid = !resolvedAttachments.length
-    || (
-      resolvedAttachments.filter((attachment) => attachment.role === "SOURCE").length === 1
-      && resolvedAttachments.filter((attachment) => attachment.role === "TEMPLATE").length <= 1
-    );
+    || resolvedAttachments.filter((attachment) => attachment.role === "SOURCE").length === 1;
   const datasetTriggerLabel = !selectedDatasetIds.length
     ? `全部知识库${activeDatasets.length ? `（${activeDatasets.length}）` : ""}`
     : selectedDatasets.length === 1
@@ -401,9 +395,6 @@ export function PlaygroundPage() {
     if (role === "SOURCE" && attachments.some((item) => item.role === "SOURCE")) {
       throw new Error("每轮只能添加一个源文件，请先移除现有源文件。");
     }
-    if (role === "TEMPLATE" && attachments.some((item) => item.role === "TEMPLATE")) {
-      throw new Error("每轮只能添加一个报告模板，请先移除现有模板。");
-    }
     setUploadingRole(role);
     try {
       const [result] = await uploadDocuments(targetDatasetId, [file], { stopOnError: true });
@@ -412,7 +403,6 @@ export function PlaygroundPage() {
       setAttachments((current) => [...current, { documentId, role, document: result }]);
     } finally {
       setUploadingRole(null);
-      setAttachmentMenuOpen(false);
     }
   }
 
@@ -613,7 +603,6 @@ export function PlaygroundPage() {
   const composer = (
     <form className="chat-composer" onSubmit={submitQuestion}>
       <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={(event) => handleFileSelection(event, "SOURCE")} />
-      <input ref={templateFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={(event) => handleFileSelection(event, "TEMPLATE")} />
       {resolvedAttachments.length ? (
         <div className="composer-attachments" aria-label="本轮附件">
           {resolvedAttachments.map((attachment) => {
@@ -622,8 +611,8 @@ export function PlaygroundPage() {
             const failed = status === "FAILED";
             return (
               <span className={`composer-attachment${ready ? " is-ready" : failed ? " is-failed" : " is-pending"}`} key={`${attachment.role}-${attachment.documentId}`}>
-                {attachment.role === "TEMPLATE" ? <LayoutTemplate size={14} /> : <FileText size={14} />}
-                <span><strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong><small>{attachment.role === "TEMPLATE" ? "报告模板" : "源文件"} · {ready ? "可用" : failed ? "解析失败" : "解析中"}</small></span>
+                <FileText size={14} />
+                <span><strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong><small>源文件 · {ready ? "可用" : failed ? "解析失败" : "解析中"}</small></span>
                 <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => !(item.role === attachment.role && item.documentId === attachment.documentId)))}><X size={13} /></button>
               </span>
             );
@@ -647,17 +636,11 @@ export function PlaygroundPage() {
       />
       <div className="chat-composer__toolbar">
         <div className="chat-composer__controls" ref={controlsRef}>
-          <div className={`composer-selector composer-selector--attachment${attachmentMenuOpen ? " is-open" : ""}`}>
-            <button type="button" className="composer-selector__trigger composer-attachment-trigger" aria-label="添加资料" aria-expanded={attachmentMenuOpen} onClick={() => setAttachmentMenuOpen((value) => !value)}>
+          <div className="composer-selector composer-selector--attachment">
+            <button type="button" className="composer-selector__trigger composer-attachment-trigger" aria-label="上传文件" onClick={() => sourceFileRef.current?.click()}>
               {uploadingRole ? <LoaderCircle className="spin" size={15} /> : <Paperclip size={15} />}
-              <span>添加资料</span>
+              <span>上传文件</span>
             </button>
-            {attachmentMenuOpen ? (
-              <div className="composer-selector__panel composer-selector__panel--attachment">
-                <button type="button" className="attachment-role-option" onClick={() => sourceFileRef.current?.click()}><FileText size={17} /><span><strong>上传源文件</strong><small>分析内容并自动匹配报告类型</small></span></button>
-                <button type="button" className="attachment-role-option" onClick={() => templateFileRef.current?.click()}><LayoutTemplate size={17} /><span><strong>上传报告模板</strong><small>作为章节、字段映射和版式参考</small></span></button>
-              </div>
-            ) : null}
           </div>
           <div className={`composer-selector composer-selector--datasets${openSelector === "datasets" ? " is-open" : ""}`}>
             <button
@@ -796,8 +779,6 @@ export function PlaygroundPage() {
         <p className="composer-warning composer-warning--action">开始对话前，请先<Link to="/datasets">创建数据集并上传文档</Link>。</p>
       ) : attachmentError ? (
         <p className="composer-warning" role="alert">{attachmentError}</p>
-      ) : resolvedAttachments.length && !attachmentRolesValid ? (
-        <p className="composer-warning">添加报告模板后还需要上传一个源文件。</p>
       ) : attachmentsFailed ? (
         <p className="composer-warning" role="alert">附件解析失败，请移除后重新上传。</p>
       ) : resolvedAttachments.length && !attachmentsReady ? (
