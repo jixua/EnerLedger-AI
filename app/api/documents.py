@@ -28,6 +28,7 @@ from fastapi import (
 )
 from fastapi.responses import StreamingResponse
 from sqlalchemy import func, or_, select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
@@ -762,18 +763,29 @@ async def upload_and_queue_document(
         source_path = Path(temp_dir) / f"source.{file_type}"
         await _save_upload_to_path(file, source_path)
         _validate_word_file_signature(source_path, file_type)
-        document = await queue_document_from_path(
-            dataset_id=dataset_id,
-            user_id=user_id,
-            filename=filename,
-            source_path=source_path,
-            content_type=content_type,
-            db=db,
-            storage=storage,
-            object_key=object_key,
-            ownership_checked=True,
-            folder_id=folder_id,
-        )
+        try:
+            document = await queue_document_from_path(
+                dataset_id=dataset_id,
+                user_id=user_id,
+                filename=filename,
+                source_path=source_path,
+                content_type=content_type,
+                db=db,
+                storage=storage,
+                object_key=object_key,
+                ownership_checked=True,
+                folder_id=folder_id,
+            )
+        except IntegrityError as exc:
+            # 同一知识库内文件名唯一约束：给出可操作的提示而不是 500。
+            await db.rollback()
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "DUPLICATE_DOCUMENT_FILENAME",
+                    "message": f"当前知识库已存在同名文档「{filename}」，请修改文件名或先删除原文档",
+                },
+            ) from exc
 
     response.headers["Location"] = f"/api/v1/documents/{document.id}"
     return _document_payload(document)
