@@ -25,7 +25,10 @@ from app.services.report_model_policy import (
     ReportModelEndpointError,
     validate_report_model_endpoint,
 )
-from app.services.report_source_context import load_report_source_context
+from app.services.report_source_context import (
+    load_document_chunk_manifest,
+    load_report_source_context,
+)
 from app.services.report_templates import (
     ReportTemplate,
     ReportTemplateError,
@@ -44,6 +47,7 @@ class ReportCreateRequest(BaseModel):
     reporting_year: int | None = Field(default=None, ge=1900, le=2200)
     user_instructions: str | None = Field(default=None, max_length=2000)
     output_formats: list[Literal["ONLINE"]] = Field(default_factory=lambda: ["ONLINE"])
+    custom_template_document_id: int | None = Field(default=None, gt=0)
 
     @field_validator("user_instructions")
     @classmethod
@@ -81,6 +85,7 @@ def _input_hash(
     template_snapshot: dict[str, Any],
     model_snapshot: dict[str, Any],
     document_manifest: dict[str, Any],
+    custom_template_manifest: dict[str, Any] | None,
     payload: ReportCreateRequest,
 ) -> str:
     frozen = {
@@ -91,6 +96,7 @@ def _input_hash(
         "template_asset_hash": template_snapshot["asset_hash"],
         "model_snapshot": model_snapshot,
         "document_manifest": document_manifest,
+        "custom_template_manifest": custom_template_manifest,
         "request": payload.model_dump(mode="json"),
     }
     encoded = json.dumps(frozen, ensure_ascii=False, sort_keys=True, separators=(",", ":"))
@@ -106,6 +112,8 @@ def _run_dict(run: ReportRun) -> dict[str, Any]:
         "report_type": run.report_type,
         "template_id": run.template_id,
         "template_version": run.template_version,
+        "custom_template_document_id": run.custom_template_document_id,
+        "custom_template_document_version": run.custom_template_document_version,
         "mode": run.mode,
         "language": run.language,
         "reporting_year": run.reporting_year,
@@ -181,6 +189,46 @@ async def create_report(
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
 
+    custom_template = None
+    custom_template_manifest = None
+    if payload.custom_template_document_id is not None:
+        if int(payload.custom_template_document_id) == int(document.id):
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "CUSTOM_TEMPLATE_EQUALS_SOURCE",
+                    "message": "源文件和报告模板必须是不同文档",
+                },
+            )
+        custom_template = await db.scalar(
+            select(Document).where(
+                Document.id == payload.custom_template_document_id,
+                Document.user_id == user_id,
+                Document.dataset_id == document.dataset_id,
+            )
+        )
+        if (
+            custom_template is None
+            or custom_template.status != DOCUMENT_STATUS_READY
+            or not custom_template.parsed_bucket
+            or not custom_template.parsed_object_key
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "CUSTOM_TEMPLATE_NOT_READY",
+                    "message": "上传的报告模板尚未完成解析，不能创建报告",
+                },
+            )
+        custom_template_manifest = await load_document_chunk_manifest(
+            db, document=custom_template
+        )
+        if not custom_template_manifest.items:
+            raise HTTPException(
+                status_code=409,
+                detail={"code": "CUSTOM_TEMPLATE_EMPTY", "message": "上传模板没有可读内容"},
+            )
+
     llm_config = await db.scalar(
         select(LLMModelConfigDB).where(LLMModelConfigDB.id == payload.llm_config_id)
     )
@@ -246,6 +294,19 @@ async def create_report(
         template_snapshot=template_snapshot,
         model_snapshot=model_snapshot,
         document_manifest={},
+        custom_template_document_id=custom_template.id if custom_template else None,
+        custom_template_document_version=custom_template.version if custom_template else None,
+        custom_template_manifest=(
+            {
+                "document_id": int(custom_template.id),
+                "document_version": int(custom_template.version),
+                "filename": custom_template.filename,
+                "chunk_manifest_sha256": custom_template_manifest.content_hash,
+                "chunk_count": len(custom_template_manifest.items),
+            }
+            if custom_template and custom_template_manifest
+            else None
+        ),
         mode="GENERATE",
         language=payload.language,
         reporting_year=payload.reporting_year,
@@ -279,6 +340,7 @@ async def create_report(
         template_snapshot=template_snapshot,
         model_snapshot=model_snapshot,
         document_manifest=run.document_manifest,
+        custom_template_manifest=run.custom_template_manifest,
         payload=payload,
     )
     mark_report_dispatch_pending(run, now=now)

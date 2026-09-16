@@ -170,6 +170,7 @@ async def get_analysis_context(run: Annotated[ReportRun, Depends(_authorized_run
         "llm_config_id": run.llm_config_id,
         "llm_snapshot_version": run.llm_snapshot_version,
         "document_manifest": run.document_manifest,
+        "custom_template": run.custom_template_manifest,
         "budgets": {
             "max_tool_calls": settings.REPORT_AGENT_MAX_TOOL_CALLS,
             "max_chunk_page_size": 50,
@@ -271,6 +272,56 @@ async def read_document_chunks(
         "complete": not has_more,
         "manifest_hash": run.document_manifest["chunk_manifest_sha256"],
         "total_chunks": run.document_manifest["chunk_count"],
+    }
+
+
+@router.post("/runs/{run_id}/custom-template-chunks")
+async def read_custom_template_chunks(
+    payload: ChunkPageRequest,
+    run: Annotated[ReportRun, Depends(_authorized_run)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    manifest = run.custom_template_manifest
+    if (
+        not run.custom_template_document_id
+        or not run.custom_template_document_version
+        or not manifest
+    ):
+        return {"items": [], "next_cursor": None, "complete": True, "available": False}
+    offset = int(payload.cursor or 0)
+    rows = (
+        await db.scalars(
+            select(ChunkRecordDB)
+            .where(
+                ChunkRecordDB.doc_id == run.custom_template_document_id,
+                ChunkRecordDB.document_version == run.custom_template_document_version,
+                ChunkRecordDB.user_id == run.user_id,
+                ChunkRecordDB.set_id == run.dataset_id,
+            )
+            .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
+            .offset(offset)
+            .limit(payload.limit + 1)
+        )
+    ).all()
+    has_more = len(rows) > payload.limit
+    items = rows[: payload.limit]
+    return {
+        "available": True,
+        "filename": manifest.get("filename"),
+        "items": [
+            {
+                "chunk_id": row.chunk_id,
+                "chunk_index": row.chunk_index,
+                "content": row.content,
+                "content_hash": row.content_hash,
+                "structure": row.structure_metadata,
+            }
+            for row in items
+        ],
+        "next_cursor": str(offset + payload.limit) if has_more else None,
+        "complete": not has_more,
+        "manifest_hash": manifest["chunk_manifest_sha256"],
+        "total_chunks": manifest["chunk_count"],
     }
 
 

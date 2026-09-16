@@ -141,6 +141,25 @@ def test_fixture_report_ir_requires_blocking_fields_and_tracks_user_answers() ->
     assert organization["evidence_ids"] == ["E-U-1"]
 
 
+def test_custom_template_can_rename_and_reorder_only_baseline_sections() -> None:
+    template = ReportTemplateRegistry(_reporting_root()).get("R2")
+    run = _run()
+    report_ir = build_fixture_report_ir(run=run, template=template, answered_questions=[])
+    report_ir["sections"][0]["title"] = "用户模板封面"
+    report_ir["sections"] = list(reversed(report_ir["sections"]))
+
+    baseline_validation = validate_report_ir(report_ir, run=run, template=template)
+    assert any("标题与模板不一致" in error for error in baseline_validation.errors)
+
+    run.custom_template_manifest = {"document_id": 8, "document_version": 1}
+    custom_validation = validate_report_ir(report_ir, run=run, template=template)
+    assert not any("标题与模板不一致" in error for error in custom_validation.errors)
+
+    report_ir["sections"].pop()
+    incomplete_validation = validate_report_ir(report_ir, run=run, template=template)
+    assert "报告章节必须与模板章节完整一致" in incomplete_validation.errors
+
+
 def test_report_generation_message_only_carries_frozen_identity() -> None:
     message = ReportGenerationMessage.build(
         run_id="run-1", user_id=11, document_id=7, document_version=2
@@ -359,3 +378,83 @@ async def test_create_report_freezes_document_template_and_model(
     assert len(session.added) == 1
     assert len(session.added[0].input_hash) == 64
     assert dispatched == [response["run_id"]]
+
+
+@pytest.mark.asyncio
+async def test_create_report_freezes_uploaded_template_manifest(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    template = ReportTemplateRegistry(_reporting_root()).get("R2")
+
+    class Registry:
+        def get(self, _report_type):
+            return template
+
+    class Dispatcher:
+        async def dispatch(self, _run):
+            return True
+
+    monkeypatch.setattr(reports_api, "report_template_registry", Registry())
+    monkeypatch.setattr(reports_api, "ReportRunDispatcher", Dispatcher)
+
+    async def load_source_context(_db, *, run):
+        return None, SimpleNamespace(items=({"chunk_id": "source-1"},), content_hash="b" * 64)
+
+    async def load_custom_manifest(_db, *, document):
+        assert document.id == 8
+        return SimpleNamespace(items=({"chunk_id": "template-1"},), content_hash="c" * 64)
+
+    monkeypatch.setattr(reports_api, "load_report_source_context", load_source_context)
+    monkeypatch.setattr(reports_api, "load_document_chunk_manifest", load_custom_manifest)
+    custom_template = Document(
+        id=8,
+        dataset_id=3,
+        user_id=11,
+        filename="组织碳盘查模板.docx",
+        file_type="docx",
+        file_size=80,
+        raw_bucket="raw",
+        raw_object_key="raw/template.docx",
+        parsed_bucket="private",
+        parsed_object_key="parsed/11/3/8/versions/v3/template.md",
+        status="READY",
+        version=3,
+    )
+    model = LLMModelConfigDB(
+        id=5,
+        scope="USER",
+        owner_user_id=11,
+        provider_id=1,
+        provider_type="openai",
+        model_name="chat-model",
+        capability="CHAT",
+        protocol="openai",
+        api_base_url="https://example.invalid/v1",
+        api_key="encrypted",
+        is_active=True,
+        supports_tool_calling=True,
+        snapshot_version=4,
+    )
+    session = _Session([_document(), custom_template, model])
+
+    response = await create_report(
+        document_id=7,
+        payload=ReportCreateRequest(
+            report_type="R2",
+            llm_config_id=5,
+            custom_template_document_id=8,
+        ),
+        user_id=11,
+        db=session,
+    )
+
+    run = session.added[0]
+    assert response["custom_template_document_id"] == 8
+    assert run.custom_template_document_version == 3
+    assert run.custom_template_manifest == {
+        "document_id": 8,
+        "document_version": 3,
+        "filename": "组织碳盘查模板.docx",
+        "chunk_manifest_sha256": "c" * 64,
+        "chunk_count": 1,
+    }

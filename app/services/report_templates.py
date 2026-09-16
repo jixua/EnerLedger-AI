@@ -44,7 +44,7 @@ class ReportTemplate:
             # Kept for API compatibility. Template status and review metadata are
             # informational and do not gate report creation.
             "selectable": True,
-            "applicable_document_types": self.definition.get("applicable_document_types", []),
+            "applicable_document_types": self.definition.get("applicable_documents", []),
             "required_field_count": sum(bool(field.get("required")) for field in fields),
             "blocking_field_count": sum(bool(field.get("blocking")) for field in fields),
             "sections": [

@@ -25,6 +25,12 @@ test("tool client binds every request to run id and short-lived run token", asyn
     assert.equal(captured.options.headers["X-Report-Run-Token"], "run-token");
     await client.clarifications();
     assert.equal(captured.url, "http://api.local/internal/report-agent/runs/run-1/clarifications");
+    await client.customTemplateChunks("20", 10);
+    assert.equal(
+      captured.url,
+      "http://api.local/internal/report-agent/runs/run-1/custom-template-chunks",
+    );
+    assert.deepEqual(JSON.parse(captured.options.body), { cursor: "20", limit: 10 });
     await client.submit({ schema_version: 1 }, { complete: true, chunks: [] });
     assert.deepEqual(JSON.parse(captured.options.body), {
       report_ir: { schema_version: 1 },

@@ -102,18 +102,30 @@ function toRequestBody(payload) {
 }
 
 function toAgentRequestBody(payload) {
-  return {
+  const body = {
     ...toRequestBody(payload),
     history: (payload.history ?? []).map((message) => ({
       role: message.role,
       content: message.content,
     })),
   };
+  const conversationId = payload.conversationId ?? payload.conversation_id;
+  if (conversationId) body.conversation_id = conversationId;
+  if (payload.attachments?.length) {
+    body.attachments = payload.attachments.map((attachment) => ({
+      document_id: attachment.documentId ?? attachment.document_id,
+      role: attachment.role,
+    }));
+  }
+  return body;
 }
 
 async function notify(handlers, name, data, event) {
   await handlers.onEvent?.({ event: name, data, raw: event.raw });
   const named = {
+    conversation_started: handlers.onConversationStarted,
+    confirmation_required: handlers.onConfirmationRequired,
+    report_started: handlers.onReportStarted,
     stream_started: handlers.onStreamStarted,
     recall_done: handlers.onRecallDone,
     answer_delta: handlers.onAnswerDelta,
@@ -170,6 +182,11 @@ async function streamConversation(path, body, handlers = {}) {
 
     if (name === "stream_started") {
       result.requestId = data.request_id ?? result.requestId;
+      return;
+    }
+    if (name === "conversation_started") {
+      result.conversationId = data.conversation_id ?? result.conversationId;
+      result.turnId = data.turn_id ?? result.turnId;
       return;
     }
     if (name === "recall_done") {
