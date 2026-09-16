@@ -849,6 +849,11 @@ export function PlaygroundPage() {
                 <div className="chat-message__body">
                   {message.attachments?.length ? <div className="chat-message__attachments">{message.attachments.map((attachment) => <span key={`${attachment.role}-${attachment.document_id ?? attachment.documentId}`}><FileText size={13} />{attachment.filename || `文档 #${attachment.document_id ?? attachment.documentId}`}<small>{attachment.role === "TEMPLATE" ? "模板" : "源文件"}</small></span>)}</div> : null}
                   <p>{message.content}</p>
+                  {message.content ? (
+                    <footer className="chat-message__actions">
+                      <button type="button" onClick={() => copyMessage(message)}>{copiedMessageId === message.id ? <Check size={14} /> : <Copy size={14} />}{copiedMessageId === message.id ? "已复制" : "复制"}</button>
+                    </footer>
+                  ) : null}
                 </div>
               </article>
             ) : (

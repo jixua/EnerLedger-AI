@@ -678,6 +678,7 @@
 .chat-message__warning { background: var(--warning-soft); color: var(--warning); }
 .chat-message__empty { margin: 0; color: var(--body); }
 .chat-message__actions { display: flex; align-items: center; gap: 10px; margin-top: 12px; }
+.chat-message--user .chat-message__actions { justify-content: flex-end; margin-top: 6px; }
 .chat-message__actions button { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 10px; }
 .chat-message__actions button:hover { color: var(--primary); }
 .chat-message__actions > span { margin-left: auto; color: var(--muted-soft); font: 500 8px/1 var(--font-mono); }
