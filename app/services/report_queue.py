@@ -58,10 +58,18 @@ class ReportRunQueueService:
         if not pending_due and not expired:
             return None
         if int(run.attempt_count or 0) >= self.max_attempts:
+            previous = run.error_code
             run.state = "FAILED"
             run.stage = "FAILED"
             run.error_code = "REPORT_MAX_ATTEMPTS_EXCEEDED"
-            run.error_message = "报告任务超过最大尝试次数"
+            # 上下文压力类失败要给出可操作的下一步，否则用户只看到一个错误码。
+            hint = (
+                "；该文档规模接近当前模型的上下文上限，可拆分文档后分别生成，"
+                "或改用上下文更大的模型"
+                if previous in {"REPORT_IR_NOT_SUBMITTED", "REPORT_AGENT_TIMEOUT"}
+                else ""
+            )
+            run.error_message = f"报告任务超过最大尝试次数（历次错误：{previous or '未知'}）{hint}"
             run.finished_at = claimed_at
             self._clear_lease(run)
             await db.commit()
