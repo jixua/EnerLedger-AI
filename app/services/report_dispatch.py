@@ -23,6 +23,9 @@ DISPATCH_PENDING = "PENDING"
 DISPATCHING = "DISPATCHING"
 DISPATCH_PUBLISHED = "PUBLISHED"
 
+# 处理租约过期后额外留出的宽限：worker 存活时会续租，过期说明它已经不在了。
+STRANDED_LEASE_GRACE = timedelta(seconds=60)
+
 
 class MessagePublisher(Protocol):
     async def send(self, message: ReportGenerationMessage) -> None: ...
@@ -96,6 +99,14 @@ class ReportRunDispatcher:
                     & or_(
                         ReportRun.dispatch_lease_expires_at.is_(None),
                         ReportRun.dispatch_lease_expires_at <= now,
+                    ),
+                    # 已投递但处理租约过期的任务：worker 可能在上次处理中被杀掉，
+                    # 而消息不会再重投——不重新投递的话任务会永远停在 PROCESSING。
+                    (ReportRun.state == "PROCESSING")
+                    & (ReportRun.dispatch_status == DISPATCH_PUBLISHED)
+                    & or_(
+                        ReportRun.lease_expires_at.is_(None),
+                        ReportRun.lease_expires_at <= now - STRANDED_LEASE_GRACE,
                     ),
                 )
             )
