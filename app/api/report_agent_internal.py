@@ -91,6 +91,36 @@ def _answer_content_hash(answer: dict[str, Any] | None) -> str | None:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+_STRUCTURE_HINT_KEYS = (
+    "chunk_role",
+    "element_types",
+    "split_strategy",
+    "oversized",
+    "oversized_reason",
+)
+_TABLE_HINT_KEYS = ("title", "row_count", "column_count", "header_row_count", "source_pages")
+
+
+def _structure_hint(raw: Any) -> dict[str, Any]:
+    """把分片的结构元数据裁剪成「轻量提示」再交给报告 Agent。
+
+    原始结构元数据整篇可达正文的 6 倍以上（表格的 cells/text_matrix/cell_reference_matrix
+    逐格序列化，单条上限 4 万字符），而这些内容在分片正文里已经存在：原样下发会让
+    一次 read_document_chunks 就返回几十万字符，把模型上下文窗口吃满。这里只保留
+    定位与类型提示，表格只留行列数与标题。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    hint = {key: raw[key] for key in _STRUCTURE_HINT_KEYS if raw.get(key) is not None}
+    trail = raw.get("heading_trail")
+    if isinstance(trail, list) and trail:
+        hint["heading_trail"] = trail[-2:]
+    table = raw.get("table_structure")
+    if isinstance(table, dict):
+        hint["table"] = {key: table[key] for key in _TABLE_HINT_KEYS if table.get(key) is not None}
+    return hint
+
+
 def _verify_service_token(authorization: Annotated[str | None, Header()] = None) -> None:
     expected = settings.REPORT_AGENT_INTERNAL_TOKEN
     supplied = ""
@@ -266,7 +296,7 @@ async def read_document_chunks(
                 "end_page": row.end_page,
                 "start_line": row.start_line,
                 "end_line": row.end_line,
-                "structure": row.structure_metadata,
+                "structure": _structure_hint(row.structure_metadata),
             }
             for row in items
         ],
@@ -316,7 +346,7 @@ async def read_custom_template_chunks(
                 "chunk_index": row.chunk_index,
                 "content": row.content,
                 "content_hash": row.content_hash,
-                "structure": row.structure_metadata,
+                "structure": _structure_hint(row.structure_metadata),
             }
             for row in items
         ],
