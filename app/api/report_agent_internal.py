@@ -22,6 +22,7 @@ from app.services.report_agent_tokens import (
     verify_report_agent_token,
 )
 from app.services.report_calculations import ReportCalculationError, execute_registered_formula
+from app.services.report_budget import STRUCTURE_HINT_CHARS_PER_CHUNK
 from app.services.report_ir import report_ir_contract_schema, validate_report_ir
 from app.services.report_source_context import (
     load_report_source_context,
@@ -119,6 +120,24 @@ def _structure_hint(raw: Any) -> dict[str, Any]:
     if isinstance(table, dict):
         hint["table"] = {key: table[key] for key in _TABLE_HINT_KEYS if table.get(key) is not None}
     return hint
+
+
+def _chunk_page(rows: list[Any], *, page_limit: int) -> tuple[list[Any], bool]:
+    """按字符预算截取一页分片，返回 (本页分片, 是否还有后续)。
+
+    分片正文长度差异极大（实测单条最长 1.7 万字符），只按条数分页会让一次返回达到
+    几十万字符、把模型上下文一次性吃满。至少返回 1 条，保证游标一定能前进。
+    """
+    budget = settings.REPORT_AGENT_CHUNK_PAGE_MAX_CHARS
+    selected: list[Any] = []
+    used = 0
+    for row in rows[:page_limit]:
+        cost = len(row.content or "") + STRUCTURE_HINT_CHARS_PER_CHUNK
+        if selected and used + cost > budget:
+            break
+        selected.append(row)
+        used += cost
+    return selected, len(rows) > len(selected)
 
 
 def _verify_service_token(authorization: Annotated[str | None, Header()] = None) -> None:
@@ -282,8 +301,7 @@ async def read_document_chunks(
             .limit(payload.limit + 1)
         )
     ).all()
-    has_more = len(rows) > payload.limit
-    items = rows[: payload.limit]
+    items, has_more = _chunk_page(rows, page_limit=payload.limit)
     return {
         "items": [
             {
@@ -300,7 +318,7 @@ async def read_document_chunks(
             }
             for row in items
         ],
-        "next_cursor": str(offset + payload.limit) if has_more else None,
+        "next_cursor": str(offset + len(items)) if has_more else None,
         "complete": not has_more,
         "manifest_hash": run.document_manifest["chunk_manifest_sha256"],
         "total_chunks": run.document_manifest["chunk_count"],
@@ -335,8 +353,7 @@ async def read_custom_template_chunks(
             .limit(payload.limit + 1)
         )
     ).all()
-    has_more = len(rows) > payload.limit
-    items = rows[: payload.limit]
+    items, has_more = _chunk_page(rows, page_limit=payload.limit)
     return {
         "available": True,
         "filename": manifest.get("filename"),
@@ -350,7 +367,7 @@ async def read_custom_template_chunks(
             }
             for row in items
         ],
-        "next_cursor": str(offset + payload.limit) if has_more else None,
+        "next_cursor": str(offset + len(items)) if has_more else None,
         "complete": not has_more,
         "manifest_hash": manifest["chunk_manifest_sha256"],
         "total_chunks": manifest["chunk_count"],
