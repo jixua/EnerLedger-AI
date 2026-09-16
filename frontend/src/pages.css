@@ -518,6 +518,7 @@
 .chat-composer textarea:focus,
 .chat-composer textarea:focus-visible { outline: none; border-color: transparent; box-shadow: none; }
 .composer-attachments { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 2px 10px; }
+.composer-attachments-hint { margin: -4px 4px 8px; color: var(--muted); font-size: 9px; line-height: 1.6; }
 .composer-attachment { max-width: 330px; min-width: 0; display: grid; grid-template-columns: 18px minmax(0, 1fr) 22px; align-items: center; gap: 7px; padding: 7px 7px 7px 9px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface-soft); color: var(--muted); }
 .composer-attachment.is-ready { border-color: color-mix(in srgb, var(--primary) 22%, var(--hairline)); color: var(--primary); }
 .composer-attachment.is-failed { border-color: color-mix(in srgb, var(--danger) 34%, var(--hairline)); background: var(--danger-soft); color: var(--danger); }

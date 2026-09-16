@@ -617,6 +617,7 @@ export function PlaygroundPage() {
     <form className="chat-composer" onSubmit={submitQuestion}>
       <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={(event) => handleFileSelection(event, "SOURCE")} />
       {resolvedAttachments.length ? (
+        <>
         <div className="composer-attachments" aria-label="本轮附件">
           {resolvedAttachments.map((attachment) => {
             const status = String(attachment.document?.status || "").toUpperCase();
@@ -631,6 +632,8 @@ export function PlaygroundPage() {
             );
           })}
         </div>
+        <p className="composer-attachments-hint">附件将作为报告素材：发送后自动识别报告类型并创建报告任务（识别不确定时会弹出确认卡片）。</p>
+        </>
       ) : null}
       <textarea
         value={question}
