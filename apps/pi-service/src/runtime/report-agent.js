@@ -89,6 +89,11 @@ async function configuredModel(config, modelConfig) {
       cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
       contextWindow: Number(modelConfig.contextWindow) || 128000,
       maxTokens: Number(modelConfig.maxTokens) || 32768,
+      // 报告任务有 7~10 轮工具调用，而 pi 会把上一轮 assistant 的 reasoning_content
+      // 原样回传：思考会随每轮累积并把上下文吃满（实测一次失败会话 prompt 已达 124k/128k，
+      // 最后一轮只剩 1 个 token 输出预算，stopReason=length、output=1）。
+      // 关闭模型的思考输出，换取长任务的上下文余量；需要恢复思考时删掉这段即可。
+      samplingParams: { thinking: { type: "disabled" } },
     }],
   });
   await modelRuntime.setRuntimeApiKey(provider, modelConfig.apiKey);
@@ -367,6 +372,21 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
     validateTool,
     submitTool,
   ];
+  // 统计每次工具调用的入参/出参体量：报告会话的 prompt 会随调用累积，
+  // 需要定位是哪类调用把上下文窗口吃满（checkpoint/validate 会整份回传台账）。
+  const toolTrace = [];
+  const tracedTools = customTools.map((tool) => ({
+    ...tool,
+    execute: async (...args) => {
+      const result = await tool.execute(...args);
+      toolTrace.push({
+        name: tool.name,
+        argsChars: JSON.stringify(args[1] ?? {}).length,
+        resultChars: JSON.stringify(result ?? null).length,
+      });
+      return result;
+    },
+  }));
   const settingsManager = SettingsManager.inMemory({
     compaction: { enabled: false },
     retry: { enabled: false },
@@ -383,8 +403,8 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
     modelRuntime,
     thinkingLevel: "off",
     noTools: "builtin",
-    tools: customTools.map((tool) => tool.name),
-    customTools,
+    tools: tracedTools.map((tool) => tool.name),
+    customTools: tracedTools,
     resourceLoader,
     sessionManager: SessionManager.inMemory(),
     settingsManager,
@@ -413,8 +433,20 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
         runId,
         toolCalls,
         stopReason: finalAssistantMessage?.stopReason ?? null,
+        // usage 决定失败性质：output 达到请求上限＝推理烧光输出预算；
+        // output 低于上限而 input 逼近上下文窗口＝输入过大被服务端钳制。
+        usage: finalAssistantMessage?.usage ?? null,
+        maxTokens: resolvedModel.maxTokens,
+        contextWindow: resolvedModel.contextWindow,
         lastValidation,
         lastMessage: lastMessageText.slice(0, 1200),
+        toolTraceTotalChars: toolTrace.reduce(
+          (sum, item) => sum + item.argsChars + item.resultChars,
+          0,
+        ),
+        toolTraceTop: [...toolTrace]
+          .sort((a, b) => b.argsChars + b.resultChars - (a.argsChars + a.resultChars))
+          .slice(0, 6),
       }));
       throw new Error("REPORT_IR_NOT_SUBMITTED");
     }
