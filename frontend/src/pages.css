@@ -292,7 +292,7 @@
 .panel .section-heading p:last-child { max-width: 650px; margin: 5px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .data-table-wrap { width: 100%; overflow: auto; }
 .data-table { width: 100%; min-width: 880px; border-collapse: collapse; }
-.data-table th { padding: 11px 15px; border-bottom: 1px solid var(--hairline); background: var(--surface-soft); color: var(--muted-soft); font: 650 8px/1 var(--font-mono); letter-spacing: 0.08em; text-align: left; text-transform: uppercase; }
+.data-table th { padding: 8px 15px; border-bottom: 1px solid var(--hairline); background: var(--surface-soft); color: var(--muted-soft); font: 650 8px/1 var(--font-mono); letter-spacing: 0.08em; text-align: left; text-transform: uppercase; }
 .data-table td { padding: 12px 15px; border-bottom: 1px solid var(--hairline); color: var(--body); font-size: 9px; vertical-align: middle; }
 .data-table tbody tr:last-child td { border-bottom: 0; }
 .data-table tbody tr:hover { background: color-mix(in srgb, var(--surface-soft) 55%, transparent); }
@@ -314,6 +314,10 @@
 .report-index-table td:last-child .report-run-actions { justify-content: flex-end; margin-top: 0; }
 .report-index-table td:last-child .button { min-height: 32px; white-space: nowrap; }
 .report-title-cell { min-width: 260px; }
+/* 报告中心列表：标题该是这一列的主角。此前它是 10px，反而比旁边 36px 的图标块还小。 */
+.report-index-table .table-primary-cell > span:last-child { gap: 3px; }
+.report-index-table .table-primary-cell a { color: var(--ink); font-size: 14px; font-weight: 600; }
+.report-index-table .table-primary-cell small { font-size: 10px; }
 .report-reference-link { min-width: 0; max-width: 250px; display: inline-flex; align-items: center; gap: 7px; color: var(--body); text-decoration: none; }
 .report-reference-link > svg { flex: 0 0 auto; color: var(--muted-soft); }
 .report-reference-link > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }

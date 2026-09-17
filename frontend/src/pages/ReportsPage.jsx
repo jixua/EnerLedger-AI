@@ -180,7 +180,6 @@ export function ReportsPage() {
                     <tr key={run.run_id}>
                       <td>
                         <div className="table-primary-cell report-title-cell">
-                          <span className="file-icon"><Sparkles size={15} /></span>
                           <span>
                             <Link to={reportRunPath(run.run_id)}>{reportTypeName(run)}</Link>
                             <small>任务 {String(run.run_id).slice(0, 8)}</small>
