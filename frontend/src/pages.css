@@ -731,6 +731,13 @@
 .composer-attachment small { color: var(--muted); font-size: 8px; }
 .composer-attachment button { width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
 .composer-attachment button:hover { background: var(--surface); color: var(--danger); }
+/* 附件上的「设为模板」：用户可选的指明，不点则由服务端判断用途。
+   选择器要压过上面的 .composer-attachment button（它把按钮定成 22px 方块）。 */
+.composer-attachment .composer-attachment__role { width: auto; height: auto; margin-left: 6px; display: inline-block; padding: 2px 8px; border: 1px solid var(--hairline-strong); border-radius: 999px; background: transparent; color: var(--muted); font-size: 9px; font-weight: 600; vertical-align: middle; }
+.composer-attachment .composer-attachment__role:hover { border-color: color-mix(in srgb, var(--primary) 40%, var(--hairline)); background: var(--surface); color: var(--primary); }
+.composer-attachment.is-template { border-color: color-mix(in srgb, var(--primary) 34%, var(--hairline)); }
+.composer-attachment.is-template .composer-attachment__role { border-color: transparent; background: var(--primary); color: #fff; }
+.composer-attachment.is-template .composer-attachment__role:hover { background: var(--primary-active); color: #fff; }
 .chat-composer__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .chat-composer__controls { position: relative; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .composer-selector { min-width: 0; }

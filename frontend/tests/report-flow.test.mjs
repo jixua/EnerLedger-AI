@@ -89,13 +89,18 @@ test("界面只讲报告类型名称，不暴露 R1–R7 内部编号", async ()
   assert.match(reportRun, /run\?\.report_type_name/);
 });
 
-test("对话上传只问文件，不问用途", async () => {
+test("对话上传只问文件：用途默认自动判断，也可由用户指明", async () => {
   const playground = await read("pages/PlaygroundPage.jsx");
   const sse = await read("lib/sse.js");
   // 一个入口按钮，不再有「来源文档 / 报告模板」的角色菜单
   assert.match(playground, /aria-label="上传文件"/);
   assert.doesNotMatch(playground, /pickUploadFile|composer-selector__panel--upload/);
-  // 份数上限仍在；用途交给服务端判断
+  // 份数上限仍在
   assert.match(playground, /attachments\.length >= 2/);
+  // 用户可指明模板：只在两份文件时出现（一份时没有歧义）
+  assert.match(playground, /toggleTemplateRole/);
+  assert.match(playground, /allowRoleToggle = resolvedAttachments\.length === 2/);
+  // 只有用户明确指明时才把 role 发给服务端，否则由服务端判断
   assert.doesNotMatch(sse, /role: attachment\.role,/);
+  assert.match(sse, /\.\.\.\(attachment\.role \? \{ role: attachment\.role \} : \{\}\)/);
 });

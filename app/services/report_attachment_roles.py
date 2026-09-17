@@ -37,13 +37,44 @@ _EXCERPT_CHUNKS = 12
 class AttachmentRoles:
     """一份「主体材料 + 可选模板」的判定结果。
 
-    ``decided_by`` 用于诊断与测试：``single`` 只有一份文件、``model`` 模型判定、
-    ``fallback`` 回落规则判定。
+    ``decided_by`` 用于诊断与测试：``caller`` 调用方显式声明、``single`` 只有一份文件、
+    ``model`` 模型判定、``fallback`` 回落规则判定。
     """
 
     subject_id: int
     template_id: int | None = None
     decided_by: str = "fallback"
+
+
+class AttachmentRoleError(Exception):
+    """调用方声明的用途不成立（映射为 422）。"""
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+
+
+def resolve_declared_roles(
+    *, attachment_ids: list[int], declared: dict[int, str]
+) -> tuple[int, int | None]:
+    """按用户显式声明的用途补全主体材料与模板。
+
+    用户可能只指明其中一份（通常是"这份是模板"），其余按规则补全：模板之外的
+    第一份作为主体材料。声明互相冲突或补不出主体材料时抛 AttachmentRoleError。
+    """
+
+    template_ids = [did for did, role in declared.items() if role == "TEMPLATE"]
+    source_ids = [did for did, role in declared.items() if role == "SOURCE"]
+    if len(template_ids) > 1:
+        raise AttachmentRoleError("只能指定一份报告模板")
+    if len(source_ids) > 1:
+        raise AttachmentRoleError("只能指定一份来源文档")
+    template_id = template_ids[0] if template_ids else None
+    if source_ids:
+        return source_ids[0], template_id
+    remaining = [did for did in attachment_ids if did != template_id]
+    if not remaining:
+        raise AttachmentRoleError("还需要一份来源文档：唯一的上传文件不能只指定为模板")
+    return remaining[0], template_id
 
 
 async def _document_excerpt(db: AsyncSession, document: Document) -> str:

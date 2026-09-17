@@ -216,6 +216,8 @@ export function PlaygroundPage() {
   );
   // 用途由服务端判断，前端只保证份数不超过上限
   const attachmentCountValid = resolvedAttachments.length <= 2;
+  // 只有两份文件时"哪份是模板"才有歧义，也才需要用户指明
+  const allowRoleToggle = resolvedAttachments.length === 2;
   const datasetTriggerLabel = !selectedDatasetIds.length
     ? `全部知识库${activeDatasets.length ? `（${activeDatasets.length}）` : ""}`
     : selectedDatasets.length === 1
@@ -470,6 +472,15 @@ export function PlaygroundPage() {
     }
   }
 
+  /** 指明某份文件是报告模板；再点一次取消标记，回到自动判断。 */
+  function toggleTemplateRole(documentId) {
+    setAttachments((current) => current.map((item) => ({
+      ...item,
+      // 模板只能有一份：标记某一份会清掉其它份的标记
+      role: item.documentId === documentId && item.role !== "TEMPLATE" ? "TEMPLATE" : undefined,
+    })));
+  }
+
   async function handleFileSelection(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
@@ -579,6 +590,7 @@ export function PlaygroundPage() {
     const assistantId = `assistant-${idBase}`;
     const submittedAttachments = resolvedAttachments.map((attachment) => ({
       documentId: attachment.documentId,
+      role: attachment.role,
       filename: attachment.document?.filename,
       status: attachment.document?.status,
     }));
@@ -674,16 +686,34 @@ export function PlaygroundPage() {
             const status = String(attachment.document?.status || "").toUpperCase();
             const ready = status === "READY";
             const failed = status === "FAILED";
+            const isTemplate = attachment.role === "TEMPLATE";
             return (
-              <span className={`composer-attachment${ready ? " is-ready" : failed ? " is-failed" : " is-pending"}`} key={attachment.documentId}>
+              <span className={`composer-attachment${ready ? " is-ready" : failed ? " is-failed" : " is-pending"}${isTemplate ? " is-template" : ""}`} key={attachment.documentId}>
                 <FileText size={14} />
-                <span><strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong><small>{ready ? "可用" : failed ? "解析失败" : "解析中"}</small></span>
+                <span>
+                  <strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong>
+                  <small>
+                    {ready ? "可用" : failed ? "解析失败" : "解析中"}
+                    {/* 只有两份时才有"哪份是模板"的歧义；用户不点就交给服务端判断 */}
+                    {allowRoleToggle ? (
+                      <button
+                        type="button"
+                        className="composer-attachment__role"
+                        aria-pressed={isTemplate}
+                        title={isTemplate ? "取消模板标记，改为自动判断" : "把这份文件指定为报告模板"}
+                        onClick={() => toggleTemplateRole(attachment.documentId)}
+                      >
+                        {isTemplate ? "模板" : "设为模板"}
+                      </button>
+                    ) : null}
+                  </small>
+                </span>
                 <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => item.documentId !== attachment.documentId))}><X size={13} /></button>
               </span>
             );
           })}
         </div>
-        <p className="composer-attachments-hint">最多两份文件。系统会判断哪份是报告主体材料、哪份是提供版式的模板，然后据此生成报告。</p>
+        <p className="composer-attachments-hint">上传模板是可选的。不指定时由系统判断哪份是报告主体材料、哪份是提供版式的模板。</p>
         </>
       ) : null}
       <textarea

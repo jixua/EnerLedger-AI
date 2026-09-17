@@ -51,7 +51,11 @@ from app.rag.models.chunk_record import ChunkRecordDB
 from app.services.agent_conversations import finish_turn, start_turn
 from app.services.agent_runs import agent_run_registry
 from app.services.document_queue import DOCUMENT_STATUS_READY
-from app.services.report_attachment_roles import decide_attachment_roles
+from app.services.report_attachment_roles import (
+    AttachmentRoleError,
+    decide_attachment_roles,
+    resolve_declared_roles,
+)
 from app.services.pi_agent_client import (
     PiAgentUnavailableError,
     pi_agent_readiness,
@@ -948,15 +952,15 @@ async def agent_stream(
                     },
                 )
 
-        # 调用方可以不声明用途（前端已不再询问），此时由模型判断哪份是主体材料、
-        # 哪份是版式模板；显式声明过的仍尊重调用方的指定。
-        if all(item.role for item in body.attachments):
-            subject_ids = [item.document_id for item in body.attachments if item.role == "SOURCE"]
-            template_ids = [item.document_id for item in body.attachments if item.role == "TEMPLATE"]
-            if len(subject_ids) != 1 or len(template_ids) > 1:
-                raise HTTPException(status_code=422, detail="报告对话需要一个源文件和最多一个模板文件")
-            subject_id = subject_ids[0]
-            template_id = template_ids[0] if template_ids else None
+        # 用户显式指定的用途优先，未指定的按规则补全；一个都没指定时才交给模型判断。
+        declared = {item.document_id: item.role for item in body.attachments if item.role}
+        if declared:
+            try:
+                subject_id, template_id = resolve_declared_roles(
+                    attachment_ids=attachment_ids, declared=declared
+                )
+            except AttachmentRoleError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
             decided_by = "caller"
         else:
             decision = await decide_attachment_roles(
