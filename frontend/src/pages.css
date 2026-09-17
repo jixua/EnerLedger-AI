@@ -395,6 +395,25 @@
 .report-online-preview p { padding: 8px 10px; border-radius: 8px; background: rgba(183, 126, 32, .08); }
 .report-online-preview > .report-online-preview__files { justify-content: flex-start; gap: 8px; }
 
+/* 对话里的报告任务卡片 */
+.chat-report-card { display: grid; gap: 10px; margin-top: 10px; padding: 13px 15px; border: 1px solid var(--hairline); border-radius: 11px; background: var(--surface-soft); }
+.chat-report-card__head { display: flex; align-items: center; gap: 10px; }
+.chat-report-card__head > div { display: grid; gap: 2px; flex: 1; }
+.chat-report-card__head strong { color: var(--ink); font-size: 12px; }
+.chat-report-card__head small { color: var(--muted); font-size: 10px; }
+.chat-report-card__icon { display: inline-flex; color: var(--primary); }
+.chat-report-card__link { color: var(--primary); font-size: 10px; text-decoration: none; }
+.chat-report-card__meta { display: inline-flex; align-items: center; gap: 6px; margin: 0; color: var(--muted); font-size: 10px; }
+.chat-report-card__actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.chat-report-card .report-question-form { margin-top: 0; }
+
+/* 报告中心：任务状态标签 */
+.report-state { display: inline-flex; align-items: center; padding: 3px 8px; border-radius: 999px; background: var(--surface-soft); color: var(--muted); font-size: 10px; font-weight: 600; }
+.report-state.is-done { background: var(--success-soft); color: var(--success); }
+.report-state.is-failed { background: var(--danger-soft); color: var(--danger); }
+.report-state.is-waiting { background: rgba(183, 126, 32, .14); color: #b77e20; }
+.report-state__detail { display: block; margin-top: 4px; color: var(--muted-soft); font-size: 10px; max-width: 240px; }
+
 /* 解析任务 */
 .page--tasks { max-width: 1320px; padding-top: 42px; }
 .task-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 32px; margin-bottom: 30px; }

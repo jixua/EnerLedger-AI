@@ -416,6 +416,73 @@ async def get_report_run(
     return _run_dict(await _owned_run(db, run_id=run_id, user_id=user_id))
 
 
+@router.get("/report-runs")
+async def list_report_runs(
+    user_id: Annotated[int, Depends(get_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[dict[str, Any]]:
+    """当前用户的报告任务总览（跨文档），带文档名与可下载产物。"""
+    runs = (
+        await db.scalars(
+            select(ReportRun)
+            .where(ReportRun.user_id == user_id)
+            .order_by(ReportRun.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    filenames = dict(
+        (await db.execute(select(Document.id, Document.filename).where(Document.user_id == user_id)))
+        .all()
+    )
+    return await _runs_with_artifacts(db, list(runs), document_filenames=filenames)
+
+
+async def _runs_with_artifacts(
+    db: AsyncSession,
+    runs: list[ReportRun],
+    *,
+    document_filenames: dict[int, str],
+) -> list[dict[str, Any]]:
+    if not runs:
+        return []
+    runs_by_id = {str(run.id): run for run in runs}
+    artifact_rows = (
+        await db.scalars(
+            select(ReportArtifact)
+            .where(ReportArtifact.run_id.in_(list(runs_by_id)))
+            .order_by(ReportArtifact.id)
+        )
+    ).all()
+    artifacts_by_run: dict[str, list[dict[str, Any]]] = {}
+    for artifact in artifact_rows:
+        run = runs_by_id.get(artifact.run_id)
+        if run is None:
+            continue
+        artifacts_by_run.setdefault(artifact.run_id, []).append(
+            {
+                "id": artifact.id,
+                "artifact_type": artifact.artifact_type,
+                "content_type": artifact.content_type,
+                "content_hash": artifact.content_hash,
+                "size_bytes": artifact.size_bytes,
+                "filename": artifact_download_name(
+                    run=run,
+                    document_filename=document_filenames.get(int(run.document_id)),
+                    artifact_type=artifact.artifact_type,
+                ),
+            }
+        )
+    return [
+        {
+            **_run_dict(run),
+            "document_filename": document_filenames.get(int(run.document_id)),
+            "artifacts": artifacts_by_run.get(str(run.id), []),
+        }
+        for run in runs
+    ]
+
+
 @router.get("/documents/{document_id}/report-runs")
 async def list_document_report_runs(
     document_id: int,

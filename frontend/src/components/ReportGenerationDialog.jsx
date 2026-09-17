@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, CheckCircle2, Download, FileOutput, Loader2, X } from "lucide-react";
+import { ReportQuestionsForm } from "./ReportQuestionsForm";
 import {
   answerReportQuestions,
   cancelReportRun,
@@ -30,24 +31,6 @@ function templateReviewMessage(template) {
   return template ? "模板可用，可创建报告。" : "";
 }
 
-function isAnswerMissing(question, value) {
-  if (question.field_type === "date_range") return !value?.start || !value?.end;
-  return !String(value ?? "").trim();
-}
-
-function normalizeAnswerValue(question, value) {
-  if (question.field_type === "number" || question.field_type === "integer") {
-    return Number(value);
-  }
-  if (question.field_type === "array") {
-    return String(value ?? "")
-      .split(/[\n,，]/)
-      .map((item) => item.trim())
-      .filter(Boolean);
-  }
-  return value;
-}
-
 export function ReportGenerationDialog({ document, open, onClose }) {
   const [templates, setTemplates] = useState([]);
   const [models, setModels] = useState([]);
@@ -60,7 +43,6 @@ export function ReportGenerationDialog({ document, open, onClose }) {
   const [instructions, setInstructions] = useState("");
   const [run, setRun] = useState(null);
   const [questions, setQuestions] = useState([]);
-  const [answers, setAnswers] = useState({});
   const [report, setReport] = useState(null);
   const [runHistory, setRunHistory] = useState([]);
   const [downloadingArtifact, setDownloadingArtifact] = useState(null);
@@ -141,7 +123,6 @@ export function ReportGenerationDialog({ document, open, onClose }) {
         if (run.state === "NEEDS_INPUT") {
           const openQuestions = (result || []).filter((question) => question.status === "OPEN");
           setQuestions(openQuestions);
-          setAnswers(Object.fromEntries(openQuestions.map((question) => [question.question_id, ""])));
         } else {
           setReport(result);
         }
@@ -158,7 +139,6 @@ export function ReportGenerationDialog({ document, open, onClose }) {
     if (!open) {
       setRun(null);
       setQuestions([]);
-      setAnswers({});
       setReport(null);
       setRunHistory([]);
       setError("");
@@ -179,7 +159,6 @@ export function ReportGenerationDialog({ document, open, onClose }) {
         language: "zh-CN",
         reporting_year: Number(reportingYear),
         user_instructions: instructions.trim() || null,
-        output_formats: ["ONLINE"],
       });
       setRun(next);
       setRunHistory((current) => [next, ...current]);
@@ -190,22 +169,8 @@ export function ReportGenerationDialog({ document, open, onClose }) {
     }
   }
 
-  async function handleAnswers(event) {
-    event.preventDefault();
+  async function handleAnswers(payload) {
     if (submitting || !questions.length) return;
-    const payload = questions
-      .filter((question) => question.required || String(answers[question.question_id] ?? "").trim())
-      .map((question) => ({
-      question_id: question.question_id,
-      value: normalizeAnswerValue(question, answers[question.question_id]),
-      notes: null,
-    }));
-    if (questions.some(
-      (question) => question.required && isAnswerMissing(question, answers[question.question_id]),
-    )) {
-      setError("请完成所有必填补充项。");
-      return;
-    }
     setSubmitting(true);
     setError("");
     try {
@@ -333,35 +298,12 @@ export function ReportGenerationDialog({ document, open, onClose }) {
               </div>
             </div>
             {run.state === "NEEDS_INPUT" ? (
-              <form className="report-question-form" onSubmit={handleAnswers}>
-                <div className="report-question-form__heading">
-                  <strong>需要补充 {questions.length} 项信息</strong>
-                  <span>回答将标记为 USER_INPUT，不会改写为源文档事实。</span>
-                </div>
-                {questions.map((question) => (
-                  <label key={question.question_id} className="form-field">
-                    <span>{question.question} {question.required ? <b>*</b> : null}</span>
-                    {question.options?.length ? (
-                      <select value={answers[question.question_id] || ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.question_id]: event.target.value }))}>
-                        <option value="">请选择</option>
-                        {question.options.map((option) => <option key={String(option.value)} value={option.value}>{option.label}</option>)}
-                      </select>
-                    ) : question.field_type === "date_range" ? (
-                      <span className="report-date-range">
-                        <input type="date" value={answers[question.question_id]?.start || ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.question_id]: { ...(current[question.question_id] || {}), start: event.target.value } }))} />
-                        <input type="date" value={answers[question.question_id]?.end || ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.question_id]: { ...(current[question.question_id] || {}), end: event.target.value } }))} />
-                      </span>
-                    ) : question.field_type === "array" ? (
-                      <textarea rows="3" value={answers[question.question_id] || ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.question_id]: event.target.value }))} placeholder="每行填写一项" />
-                    ) : (
-                      <input type={["number", "integer"].includes(question.field_type) ? "number" : question.field_type === "date" ? "date" : "text"} value={answers[question.question_id] || ""} onChange={(event) => setAnswers((current) => ({ ...current, [question.question_id]: event.target.value }))} />
-                    )}
-                    <small>字段：{question.field_id}</small>
-                  </label>
-                ))}
-                {error ? <p className="form-error" role="alert">{error}</p> : null}
-                <button type="submit" className="button button--primary" disabled={submitting || !questions.length}>{submitting ? <Loader2 className="spin" size={15} /> : null}{submitting ? "正在提交" : "提交并继续生成"}</button>
-              </form>
+              <ReportQuestionsForm
+                questions={questions}
+                submitting={submitting}
+                error={error}
+                onSubmit={handleAnswers}
+              />
             ) : null}
             {run.state === "SUCCEEDED" && report?.report_ir ? (
               <div className="report-online-preview">

@@ -27,6 +27,7 @@ import {
   listAgentConversationTurns,
 } from "../lib/api";
 import { isDocumentRetrievalReady } from "../lib/parse-quality";
+import { ChatReportCard } from "../components/ChatReportCard";
 import {
   findHitByCitationIndex,
   linkifyRecallChunkMentions,
@@ -895,6 +896,7 @@ export function PlaygroundPage() {
                     </section>
                   ) : null}
                   {message.interaction?.status === "ANSWERED" ? <p className="chat-message__notice">已确认 {message.interaction.selected}，报告任务已经创建。</p> : null}
+                  {message.reportRunId ? <ChatReportCard runId={message.reportRunId} /> : null}
                   {message.failedSources?.length ? <p className="chat-message__warning">部分检索服务暂时不可用，本次回答可能不完整。</p> : null}
                   {!["recalling", "generating"].includes(message.status) ? (
                     <footer className="chat-message__actions">

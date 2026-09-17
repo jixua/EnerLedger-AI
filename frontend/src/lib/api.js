@@ -377,6 +377,10 @@ export function getReportRun(runId, { signal } = {}) {
   return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}`, { signal });
 }
 
+export function listReportRuns({ limit = 50, signal } = {}) {
+  return apiRequest(`/api/v1/report-runs?limit=${encodeURIComponent(limit)}`, { signal });
+}
+
 export function listDocumentReportRuns(documentId, { limit = 20, signal } = {}) {
   const path = appendQuery(
     `/api/v1/documents/${encodeURIComponent(documentId)}/report-runs`,

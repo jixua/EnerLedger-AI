@@ -23,7 +23,7 @@ const navigation = [
   { to: "/datasets", label: "碳知识库", icon: Database },
   { to: "/crawler/review", label: "资料审核", icon: ShieldCheck },
   { to: "/tasks", label: "解析队列", icon: Workflow },
-  { to: "/analysis-reports", label: "分析报告", icon: FileChartColumn },
+  { to: "/analysis-reports", label: "报告中心", icon: FileChartColumn },
   { to: "/models", label: "模型配置", icon: Bot },
 ];
 
