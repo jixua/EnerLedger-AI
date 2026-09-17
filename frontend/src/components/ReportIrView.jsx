@@ -129,17 +129,25 @@ function ReportTable({ block }) {
   );
 }
 
+/** 指标值里出现中文说明它是一段话（产品名、功能单位），不是给眼球抓的数。 */
+const CJK = /[\u4e00-\u9fff]/;
+
 function MetricCards({ block }) {
   const items = Array.isArray(block?.data?.items) ? block.data.items : [];
   if (!items.length) return null;
   return (
     <div className="report-metrics">
-      {items.map((item, index) => (
-        <div className="report-metric" key={`${item?.label ?? index}`}>
-          <span className="report-metric__label">{readableCell(item?.label)}</span>
-          <strong className="report-metric__value">{readableCell(item?.value) || "—"}</strong>
-        </div>
-      ))}
+      {items.map((item, index) => {
+        const value = readableCell(item?.value);
+        // 数值用指标字号，中文值退回正文偏大字号，避免一句话占满整行
+        const isText = CJK.test(value);
+        return (
+          <div className="report-metric" key={`${item?.label ?? index}`}>
+            <span className="report-metric__label">{readableCell(item?.label)}</span>
+            <strong className={`report-metric__value${isText ? " is-text" : ""}`}>{value || "—"}</strong>
+          </div>
+        );
+      })}
     </div>
   );
 }

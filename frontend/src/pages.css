@@ -461,35 +461,46 @@
 .report-download__menu button:hover:not(:disabled) { background: var(--surface-soft); color: var(--ink); }
 /* 错误就地浮在按钮下方，不撑动页头布局 */
 .report-download .form-error { position: absolute; top: calc(100% + 6px); right: 0; width: max-content; max-width: 280px; margin: 0; padding: 6px 9px; border-radius: 8px; background: var(--danger-soft); font-size: 11px; }
-/* 阅读提示：正文之前的紧凑提示条，讲口径与数据问题 */
-.report-detail__warnings { display: grid; gap: 8px; padding: 15px 20px; border-left: 3px solid var(--warning); }
-.report-detail__warnings h2 { margin: 0; color: var(--warning); font-size: 12px; font-weight: 650; }
-.report-detail__warnings ul { margin: 0; padding-left: 18px; color: var(--body); font-size: 12px; line-height: 1.8; }
+/* 正文区由几个首尾相接的模块叠成：阅读提示 / 正文 / 字段台账 / 使用限制。
+   页头与元信息是 12px 的紧凑节奏，这些是成块的正文——贴在一起（间距 0）会读成
+   一整块，两张圆角面板的边也会直接叠上，所以统一给一个上间距。 */
+.page--report-detail > .panel,
+.page--report-detail > .report-detail__warnings,
+.page--report-detail > .report-limitations { margin-top: 22px; }
+
+/* 阅读提示：正文之前的说明段。不加外框、不加强调色条——它是一段说明，
+   不是一个告警框。字号比正文（15px）小一档，比其后的「字段台账」大一档：
+   它读的是正文，不是附在正文后面的表格。 */
+.report-detail__warnings { display: grid; gap: 10px; }
+.report-detail__warnings h2 { margin: 0; color: var(--ink); font-size: 17px; }
+.report-detail__warnings ul { margin: 0; padding-left: 20px; color: var(--body); font-size: 14px; line-height: 1.8; }
 
 .report-detail__body { padding: 34px clamp(20px, 4vw, 56px); }
 /* 字段台账：缺口项作为头部摘要，完整表格折叠其后 */
 .report-detail__ledger { padding: 0; overflow: hidden; }
 .report-detail__ledger h2 { margin: 0; padding: 16px 20px 0; color: var(--ink); font-size: 15px; }
-.report-detail__ledger-lead { margin: 10px 0 12px; padding: 0 20px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.report-detail__ledger-lead { margin: 10px 0 12px; padding: 0 20px; color: var(--muted); font-size: 13px; line-height: 1.7; }
 .report-detail__ledger .report-gap-list { padding: 0 20px 16px; }
 .report-detail__ledger-table { border-top: 1px solid var(--hairline); }
-.report-detail__ledger-table > summary { cursor: pointer; padding: 14px 20px; color: var(--primary); font-size: 12px; font-weight: 650; }
+.report-detail__ledger-table > summary { cursor: pointer; padding: 14px 20px; color: var(--primary); font-size: 13px; font-weight: 650; }
 .report-detail__ledger-table .data-table-wrap { border-top: 1px solid var(--hairline); }
 
-/* 免责性质的限制：正文之后的一行小字 */
-.report-limitations { display: grid; gap: 5px; padding: 0 4px; }
-.report-limitations h3 { margin: 0; color: var(--muted-soft); font-size: 11px; font-weight: 650; }
-.report-limitations ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.7; }
+/* 免责性质的限制：正文之后的一行小字。比正文小一档即可，11px 在 15px 的正文
+   之后已经读不清了。 */
+.report-limitations { display: grid; gap: 6px; padding: 0 4px; }
+.report-limitations h3 { margin: 0; color: var(--muted); font-size: 12.5px; font-weight: 650; }
+.report-limitations ul { margin: 0; padding-left: 20px; color: var(--muted); font-size: 13px; line-height: 1.75; }
 
 /* 页头的删除：图标按钮，悬停才出现危险色 */
 .report-detail__delete { width: 40px; padding-inline: 0; color: var(--muted); }
 .report-detail__delete:hover:not(:disabled) { border-color: color-mix(in srgb, var(--danger) 34%, var(--hairline)); background: var(--danger-soft); color: var(--danger); }
 .report-detail__delete:disabled { opacity: .45; cursor: not-allowed; }
 
-.report-gap-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
-.report-gap-list li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 9px; padding: 9px 11px; border: 1px solid var(--hairline); border-radius: 9px; background: var(--surface-soft); }
-.report-gap-list strong { color: var(--ink); font-size: 12px; }
-.report-gap-list small { flex-basis: 100%; color: var(--muted); font-size: 11px; line-height: 1.6; }
+/* 缺口项：与下方台账表同为一份数据，用同一种语言——细线分行，不做填充卡片 */
+.report-gap-list { display: grid; gap: 0; margin: 0; padding: 0; list-style: none; }
+.report-gap-list li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 9px; padding: 10px 0; border-top: 1px solid var(--hairline); }
+.report-gap-list strong { color: var(--ink); font-size: 13px; }
+.report-gap-list small { flex-basis: 100%; color: var(--muted); font-size: 12.5px; line-height: 1.6; }
 .report-gap-tag { padding: 2px 7px; border-radius: 999px; background: var(--surface-card); color: var(--body); font-size: 10px; font-weight: 600; }
 .report-gap-tag.is-missing { background: var(--warning-soft); color: var(--warning); }
 .report-gap-tag.is-conflict { background: var(--danger-soft); color: var(--danger); }
@@ -498,70 +509,83 @@
 .report-artifacts .form-error { display: inline-flex; align-items: center; gap: 5px; margin: 0; color: var(--danger); font-size: 11px; }
 .report-artifacts__hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 
-/* 报告正文：块渲染（语义对齐后端 _render_block） */
+/* 报告正文：块渲染（语义对齐后端 _render_block）。
+   这是一份文档，不是后台列表，所以正文用阅读字号（15px），比应用界面默认的
+   12–13px 大一档；行高 1.8 是中文长段落的行间呼吸。 */
 .report-document { max-width: var(--reading-column); margin: 0 auto; color: var(--ink); }
-.report-section + .report-section { margin-top: 34px; }
-.report-section > h2 { margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--hairline); color: var(--ink); font-size: 19px; font-weight: 650; }
-.report-block { margin: 0 0 12px; color: var(--body); font-size: 13px; line-height: 1.85; }
-.report-block--heading { margin: 22px 0 10px; color: var(--ink); font-size: 15px; }
-.report-block--signature, .report-block--source-note { color: var(--muted); font-size: 11px; }
-.report-block--list { margin: 0 0 14px; padding-left: 20px; color: var(--body); font-size: 13px; line-height: 1.85; }
-.report-block--raw { overflow-x: auto; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--hairline); border-radius: 9px; background: var(--surface-soft); color: var(--body); font-size: 11px; line-height: 1.6; }
-.report-callout { display: grid; gap: 5px; margin: 0 0 14px; padding: 12px 14px; border-left: 3px solid var(--warning); border-radius: 0 9px 9px 0; background: var(--warning-soft); }
-.report-callout strong { color: var(--warning); font-size: 11px; font-weight: 650; }
-.report-callout span { color: var(--body); font-size: 13px; line-height: 1.8; }
-.report-evidence { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }
-.report-evidence code { padding: 1px 5px; border-radius: 5px; background: var(--surface-card); color: var(--muted); font-size: 9px; }
+.report-section + .report-section { margin-top: 40px; }
+.report-section > h2 { margin: 0 0 16px; padding-bottom: 9px; border-bottom: 1px solid var(--hairline); color: var(--ink); font-size: 22px; font-weight: 650; }
+.report-block { margin: 0 0 14px; color: var(--body); font-size: 15px; line-height: 1.8; }
+.report-block--heading { margin: 26px 0 12px; color: var(--ink); font-size: 17px; }
+.report-block--signature, .report-block--source-note { color: var(--muted); font-size: 13px; }
+.report-block--list { margin: 0 0 16px; padding-left: 22px; color: var(--body); font-size: 15px; line-height: 1.8; }
+.report-block--raw { overflow-x: auto; margin: 0 0 16px; padding: 12px 14px; border: 1px solid var(--hairline); border-radius: 9px; background: var(--surface-soft); color: var(--body); font-size: 13px; line-height: 1.6; }
+/* 提示：只留一道左侧竖线，不再填底色。正文里带底色的块一多，读者会把每一块
+   都当成需要注意的东西，反而分不出轻重。 */
+.report-callout { display: grid; gap: 6px; margin: 0 0 16px; padding: 1px 0 1px 16px; border-left: 2px solid var(--warning); }
+.report-callout strong { color: var(--warning); font-size: 12px; font-weight: 650; }
+.report-callout span { color: var(--body); font-size: 15px; line-height: 1.8; }
+/* 证据编号：正文的脚注，不是徽标。去掉底色与内边距，避免每段后面拖一排灰块。 */
+.report-evidence { display: inline-flex; flex-wrap: wrap; gap: 7px; margin-left: 8px; vertical-align: baseline; }
+.report-evidence code { padding: 0; background: none; color: var(--muted-soft); font-size: 11px; }
 
-/* 指标卡：并列数值，不做颜色编码 */
-.report-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 0 0 16px; }
-.report-metric { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface-soft); }
-.report-metric__label { color: var(--muted); font-size: 11px; }
-.report-metric__value { color: var(--ink); font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
+/* 指标卡：一条上边线分栏即可，不做填充卡片——数值本身才是重点 */
+.report-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 20px; margin: 2px 0 22px; }
+.report-metric { display: grid; gap: 6px; padding: 10px 0 0; border-top: 2px solid var(--hairline-strong); }
+.report-metric__label { color: var(--muted); font-size: 13px; }
+.report-metric__value { color: var(--ink); font-size: 25px; font-weight: 650; letter-spacing: -.02em; }
+/* 值是产品名、功能单位这类中文短语时，25px 会撑满整行且换行难看，退回标题字号 */
+.report-metric__value.is-text { font-size: 17px; line-height: 1.5; letter-spacing: 0; }
 
 /* 图表：色序经 dataviz 校验器验证，五槽固定不循环 */
 .report-figure { margin: 0 0 20px; }
 .report-figure__data { margin-top: 10px; }
-.report-figure__data > summary { width: fit-content; cursor: pointer; color: var(--primary); font-size: 11px; font-weight: 650; }
+.report-figure__data > summary { width: fit-content; cursor: pointer; color: var(--primary); font-size: 12.5px; font-weight: 650; }
 .report-figure__data .data-table-wrap { margin-top: 8px; }
 .report-bars { display: grid; gap: 8px; }
 .report-bar { display: grid; grid-template-columns: minmax(80px, 168px) minmax(0, 1fr) auto; align-items: center; gap: 12px; }
-.report-bar__label { color: var(--body); font-size: 12px; overflow-wrap: anywhere; }
-.report-bar__track { height: 12px; border-radius: 4px; background: var(--surface-soft); }
+.report-bar__label { color: var(--body); font-size: 13px; overflow-wrap: anywhere; }
+.report-bar__track { height: 14px; border-radius: 4px; background: var(--surface-soft); }
 .report-bar__fill { display: block; height: 100%; min-width: 3px; border-radius: 4px; background: var(--report-series-1); }
-.report-bar__value { color: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.report-bar__value { color: var(--ink); font-size: 13.5px; font-variant-numeric: tabular-nums; font-weight: 600; }
 
 /* 发散条：围绕零基线，正负分列左右 */
 .report-diverging { display: grid; gap: 8px; }
 .report-diverge { display: grid; grid-template-columns: minmax(80px, 168px) minmax(0, 1fr) auto; align-items: center; gap: 12px; }
-.report-diverge__label { color: var(--body); font-size: 12px; overflow-wrap: anywhere; }
-.report-diverge__axis { display: grid; grid-template-columns: 1fr 1fr; height: 12px; }
+.report-diverge__label { color: var(--body); font-size: 13px; overflow-wrap: anywhere; }
+.report-diverge__axis { display: grid; grid-template-columns: 1fr 1fr; height: 14px; }
 .report-diverge__side { display: flex; height: 100%; }
 .report-diverge__side--negative { justify-content: flex-end; border-right: 1px solid var(--hairline-strong); }
 .report-diverge__side--positive { justify-content: flex-start; }
 .report-diverge__fill { display: block; height: 100%; min-width: 2px; }
 .report-diverge__fill.is-positive { border-radius: 0 4px 4px 0; background: var(--report-positive); }
 .report-diverge__fill.is-negative { border-radius: 4px 0 0 4px; background: var(--report-negative); }
-.report-diverge__value { color: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.report-diverge__value { color: var(--ink); font-size: 13.5px; font-variant-numeric: tabular-nums; font-weight: 600; }
 .report-legend--polarity { display: flex; gap: 16px; margin-bottom: 10px; }
 .report-legend--polarity li { display: flex; grid-template-columns: none; }
-.report-figure__note { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.report-figure__note { margin: 0 0 10px; color: var(--muted); font-size: 13px; line-height: 1.6; }
 
-.report-share { display: flex; gap: 2px; height: 20px; margin-bottom: 12px; }
+.report-share { display: flex; gap: 2px; height: 22px; margin-bottom: 12px; }
 .report-share__segment { height: 100%; }
 .report-share__segment:first-child { border-radius: 4px 0 0 4px; }
 .report-share__segment:last-child { border-radius: 0 4px 4px 0; }
 .report-legend { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
 .report-legend li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; }
 .report-legend i { width: 10px; height: 10px; border-radius: 3px; }
-.report-legend__label { color: var(--body); font-size: 12px; overflow-wrap: anywhere; }
-.report-legend__value { color: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
-.report-legend__share { min-width: 48px; color: var(--muted); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
+.report-legend__label { color: var(--body); font-size: 13px; overflow-wrap: anywhere; }
+.report-legend__value { color: var(--ink); font-size: 13.5px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.report-legend__share { min-width: 48px; color: var(--muted); font-size: 12.5px; text-align: right; font-variant-numeric: tabular-nums; }
 
-/* 报告内容表格：与列表页的紧凑表格分开 */
-.report-table { min-width: 0; font-size: 12px; }
-.report-table caption { caption-side: top; padding-bottom: 6px; color: var(--muted); font-size: 11px; text-align: left; }
-.report-table th, .report-table td { padding: 9px 11px; vertical-align: top; }
+/* 报告内容表格：与列表页的紧凑表格分开。列表页的表头是 8px 大写的字段名，
+   服务于后台密集列表；报告页上的表格是给人读的，字号、大小写、表头底色都
+   按文档来，所以这里用两级选择器压过 .data-table 的紧凑规则。 */
+.report-table { min-width: 0; font-size: 13.5px; }
+.report-table caption { caption-side: top; padding-bottom: 6px; color: var(--muted); font-size: 12.5px; text-align: left; }
+.page--report-detail .report-table th { padding: 10px 13px; border-bottom: 1px solid var(--hairline-strong); background: none; color: var(--ink); font-size: 13px; font-weight: 650; line-height: 1.5; letter-spacing: 0; text-transform: none; vertical-align: top; }
+.page--report-detail .report-table td { padding: 11px 13px; color: var(--body); font-size: 13.5px; line-height: 1.65; vertical-align: top; }
+/* 首列是行标签，窄屏下会被压成一字一行；给它一个下限，宁可让表格横向滚动 */
+.page--report-detail .report-table th:first-child,
+.page--report-detail .report-table td:first-child { min-width: 5.5rem; }
 
 /* 文档详情页的「本文件的报告」 */
 .document-reports { display: grid; gap: 12px; }

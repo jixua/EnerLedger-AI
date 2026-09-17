@@ -309,9 +309,9 @@ export function ReportDetailPage() {
       {run.state === "SUCCEEDED" ? (
         <>
           {/* 读正文之前需要知道的口径与数据问题（ReportIR 的 warnings）。
-              「生成提示」是按机制命名——页面上的内容都是生成的，读者不知道那是什么。 */}
+              不加外框与强调色条：它是一段说明，不是一个告警框。 */}
           {reportIr?.warnings?.length ? (
-            <section className="panel report-detail__warnings">
+            <section className="report-detail__warnings">
               <h2>阅读提示</h2>
               <ul>{reportIr.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
             </section>
