@@ -777,6 +777,7 @@
 }
 .composer-selector__panel--datasets { width: 360px; }
 .composer-selector__panel--model { width: 300px; }
+.composer-selector__panel--upload { width: 268px; padding: 6px; }
 .conversation-composer-dock .composer-selector__panel { top: auto; bottom: calc(100% + 9px); }
 .composer-selector__header { min-height: 58px; display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 12px 14px 10px; border-bottom: 1px solid var(--hairline); }
 .composer-selector__header > div { min-width: 0; display: flex; flex-direction: column; gap: 4px; }

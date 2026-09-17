@@ -8,6 +8,7 @@ import {
   Copy,
   Database,
   FileText,
+  LayoutTemplate,
   LoaderCircle,
   MessageSquareText,
   Paperclip,
@@ -150,6 +151,9 @@ export function PlaygroundPage() {
   const controlsRef = useRef(null);
   const datasetTriggerRef = useRef(null);
   const modelTriggerRef = useRef(null);
+  const uploadTriggerRef = useRef(null);
+  // 一个文件选择器服务两种角色：点哪个入口先记下角色，再打开选择器。
+  const pendingUploadRoleRef = useRef("SOURCE");
   const sourceCardRefs = useRef(new Map());
   const sourceFileRef = useRef(null);
 
@@ -353,7 +357,7 @@ export function PlaygroundPage() {
     function handleKeyDown(event) {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      const trigger = openSelector === "datasets" ? datasetTriggerRef.current : modelTriggerRef.current;
+      const trigger = selectorTriggerRef(openSelector);
       setOpenSelector(null);
       window.requestAnimationFrame(() => trigger?.focus());
     }
@@ -394,10 +398,24 @@ export function PlaygroundPage() {
       : [...current, normalized]);
   }
 
+  function selectorTriggerRef(selector) {
+    if (selector === "datasets") return datasetTriggerRef.current;
+    if (selector === "model") return modelTriggerRef.current;
+    if (selector === "upload") return uploadTriggerRef.current;
+    return null;
+  }
+
   function closeSelectorAndRestoreFocus(selector = openSelector) {
-    const trigger = selector === "datasets" ? datasetTriggerRef.current : modelTriggerRef.current;
+    const trigger = selectorTriggerRef(selector);
     setOpenSelector(null);
     window.requestAnimationFrame(() => trigger?.focus());
+  }
+
+  /** 一个文件选择器服务两种角色：先记下角色再打开系统选择器。 */
+  function pickUploadFile(role) {
+    pendingUploadRoleRef.current = role;
+    closeSelectorAndRestoreFocus("upload");
+    sourceFileRef.current?.click();
   }
 
   function selectModel(modelId) {
@@ -449,8 +467,10 @@ export function PlaygroundPage() {
     if (!targetDatasetId) {
       throw new Error("上传对话资料前，请只选择一个知识库。");
     }
-    if (role === "SOURCE" && attachments.some((item) => item.role === "SOURCE")) {
-      throw new Error("每轮只能添加一份来源文档，请先移除现有材料。");
+    if (attachments.some((item) => item.role === role)) {
+      throw new Error(role === "TEMPLATE"
+        ? "每轮只能添加一份报告模板，请先移除现有的。"
+        : "每轮只能添加一份来源文档，请先移除现有材料。");
     }
     setUploadingRole(role);
     try {
@@ -660,7 +680,7 @@ export function PlaygroundPage() {
 
   const composer = (
     <form className="chat-composer" onSubmit={submitQuestion}>
-      <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={(event) => handleFileSelection(event, "SOURCE")} />
+      <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={(event) => handleFileSelection(event, pendingUploadRoleRef.current)} />
       {resolvedAttachments.length ? (
         <>
         <div className="composer-attachments" aria-label="本轮附件">
@@ -671,13 +691,13 @@ export function PlaygroundPage() {
             return (
               <span className={`composer-attachment${ready ? " is-ready" : failed ? " is-failed" : " is-pending"}`} key={`${attachment.role}-${attachment.documentId}`}>
                 <FileText size={14} />
-                <span><strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong><small>来源文档 · {ready ? "可用" : failed ? "解析失败" : "解析中"}</small></span>
+                <span><strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong><small>{attachment.role === "TEMPLATE" ? "报告模板" : "来源文档"} · {ready ? "可用" : failed ? "解析失败" : "解析中"}</small></span>
                 <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => !(item.role === attachment.role && item.documentId === attachment.documentId)))}><X size={13} /></button>
               </span>
             );
           })}
         </div>
-        <p className="composer-attachments-hint">附件将作为报告材料：发送后自动识别报告类型并创建报告任务（识别不确定时会弹出确认卡片）。</p>
+        <p className="composer-attachments-hint">来源文档提供报告事实，报告模板提供版式与章节结构（可只传其一）。发送后自动识别报告类型并创建任务。</p>
         </>
       ) : null}
       <textarea
@@ -697,11 +717,33 @@ export function PlaygroundPage() {
       />
       <div className="chat-composer__toolbar">
         <div className="chat-composer__controls" ref={controlsRef}>
-          <div className="composer-selector composer-selector--attachment">
-            <button type="button" className="composer-selector__trigger composer-attachment-trigger" aria-label="上传报告材料" onClick={() => sourceFileRef.current?.click()}>
+          {/* 一个入口按钮，两种用途：来源文档提供事实，报告模板提供版式 */}
+          <div className={`composer-selector composer-selector--attachment${openSelector === "upload" ? " is-open" : ""}`}>
+            <button
+              ref={uploadTriggerRef}
+              type="button"
+              className="composer-selector__trigger composer-attachment-trigger"
+              aria-label="上传文件"
+              aria-haspopup="menu"
+              aria-expanded={openSelector === "upload"}
+              onClick={() => setOpenSelector((current) => current === "upload" ? null : "upload")}
+            >
               {uploadingRole ? <LoaderCircle className="spin" size={15} /> : <Paperclip size={15} />}
-              <span>上传报告材料</span>
+              <span>上传文件</span>
+              <ChevronDown className="composer-selector__chevron" size={14} />
             </button>
+            {openSelector === "upload" ? (
+              <div className="composer-selector__panel composer-selector__panel--upload" role="menu" aria-label="上传用途">
+                <button type="button" role="menuitem" className="composer-selector__option" onClick={() => pickUploadFile("SOURCE")}>
+                  <FileText size={16} />
+                  <span className="composer-selector__copy"><strong>来源文档</strong><small>报告的事实来源，每轮一份</small></span>
+                </button>
+                <button type="button" role="menuitem" className="composer-selector__option" onClick={() => pickUploadFile("TEMPLATE")}>
+                  <LayoutTemplate size={16} />
+                  <span className="composer-selector__copy"><strong>报告模板</strong><small>提供版式与章节结构，可选</small></span>
+                </button>
+              </div>
+            ) : null}
           </div>
           <div className={`composer-selector composer-selector--datasets${openSelector === "datasets" ? " is-open" : ""}`}>
             <button
