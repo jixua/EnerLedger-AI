@@ -461,7 +461,7 @@
 .report-download__menu button:hover:not(:disabled) { background: var(--surface-soft); color: var(--ink); }
 /* 错误就地浮在按钮下方，不撑动页头布局 */
 .report-download .form-error { position: absolute; top: calc(100% + 6px); right: 0; width: max-content; max-width: 280px; margin: 0; padding: 6px 9px; border-radius: 8px; background: var(--danger-soft); font-size: 11px; }
-/* 生成提示：正文之前的紧凑提示条，只解释数字口径 */
+/* 阅读提示：正文之前的紧凑提示条，讲口径与数据问题 */
 .report-detail__warnings { display: grid; gap: 8px; padding: 15px 20px; border-left: 3px solid var(--warning); }
 .report-detail__warnings h2 { margin: 0; color: var(--warning); font-size: 12px; font-weight: 650; }
 .report-detail__warnings ul { margin: 0; padding-left: 18px; color: var(--body); font-size: 12px; line-height: 1.8; }

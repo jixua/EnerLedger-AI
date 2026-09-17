@@ -269,11 +269,11 @@ export function ReportDetailPage() {
 
       {run.state === "SUCCEEDED" ? (
         <>
-          {/* 生成提示解释的是正文里数字的口径差异（例如摘要与合计不一致），属于阅读
-              辅助，要放在正文之前；只有 3 条短句，不会把正文挤出首屏。 */}
+          {/* 读正文之前需要知道的口径与数据问题（ReportIR 的 warnings）。
+              「生成提示」是按机制命名——页面上的内容都是生成的，读者不知道那是什么。 */}
           {reportIr?.warnings?.length ? (
             <section className="panel report-detail__warnings">
-              <h2>生成提示</h2>
+              <h2>阅读提示</h2>
               <ul>{reportIr.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
             </section>
           ) : null}

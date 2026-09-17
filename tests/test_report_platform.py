@@ -922,3 +922,23 @@ async def test_delete_report_run_refuses_run_still_in_progress(monkeypatch) -> N
     assert session.executed == []
     assert session.commits == 0
     assert storage.removed == []
+
+
+def test_report_ir_schema_documents_warnings_and_limitations() -> None:
+    """这两个字段曾经只有类型、没有任何说明。
+
+    schema 是直接交给报告 Agent 的那份（report_ir_contract_schema），说明缺失时模型
+    只能凭直觉填，实测就会把正文里已经写过的口径说明再写一遍。
+    """
+
+    schema_path = _reporting_root() / "common" / "report-ir.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    properties = schema["properties"]
+
+    for field in ("warnings", "limitations"):
+        assert properties[field].get("description"), f"{field} 缺少字段说明"
+
+    # warnings 要明确要求不与正文重复，否则模型仍会把正文的提示块抄一遍
+    assert "不要" in properties["warnings"]["description"]
+    # 两个字段要能区分开，否则模型会混着写
+    assert "不涉及具体数值" in properties["limitations"]["description"]

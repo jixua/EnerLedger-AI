@@ -377,8 +377,17 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
       delete_sections: { type: "array", items: { type: "string" } },
       calculations: { type: "array", items: { type: "object" } },
       meta: { type: "object" },
-      warnings: { type: "array", items: { type: "string" } },
-      limitations: { type: "array", items: { type: "string" } },
+      warnings: {
+        type: "array",
+        items: { type: "string" },
+        description:
+          "读正文之前需要知道的口径与数据问题；正文中已说明过的不要重复",
+      },
+      limitations: {
+        type: "array",
+        items: { type: "string" },
+        description: "报告的适用边界与免责：性质、不能替代什么、遗留的不确定性",
+      },
       render_profile: { type: "string" },
     }),
     execute: guard(async (_toolCallId, params) => {
