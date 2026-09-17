@@ -103,6 +103,8 @@ test("对话上传只做直传分析：不要求选知识库，也没有模板�
   assert.doesNotMatch(playground, /上传对话资料前，请只选择一个知识库/);
   // 报告模板角色已从对话上传里移除
   assert.doesNotMatch(playground, /toggleTemplateRole|allowRoleToggle/);
+  // 附件随本轮发出后即清空，不残留到下一轮
+  assert.match(playground, /setQuestion\(""\);\s*\n\s*setAttachments\(\[\]\);/);
   // 直传附件把提取文本发给服务端；知识库附件仍按 document_id 引用
   assert.match(sse, /filename: attachment\.filename, content: attachment\.content/);
   assert.match(sse, /\.\.\.\(attachment\.role \? \{ role: attachment\.role \} : \{\}\)/);
