@@ -227,7 +227,12 @@ img { max-width: 100%; }
   to { opacity: 1; transform: translateY(0); }
 }
 .service-banner { padding: 9px 18px; border-bottom: 1px solid color-mix(in srgb, var(--warning) 28%, var(--hairline)); background: var(--warning-soft); color: var(--warning); font-size: 10px; line-height: 1.5; }
-.page { width: 100%; max-width: 1440px; margin: 0 auto; padding: 42px 48px 56px; }
+/* 内容列宽的唯一来源。此前 .page 写 1440、pages.css 里各页写 1320，而 pages.css 由
+   styles.css 顶部的 @import 先注入，同权重下 .page 后写获胜，于是那 1320 从未生效、
+   页面被分成 1440 与 1320 两拨。现在只有这里定义一次。 */
+:root { --page-column: 1320px; }
+
+.page { width: 100%; max-width: var(--page-column); margin: 0 auto; padding: 42px 48px 56px; }
 
 .button, .icon-button { border: 1px solid transparent; transition: background 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform 150ms ease; }
 .button { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 15px; border-radius: var(--radius-md); font-size: 12px; font-weight: 600; white-space: nowrap; }

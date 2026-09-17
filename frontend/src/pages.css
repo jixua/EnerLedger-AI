@@ -1,12 +1,11 @@
 .page-shell {
   width: 100%;
-  max-width: 1440px;
+  max-width: var(--page-column);
   margin: 0 auto;
   padding: 34px 38px 48px;
 }
 
 .feature-page {
-  max-width: 1320px;
   padding: 42px 48px 56px;
 }
 
@@ -166,7 +165,6 @@
 .dataset-card__pending-actions small { font-size: 8px; }
 
 /* 碳知识库：采用标准目录式浏览，减少卡片噪声。 */
-.page--datasets { max-width: 1320px; padding-top: 42px; }
 .knowledge-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 32px; margin-bottom: 26px; }
 .knowledge-hero__copy { min-width: 0; }
 .knowledge-hero h1 { margin: 0 0 12px; color: var(--ink); font-family: var(--font-serif); font-size: clamp(42px, 5vw, 64px); font-weight: 500; line-height: 1; letter-spacing: -.045em; }
@@ -424,7 +422,6 @@
 .report-state__detail { display: block; margin-top: 4px; color: var(--muted-soft); font-size: 10px; max-width: 240px; }
 
 /* 报告详情页 */
-.page--report-detail { max-width: 1320px; padding-top: 42px; }
 .report-detail__header .document-detail-header__identity .eyebrow { margin: 0 0 4px; }
 .report-detail__header .document-detail-title-line { align-items: center; gap: 12px; }
 .report-detail__pending { display: flex; align-items: flex-start; gap: 14px; color: var(--primary); }
@@ -546,7 +543,6 @@
 
 
 /* 解析任务 */
-.page--tasks { max-width: 1320px; padding-top: 42px; }
 .task-hero { display: flex; align-items: flex-end; justify-content: space-between; gap: 32px; margin-bottom: 30px; }
 .task-hero__copy h1 { margin: 0 0 10px; color: var(--ink); font-family: var(--font-serif); font-size: clamp(42px, 5vw, 58px); font-weight: 500; line-height: 1; letter-spacing: -.045em; }
 .task-hero__copy p { margin: 0; color: var(--muted); font-size: 12px; line-height: 1.6; }
@@ -1163,7 +1159,6 @@
 .request-id { display: block; max-width: 100%; margin-top: 9px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; text-align: center; }
 
 /* 模型 */
-.models-page { padding-top: 42px; }
 .models-page .knowledge-hero { margin-bottom: 42px; }
 .models-page .knowledge-hero h1 { font-size: clamp(46px, 5vw, 64px); }
 .models-page .knowledge-hero__subtitle { margin: 0; color: var(--muted); font-size: 13px; }
@@ -1230,7 +1225,6 @@
 .form-sheet__actions { display: flex; justify-content: flex-end; gap: 8px; }
 
 /* 系统 */
-.system-page { max-width: 1320px; padding-top: 42px; }
 .system-page .system-hero { margin-bottom: 40px; }
 .system-page .knowledge-hero__subtitle { margin: 0; color: var(--body); font-size: 14px; }
 .system-page .knowledge-hero__action { min-height: 44px; padding-inline: 18px; }
@@ -1584,7 +1578,6 @@
 .document-view-link { border-color: var(--hero-line); background: var(--surface); color: var(--action); text-decoration: none; }
 .document-view-link:hover { border-color: color-mix(in srgb, var(--action) 35%, var(--hairline)); background: color-mix(in srgb, var(--action) 7%, var(--surface)); }
 
-.page--crawler { max-width: 1320px; padding-top: 42px; }
 .crawler-error { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding: 10px 12px; border: 1px solid color-mix(in srgb, var(--danger) 24%, var(--hairline)); border-radius: 8px; background: var(--danger-soft); color: var(--danger); font-size: 11px; }
 .crawler-results { margin-top: 24px; }
 .crawler-results__header { display: flex; align-items: flex-end; justify-content: space-between; gap: 14px; margin-bottom: 12px; }
