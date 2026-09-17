@@ -17,6 +17,14 @@ from .rag_generation import (
     RAG_GENERATION_USER_PROMPT_TEMPLATE,
     build_rag_user_prompt,
 )
+from .report_attachment_roles import (
+    ATTACHMENT_ROLE_EXCERPT_CHARS,
+    ATTACHMENT_ROLE_MAX_OUTPUT_TOKENS,
+    ATTACHMENT_ROLE_SYSTEM_PROMPT,
+    ATTACHMENT_ROLE_TIMEOUT_SECONDS,
+    build_attachment_role_user_prompt,
+    parse_attachment_role_reply,
+)
 from .report_clarification import (
     REPORT_CLARIFICATION_FALLBACK,
     REPORT_CLARIFICATION_MAX_CHARS,
@@ -44,6 +52,12 @@ __all__ = [
     "REPORT_CLARIFICATION_MAX_OUTPUT_TOKENS",
     "REPORT_CLARIFICATION_SYSTEM_PROMPT",
     "REPORT_CLARIFICATION_TIMEOUT_SECONDS",
+    "ATTACHMENT_ROLE_EXCERPT_CHARS",
+    "ATTACHMENT_ROLE_MAX_OUTPUT_TOKENS",
+    "ATTACHMENT_ROLE_SYSTEM_PROMPT",
+    "ATTACHMENT_ROLE_TIMEOUT_SECONDS",
+    "build_attachment_role_user_prompt",
+    "parse_attachment_role_reply",
     "build_report_clarification_user_prompt",
     "clean_report_clarification",
 ]

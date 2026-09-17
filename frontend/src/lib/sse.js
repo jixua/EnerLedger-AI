@@ -114,7 +114,8 @@ function toAgentRequestBody(payload) {
   if (payload.attachments?.length) {
     body.attachments = payload.attachments.map((attachment) => ({
       document_id: attachment.documentId ?? attachment.document_id,
-      role: attachment.role,
+      // 用途由服务端判断，界面不再声明；调用方显式指定时才带上
+      ...(attachment.role ? { role: attachment.role } : {}),
     }));
   }
   return body;

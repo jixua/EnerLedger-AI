@@ -51,6 +51,7 @@ from app.rag.models.chunk_record import ChunkRecordDB
 from app.services.agent_conversations import finish_turn, start_turn
 from app.services.agent_runs import agent_run_registry
 from app.services.document_queue import DOCUMENT_STATUS_READY
+from app.services.report_attachment_roles import decide_attachment_roles
 from app.services.pi_agent_client import (
     PiAgentUnavailableError,
     pi_agent_readiness,
@@ -104,12 +105,11 @@ async def _report_clarification_reply(
     except asyncio.CancelledError:
         raise
     except Exception as exc:  # noqa: BLE001 - 确认说明为增强项，失败回落固定文案
-        logger.bind(
-            event="report_clarification_generation_failed",
-            outcome="degraded",
-            error_type=type(exc).__name__,
-            error_message=str(exc)[:200],
-        ).warning("[agent] report clarification generation failed")
+        logger.warning(
+            "[agent] report clarification generation failed (degraded): error_type=%s error_message=%s",
+            type(exc).__name__,
+            str(exc)[:200],
+        )
         return REPORT_CLARIFICATION_FALLBACK
     finally:
         await aclose_dataset_execution_contexts([], extra_models=[resolved])
@@ -119,7 +119,8 @@ class AgentAttachment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     document_id: int = Field(gt=0)
-    role: Literal["SOURCE", "TEMPLATE"]
+    # 可省略：不声明时由模型判断各文件用途（见 report_attachment_roles）。
+    role: Literal["SOURCE", "TEMPLATE"] | None = None
 
 
 class AgentHistoryMessage(BaseModel):
@@ -920,6 +921,10 @@ async def agent_stream(
         attachment_ids = [item.document_id for item in body.attachments]
         if len(set(attachment_ids)) != len(attachment_ids):
             raise HTTPException(status_code=422, detail="附件不能重复")
+        if len(attachment_ids) > 2:
+            raise HTTPException(
+                status_code=422, detail="一次最多两份文件：一份来源文档与一份报告模板"
+            )
         owned = (
             await db.scalars(
                 select(Document).where(
@@ -942,18 +947,48 @@ async def agent_stream(
                         "message": f"{document.filename} 尚未解析完成，请稍后再发送",
                     },
                 )
-            (source_documents if item.role == "SOURCE" else template_documents).append(document)
-            attachment_snapshots.append(
-                {
-                    "document_id": int(document.id),
-                    "document_version": int(document.version),
-                    "dataset_id": int(document.dataset_id),
-                    "filename": document.filename,
-                    "role": item.role,
-                }
+
+        # 调用方可以不声明用途（前端已不再询问），此时由模型判断哪份是主体材料、
+        # 哪份是版式模板；显式声明过的仍尊重调用方的指定。
+        if all(item.role for item in body.attachments):
+            subject_ids = [item.document_id for item in body.attachments if item.role == "SOURCE"]
+            template_ids = [item.document_id for item in body.attachments if item.role == "TEMPLATE"]
+            if len(subject_ids) != 1 or len(template_ids) > 1:
+                raise HTTPException(status_code=422, detail="报告对话需要一个源文件和最多一个模板文件")
+            subject_id = subject_ids[0]
+            template_id = template_ids[0] if template_ids else None
+            decided_by = "caller"
+        else:
+            decision = await decide_attachment_roles(
+                db=db,
+                user_id=user_id,
+                config_id=config_id,
+                documents=[by_id[document_id] for document_id in attachment_ids],
             )
-        if len(source_documents) != 1 or len(template_documents) > 1:
-            raise HTTPException(status_code=422, detail="报告对话需要一个源文件和最多一个模板文件")
+            subject_id, template_id, decided_by = (
+                decision.subject_id,
+                decision.template_id,
+                decision.decided_by,
+            )
+
+        source_documents = [by_id[subject_id]]
+        template_documents = [by_id[template_id]] if template_id else []
+        attachment_snapshots = [
+            {
+                "document_id": document_id,
+                "document_version": int(by_id[document_id].version),
+                "dataset_id": int(by_id[document_id].dataset_id),
+                "filename": by_id[document_id].filename,
+                "role": "TEMPLATE" if document_id == template_id else "SOURCE",
+            }
+            for document_id in attachment_ids
+        ]
+        logger.info(
+            "[agent] report attachment roles resolved decided_by=%s subject_id=%s template_id=%s",
+            decided_by,
+            subject_id,
+            template_id,
+        )
 
     conversation, turn, persisted_history = await start_turn(
         db,

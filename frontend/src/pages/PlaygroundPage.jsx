@@ -8,7 +8,6 @@ import {
   Copy,
   Database,
   FileText,
-  LayoutTemplate,
   LoaderCircle,
   MessageSquareText,
   Paperclip,
@@ -137,7 +136,7 @@ export function PlaygroundPage() {
   const [deletingId, setDeletingId] = useState(null);
   const [historyError, setHistoryError] = useState("");
   const [attachments, setAttachments] = useState([]);
-  const [uploadingRole, setUploadingRole] = useState(null);
+  const [uploading, setUploading] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");
   const [confirmationSelections, setConfirmationSelections] = useState({});
   const [sourceMessageId, setSourceMessageId] = useState(null);
@@ -151,9 +150,6 @@ export function PlaygroundPage() {
   const controlsRef = useRef(null);
   const datasetTriggerRef = useRef(null);
   const modelTriggerRef = useRef(null);
-  const uploadTriggerRef = useRef(null);
-  // 一个文件选择器服务两种角色：点哪个入口先记下角色，再打开选择器。
-  const pendingUploadRoleRef = useRef("SOURCE");
   const sourceCardRefs = useRef(new Map());
   const sourceFileRef = useRef(null);
 
@@ -218,8 +214,8 @@ export function PlaygroundPage() {
   const attachmentsFailed = resolvedAttachments.some(
     (attachment) => String(attachment.document?.status || "").toUpperCase() === "FAILED",
   );
-  const attachmentRolesValid = !resolvedAttachments.length
-    || resolvedAttachments.filter((attachment) => attachment.role === "SOURCE").length === 1;
+  // 用途由服务端判断，前端只保证份数不超过上限
+  const attachmentCountValid = resolvedAttachments.length <= 2;
   const datasetTriggerLabel = !selectedDatasetIds.length
     ? `全部知识库${activeDatasets.length ? `（${activeDatasets.length}）` : ""}`
     : selectedDatasets.length === 1
@@ -234,9 +230,9 @@ export function PlaygroundPage() {
     && hasRetrievalScope
     && (!needsExplicitModel || selectedModelId)
     && !isRunning
-    && !uploadingRole
+    && !uploading
     && attachmentsReady
-    && attachmentRolesValid
+    && attachmentCountValid
   );
   const sourceMessage = messages.find((message) => message.id === sourceMessageId);
   const sourceHits = sourceMessage?.hits ?? [];
@@ -401,7 +397,6 @@ export function PlaygroundPage() {
   function selectorTriggerRef(selector) {
     if (selector === "datasets") return datasetTriggerRef.current;
     if (selector === "model") return modelTriggerRef.current;
-    if (selector === "upload") return uploadTriggerRef.current;
     return null;
   }
 
@@ -409,13 +404,6 @@ export function PlaygroundPage() {
     const trigger = selectorTriggerRef(selector);
     setOpenSelector(null);
     window.requestAnimationFrame(() => trigger?.focus());
-  }
-
-  /** 一个文件选择器服务两种角色：先记下角色再打开系统选择器。 */
-  function pickUploadFile(role) {
-    pendingUploadRoleRef.current = role;
-    closeSelectorAndRestoreFocus("upload");
-    sourceFileRef.current?.click();
   }
 
   function selectModel(modelId) {
@@ -459,7 +447,7 @@ export function PlaygroundPage() {
     }
   }
 
-  async function uploadConversationFile(file, role) {
+  async function uploadConversationFile(file) {
     if (!file) return;
     const targetDatasetId = selectedDatasetIds.length === 1
       ? Number(selectedDatasetIds[0])
@@ -467,29 +455,28 @@ export function PlaygroundPage() {
     if (!targetDatasetId) {
       throw new Error("上传对话资料前，请只选择一个知识库。");
     }
-    if (attachments.some((item) => item.role === role)) {
-      throw new Error(role === "TEMPLATE"
-        ? "每轮只能添加一份报告模板，请先移除现有的。"
-        : "每轮只能添加一份来源文档，请先移除现有材料。");
+    // 上传时不问用途：哪份是来源文档、哪份是报告模板由服务端判断
+    if (attachments.length >= 2) {
+      throw new Error("一次最多上传两份文件，请先移除现有的。");
     }
-    setUploadingRole(role);
+    setUploading(true);
     try {
       const [result] = await uploadDocuments(targetDatasetId, [file], { stopOnError: true });
       const documentId = Number(result?.document_id ?? result?.id);
       if (!documentId) throw new Error("上传成功但未返回文档编号");
-      setAttachments((current) => [...current, { documentId, role, document: result }]);
+      setAttachments((current) => [...current, { documentId, document: result }]);
     } finally {
-      setUploadingRole(null);
+      setUploading(null);
     }
   }
 
-  async function handleFileSelection(event, role) {
+  async function handleFileSelection(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
     setAttachmentError("");
     try {
-      await uploadConversationFile(file, role);
+      await uploadConversationFile(file);
     } catch (error) {
       setAttachmentError(error?.message || "文件上传失败");
     }
@@ -592,7 +579,6 @@ export function PlaygroundPage() {
     const assistantId = `assistant-${idBase}`;
     const submittedAttachments = resolvedAttachments.map((attachment) => ({
       documentId: attachment.documentId,
-      role: attachment.role,
       filename: attachment.document?.filename,
       status: attachment.document?.status,
     }));
@@ -680,7 +666,7 @@ export function PlaygroundPage() {
 
   const composer = (
     <form className="chat-composer" onSubmit={submitQuestion}>
-      <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={(event) => handleFileSelection(event, pendingUploadRoleRef.current)} />
+      <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={handleFileSelection} />
       {resolvedAttachments.length ? (
         <>
         <div className="composer-attachments" aria-label="本轮附件">
@@ -689,15 +675,15 @@ export function PlaygroundPage() {
             const ready = status === "READY";
             const failed = status === "FAILED";
             return (
-              <span className={`composer-attachment${ready ? " is-ready" : failed ? " is-failed" : " is-pending"}`} key={`${attachment.role}-${attachment.documentId}`}>
+              <span className={`composer-attachment${ready ? " is-ready" : failed ? " is-failed" : " is-pending"}`} key={attachment.documentId}>
                 <FileText size={14} />
-                <span><strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong><small>{attachment.role === "TEMPLATE" ? "报告模板" : "来源文档"} · {ready ? "可用" : failed ? "解析失败" : "解析中"}</small></span>
-                <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => !(item.role === attachment.role && item.documentId === attachment.documentId)))}><X size={13} /></button>
+                <span><strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong><small>{ready ? "可用" : failed ? "解析失败" : "解析中"}</small></span>
+                <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => item.documentId !== attachment.documentId))}><X size={13} /></button>
               </span>
             );
           })}
         </div>
-        <p className="composer-attachments-hint">来源文档提供报告事实，报告模板提供版式与章节结构（可只传其一）。发送后自动识别报告类型并创建任务。</p>
+        <p className="composer-attachments-hint">最多两份文件。系统会判断哪份是报告主体材料、哪份是提供版式的模板，然后据此生成报告。</p>
         </>
       ) : null}
       <textarea
@@ -717,33 +703,17 @@ export function PlaygroundPage() {
       />
       <div className="chat-composer__toolbar">
         <div className="chat-composer__controls" ref={controlsRef}>
-          {/* 一个入口按钮，两种用途：来源文档提供事实，报告模板提供版式 */}
-          <div className={`composer-selector composer-selector--attachment${openSelector === "upload" ? " is-open" : ""}`}>
+          {/* 上传时不问用途：哪份是来源文档、哪份是报告模板由服务端判断 */}
+          <div className="composer-selector composer-selector--attachment">
             <button
-              ref={uploadTriggerRef}
               type="button"
               className="composer-selector__trigger composer-attachment-trigger"
               aria-label="上传文件"
-              aria-haspopup="menu"
-              aria-expanded={openSelector === "upload"}
-              onClick={() => setOpenSelector((current) => current === "upload" ? null : "upload")}
+              onClick={() => sourceFileRef.current?.click()}
             >
-              {uploadingRole ? <LoaderCircle className="spin" size={15} /> : <Paperclip size={15} />}
+              {uploading ? <LoaderCircle className="spin" size={15} /> : <Paperclip size={15} />}
               <span>上传文件</span>
-              <ChevronDown className="composer-selector__chevron" size={14} />
             </button>
-            {openSelector === "upload" ? (
-              <div className="composer-selector__panel composer-selector__panel--upload" role="menu" aria-label="上传用途">
-                <button type="button" role="menuitem" className="composer-selector__option" onClick={() => pickUploadFile("SOURCE")}>
-                  <FileText size={16} />
-                  <span className="composer-selector__copy"><strong>来源文档</strong><small>报告的事实来源，每轮一份</small></span>
-                </button>
-                <button type="button" role="menuitem" className="composer-selector__option" onClick={() => pickUploadFile("TEMPLATE")}>
-                  <LayoutTemplate size={16} />
-                  <span className="composer-selector__copy"><strong>报告模板</strong><small>提供版式与章节结构，可选</small></span>
-                </button>
-              </div>
-            ) : null}
           </div>
           <div className={`composer-selector composer-selector--datasets${openSelector === "datasets" ? " is-open" : ""}`}>
             <button

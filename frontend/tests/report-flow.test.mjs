@@ -89,13 +89,13 @@ test("界面只讲报告类型名称，不暴露 R1–R7 内部编号", async ()
   assert.match(reportRun, /run\?\.report_type_name/);
 });
 
-test("对话上传提供「来源文档」与「报告模板」两种用途", async () => {
+test("对话上传只问文件，不问用途", async () => {
   const playground = await read("pages/PlaygroundPage.jsx");
-  // 一个入口按钮，两种角色；角色不能写死在文件选择器上（曾经只有 SOURCE）
-  assert.match(playground, /pickUploadFile\("SOURCE"\)/);
-  assert.match(playground, /pickUploadFile\("TEMPLATE"\)/);
-  assert.doesNotMatch(playground, /handleFileSelection\(event, "SOURCE"\)/);
-  assert.match(playground, /handleFileSelection\(event, pendingUploadRoleRef\.current\)/);
-  // 附件标签要按角色显示，不能一律写「来源文档」
-  assert.match(playground, /attachment\.role === "TEMPLATE" \? "报告模板" : "来源文档"/);
+  const sse = await read("lib/sse.js");
+  // 一个入口按钮，不再有「来源文档 / 报告模板」的角色菜单
+  assert.match(playground, /aria-label="上传文件"/);
+  assert.doesNotMatch(playground, /pickUploadFile|composer-selector__panel--upload/);
+  // 份数上限仍在；用途交给服务端判断
+  assert.match(playground, /attachments\.length >= 2/);
+  assert.doesNotMatch(sse, /role: attachment\.role,/);
 });
