@@ -89,7 +89,7 @@ test("界面只讲报告类型名称，不暴露 R1–R7 内部编号", async ()
   assert.match(reportRun, /run\?\.report_type_name/);
 });
 
-test("对话上传只问文件：用途默认自动判断，也可由用户指明", async () => {
+test("对话上传只做直传分析：不要求选知识库，也没有模板角色", async () => {
   const playground = await read("pages/PlaygroundPage.jsx");
   const sse = await read("lib/sse.js");
   // 一个入口按钮，不再有「来源文档 / 报告模板」的角色菜单
@@ -97,10 +97,13 @@ test("对话上传只问文件：用途默认自动判断，也可由用户指�
   assert.doesNotMatch(playground, /pickUploadFile|composer-selector__panel--upload/);
   // 份数上限仍在
   assert.match(playground, /attachments\.length >= 2/);
-  // 用户可指明模板：只在两份文件时出现（一份时没有歧义）
-  assert.match(playground, /toggleTemplateRole/);
-  assert.match(playground, /allowRoleToggle = resolvedAttachments\.length === 2/);
-  // 只有用户明确指明时才把 role 发给服务端，否则由服务端判断
-  assert.doesNotMatch(sse, /role: attachment\.role,/);
+  // 小文件就地提取文本，不再强制选择知识库做上传解析
+  assert.match(playground, /uploadAgentAttachment/);
+  assert.doesNotMatch(playground, /uploadDocuments/);
+  assert.doesNotMatch(playground, /上传对话资料前，请只选择一个知识库/);
+  // 报告模板角色已从对话上传里移除
+  assert.doesNotMatch(playground, /toggleTemplateRole|allowRoleToggle/);
+  // 直传附件把提取文本发给服务端；知识库附件仍按 document_id 引用
+  assert.match(sse, /filename: attachment\.filename, content: attachment\.content/);
   assert.match(sse, /\.\.\.\(attachment\.role \? \{ role: attachment\.role \} : \{\}\)/);
 });

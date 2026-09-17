@@ -29,6 +29,7 @@ import {
   updateDocument,
   updateDocumentFolder,
   updateDataset,
+  uploadAgentAttachment,
   uploadDocument,
 } from "../src/lib/api.js";
 import { streamAgent } from "../src/lib/sse.js";
@@ -426,6 +427,43 @@ test("Pi Agent stream sends the durable conversation id and report attachments",
   });
   assert.equal(result.conversationId, "conversation-1");
   assert.equal(result.turnId, "turn-1");
+});
+
+test("direct attachments carry the extracted text instead of a document id", async () => {
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(
+      'event: answer_done\ndata: {"request_id":"turn-1","answer":"已读完文件"}\n\n',
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+  };
+
+  await streamAgent({
+    query: "这份文件讲了什么？",
+    attachments: [{ filename: "说明.md", content: "# 标题\n正文" }],
+  });
+
+  assert.equal(captured.url, "/api/v1/agent/stream");
+  assert.deepEqual(JSON.parse(captured.init.body).attachments, [
+    { filename: "说明.md", content: "# 标题\n正文" },
+  ]);
+});
+
+test("agent attachment upload posts the file to the direct-attachment route", async () => {
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return jsonResponse({ filename: "说明.md", content: "# 标题", char_count: 4 });
+  };
+
+  const file = new File(["# 标题"], "说明.md", { type: "text/markdown" });
+  const result = await uploadAgentAttachment(file);
+
+  assert.equal(captured.url, "/api/v1/agent/attachments");
+  assert.equal(captured.init.method, "POST");
+  assert.ok(captured.init.body instanceof FormData);
+  assert.equal(result.filename, "说明.md");
 });
 
 test("conversation history and template confirmation use durable agent routes", async () => {

@@ -117,6 +117,11 @@ class Settings(BaseSettings):
     ENERLEDGER_INTERNAL_AGENT_TOKEN: str = ""
     AGENT_RUN_TIMEOUT_SECONDS: int = Field(default=120, ge=10, le=900)
     AGENT_TOOL_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
+    # 对话直传附件：小文件不解析不入库，直接提取文本喂给模型分析。超过任一阈值
+    # 一律提示"文件过大，请先导入知识库"。字符上限同时保护 prompt 与 pi-service 1MB 请求体。
+    AGENT_DIRECT_ATTACHMENT_MAX_BYTES: int = Field(default=2 * 1024 * 1024, ge=1024)
+    AGENT_DIRECT_ATTACHMENT_MAX_PAGES: int = Field(default=10, ge=1)
+    AGENT_DIRECT_ATTACHMENT_MAX_CHARS: int = Field(default=60_000, ge=1000)
 
     # ==========================================
     # 召回执行配置 (Recall Pipeline)
