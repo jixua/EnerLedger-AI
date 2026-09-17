@@ -4,13 +4,27 @@ node {
     env.IMAGE_NAMESPACE = 'ghcr.io/jixua'
     env.NLTK_BUNDLE = '/opt/tolink/jenkins-cache/enerledger-nltk/nltk-data-v1.tar.gz'
     env.NLTK_BUNDLE_SHA256 = 'b2a01515e237cf8746fd659fb66e526b3fba9d6c3d046176de8fdc5035a5040f'
+    stage('Refresh source mirror') {
+      // 构建机到 GitHub 只有约 18 KB/s，还会整段停滞：depth=100 的浅克隆约 14 MiB，
+      // 直接克隆反复失败（构建 #17–#22：超时被杀、连接超时、传到一半停住，各种死法）。
+      // 所以改成从本地镜像克隆，克隆前先把新增提交拉进镜像——每次要传的量从 14 MiB
+      // 降到几个提交。刷新失败即终止构建，绝不拿旧代码去部署。
+      // 镜像位置：/var/jenkins_home/mirror/EnerLedger-AI.git（在 Jenkins 持久卷里，
+      // 不受工作区清理影响）。
+      sh '''
+        set -eu
+        MIRROR=/var/jenkins_home/mirror/EnerLedger-AI.git
+        test -d "$MIRROR" || { echo "本地镜像不存在：$MIRROR，需要先同步一次"; exit 1; }
+        timeout 600 git -C "$MIRROR" fetch --depth=100 --no-tags origin +refs/heads/master:refs/heads/master
+      '''
+    }
     stage('Checkout master') {
       deleteDir()
       checkout([
         $class: 'GitSCM',
         branches: [[name: 'refs/remotes/origin/master']],
         userRemoteConfigs: [[
-          url: 'https://github.com/jixua/EnerLedger-AI.git',
+          url: 'file:///var/jenkins_home/mirror/EnerLedger-AI.git',
           refspec: '+refs/heads/master:refs/remotes/origin/master'
         ]],
         extensions: [[
@@ -19,8 +33,6 @@ node {
           honorRefspec: true,
           noTags: true,
           shallow: true,
-          // 这台机器到 GitHub 只有约 18 KB/s，depth=100 的浅克隆约 14 MiB，
-          // 需要十几分钟；默认 10 分钟会在 71% 处被 SIGTERM 掉（构建 #18/#19/#20）。
           timeout: 60
         ]]
       ])
