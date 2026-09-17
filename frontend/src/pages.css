@@ -292,7 +292,7 @@
 .panel .section-heading p:last-child { max-width: 650px; margin: 5px 0 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .data-table-wrap { width: 100%; overflow: auto; }
 .data-table { width: 100%; min-width: 880px; border-collapse: collapse; }
-.data-table th { padding: 8px 15px; border-bottom: 1px solid var(--hairline); background: var(--surface-soft); color: var(--muted-soft); font: 650 8px/1 var(--font-mono); letter-spacing: 0.08em; text-align: left; text-transform: uppercase; }
+.data-table th { padding: 11px 15px; border-bottom: 1px solid var(--hairline); background: var(--surface-soft); color: var(--muted-soft); font: 650 8px/1 var(--font-mono); letter-spacing: 0.08em; text-align: left; text-transform: uppercase; }
 .data-table td { padding: 12px 15px; border-bottom: 1px solid var(--hairline); color: var(--body); font-size: 9px; vertical-align: middle; }
 .data-table tbody tr:last-child td { border-bottom: 0; }
 .data-table tbody tr:hover { background: color-mix(in srgb, var(--surface-soft) 55%, transparent); }
