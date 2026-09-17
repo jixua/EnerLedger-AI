@@ -269,20 +269,28 @@ export function ReportDetailPage() {
 
       {run.state === "SUCCEEDED" ? (
         <>
+          {/* 生成提示解释的是正文里数字的口径差异（例如摘要与合计不一致），属于阅读
+              辅助，要放在正文之前；只有 3 条短句，不会把正文挤出首屏。 */}
+          {reportIr?.warnings?.length ? (
+            <section className="panel report-detail__warnings">
+              <h2>生成提示</h2>
+              <ul>{reportIr.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+            </section>
+          ) : null}
+
           <section className="panel panel--flush report-detail__body">
             {reportIr ? <ReportIrView reportIr={reportIr} /> : (
               <div className="empty-state empty-state--loading"><Loader2 className="spin" size={20} /><p>正在渲染报告…</p></div>
             )}
           </section>
 
-          {/* 待确认与限制是读完之后再看的附录：放在正文之前会把正文挤出首屏
-              （桌面 900px 视口下正文原本从 844px 才开始）。 */}
-          {pendingFields.length || reportIr?.limitations?.length || reportIr?.warnings?.length ? (
-            <section className="panel report-detail__gaps">
-              <h2>待确认与限制</h2>
+          {ledger.length ? (
+            <section className="panel report-detail__ledger">
+              <h2>字段台账</h2>
+              {/* 缺口项本来就是这个台账按状态过滤出来的同一份数据，不再单列成一块 */}
               {pendingFields.length ? (
                 <>
-                  <p className="report-detail__gaps-lead">
+                  <p className="report-detail__ledger-lead">
                     以下 {pendingFields.length} 项在现有材料中未能落实，正文相应位置按资料缺口处理。
                   </p>
                   <ul className="report-gap-list">
@@ -298,43 +306,37 @@ export function ReportDetailPage() {
                   </ul>
                 </>
               ) : null}
-              {reportIr?.warnings?.length ? (
-                <div className="report-detail__gaps-group">
-                  <h3>生成提示</h3>
-                  <ul>{reportIr.warnings.map((warning) => <li key={warning}>{warning}</li>)}</ul>
+              <details className="report-detail__ledger-table">
+                <summary>查看全部 {ledger.length} 项字段</summary>
+                <div className="data-table-wrap">
+                  <table className="data-table report-table">
+                    <thead>
+                      <tr><th>字段</th><th>状态</th><th>取值</th><th>单位</th><th>证据</th></tr>
+                    </thead>
+                    <tbody>
+                      {ledger.map((item) => (
+                        <tr key={item.field_id}>
+                          <td>{fieldLabels.get(item.field_id) || item.field_id}</td>
+                          <td>{fieldStatusLabel(item.status)}</td>
+                          <td>{item.value === null || item.value === undefined ? "—" : String(item.value)}</td>
+                          <td>{item.unit || "—"}</td>
+                          <td>{item.evidence_ids?.length ? item.evidence_ids.join("、") : "—"}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
                 </div>
-              ) : null}
-              {reportIr?.limitations?.length ? (
-                <div className="report-detail__gaps-group">
-                  <h3>使用限制</h3>
-                  <ul>{reportIr.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
-                </div>
-              ) : null}
+              </details>
             </section>
           ) : null}
 
-          {ledger.length ? (
-            <details className="panel report-detail__ledger">
-              <summary>字段台账（{ledger.length} 项）</summary>
-              <div className="data-table-wrap">
-                <table className="data-table report-table">
-                  <thead>
-                    <tr><th>字段</th><th>状态</th><th>取值</th><th>单位</th><th>证据</th></tr>
-                  </thead>
-                  <tbody>
-                    {ledger.map((item) => (
-                      <tr key={item.field_id}>
-                        <td>{fieldLabels.get(item.field_id) || item.field_id}</td>
-                        <td>{fieldStatusLabel(item.status)}</td>
-                        <td>{item.value === null || item.value === undefined ? "—" : String(item.value)}</td>
-                        <td>{item.unit || "—"}</td>
-                        <td>{item.evidence_ids?.length ? item.evidence_ids.join("、") : "—"}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                </table>
-              </div>
-            </details>
+          {/* 免责性质的限制放在末尾一行小字。正文最后一节通常也会写到，但那是模型写的，
+              不保证每次都写；IR 里的 limitations 才是保证存在的。 */}
+          {reportIr?.limitations?.length ? (
+            <section className="report-limitations" aria-label="使用限制">
+              <h3>使用限制</h3>
+              <ul>{reportIr.limitations.map((item) => <li key={item}>{item}</li>)}</ul>
+            </section>
           ) : null}
         </>
       ) : null}
