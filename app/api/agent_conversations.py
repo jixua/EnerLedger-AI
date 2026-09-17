@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -88,6 +89,42 @@ async def list_conversation_turns(
         )
     ).all()
     return [turn_dict(turn) for turn in turns]
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    conversation_id: str,
+    user_id: Annotated[int, Depends(get_actor_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """删除整段对话及其全部回合。
+
+    两张表之间没有数据库级外键，回合需要显式清理。报告任务（``report_run``）
+    不随对话删除：它是独立交付物，删除对话后仍在报告中心可查。
+    """
+
+    owned = await db.scalar(
+        select(AgentConversation.id).where(
+            AgentConversation.id == conversation_id,
+            AgentConversation.user_id == user_id,
+        )
+    )
+    if owned is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+
+    await db.execute(
+        sa_delete(AgentConversationTurn).where(
+            AgentConversationTurn.conversation_id == conversation_id,
+            AgentConversationTurn.user_id == user_id,
+        )
+    )
+    await db.execute(
+        sa_delete(AgentConversation).where(
+            AgentConversation.id == conversation_id,
+            AgentConversation.user_id == user_id,
+        )
+    )
+    await db.commit()
 
 
 @router.post("/documents/{document_id}/classify-report-template")

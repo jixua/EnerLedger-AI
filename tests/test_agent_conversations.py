@@ -2,6 +2,10 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+from fastapi import HTTPException
+
+from app.api.agent_conversations import delete_conversation
 from app.services.agent_conversations import (
     SHORT_TERM_TURN_LIMIT,
     build_short_term_history,
@@ -54,3 +58,63 @@ def test_report_template_classifier_distinguishes_energy_audit_from_ghg_inventor
 
     assert result.state == "CONFIDENT"
     assert result.selected_report_type == "R4"
+
+
+class _FakeSession:
+    """记录删除语句的会话替身：只需要 scalar / execute / commit 三个动作。"""
+
+    def __init__(self, owned_id: str | None) -> None:
+        self._owned_id = owned_id
+        self.executed: list[object] = []
+        self.commits = 0
+
+    async def scalar(self, _statement: object) -> str | None:
+        return self._owned_id
+
+    async def execute(self, statement: object) -> None:
+        self.executed.append(statement)
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+
+def _compiled(statement: object) -> str:
+    return str(statement.compile())  # type: ignore[attr-defined]
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_removes_turns_before_the_conversation() -> None:
+    session = _FakeSession("conv-1")
+
+    await delete_conversation("conv-1", user_id=7, db=session)
+
+    # 先清回合再删会话：两张表之间没有数据库级外键
+    assert [statement.table.name for statement in session.executed] == [
+        "agent_conversation_turn",
+        "agent_conversation",
+    ]
+    assert all("user_id" in _compiled(statement) for statement in session.executed)
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_keeps_report_runs() -> None:
+    """报告是独立交付物：删对话不应连带删掉报告任务。"""
+
+    session = _FakeSession("conv-1")
+
+    await delete_conversation("conv-1", user_id=7, db=session)
+
+    assert all(statement.table.name != "report_run" for statement in session.executed)
+
+
+@pytest.mark.asyncio
+async def test_delete_conversation_rejects_conversation_of_another_user() -> None:
+    session = _FakeSession(None)
+
+    with pytest.raises(HTTPException) as failure:
+        await delete_conversation("conv-of-someone-else", user_id=7, db=session)
+
+    assert failure.value.status_code == 404
+    assert session.executed == []
+    assert session.commits == 0

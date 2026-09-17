@@ -15,6 +15,7 @@ import {
   Search,
   Square,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -23,6 +24,7 @@ import { Link, useLocation } from "react-router-dom";
 
 import {
   confirmAgentTemplateSelection,
+  deleteAgentConversation,
   listAgentConversations,
   listAgentConversationTurns,
 } from "../lib/api";
@@ -116,6 +118,9 @@ export function PlaygroundPage() {
   const [conversationId, setConversationId] = useState(null);
   const [conversations, setConversations] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [historyError, setHistoryError] = useState("");
   const [attachments, setAttachments] = useState([]);
   const [uploadingRole, setUploadingRole] = useState(null);
   const [attachmentError, setAttachmentError] = useState("");
@@ -228,6 +233,27 @@ export function PlaygroundPage() {
       setConversations(await listAgentConversations());
     } catch {
       setConversations([]);
+    }
+  }
+
+  async function handleDeleteConversation(id) {
+    setDeletingId(id);
+    setHistoryError("");
+    try {
+      await deleteAgentConversation(id);
+      setPendingDeleteId(null);
+      if (id === conversationId) {
+        // 删掉的正是当前打开的对话：清空视图，回到新对话状态。
+        activeAssistantRef.current = null;
+        setConversationId(null);
+        setMessages([]);
+        setAttachments([]);
+      }
+      await refreshConversations();
+    } catch (error) {
+      setHistoryError(error?.message || "删除对话失败");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -812,10 +838,32 @@ export function PlaygroundPage() {
         <header><span>最近对话</span><button type="button" aria-label="新建对话" onClick={() => { activeAssistantRef.current = null; setConversationId(null); setMessages([]); setAttachments([]); }}><Plus size={15} /></button></header>
         <div className="conversation-history__list">
           {historyLoading ? <p>正在读取…</p> : conversations.length ? conversations.map((item) => (
-            <button type="button" className={item.conversation_id === conversationId ? "is-active" : ""} key={item.conversation_id} onClick={() => openConversation(item.conversation_id)}>
-              <MessageSquareText size={14} /><span><strong>{item.title}</strong><small>{item.turn_count} 轮对话</small></span>
-            </button>
+            <div className={`conversation-history__item${item.conversation_id === conversationId ? " is-active" : ""}`} key={item.conversation_id}>
+              <button type="button" className="conversation-history__open" onClick={() => openConversation(item.conversation_id)}>
+                <MessageSquareText size={14} /><span><strong>{item.title}</strong><small>{item.turn_count} 轮对话</small></span>
+              </button>
+              {pendingDeleteId === item.conversation_id ? (
+                <div className="conversation-history__confirm" role="group" aria-label="确认删除对话">
+                  <button type="button" className="is-danger" onClick={() => { void handleDeleteConversation(item.conversation_id); }} disabled={deletingId === item.conversation_id}>
+                    {deletingId === item.conversation_id ? <LoaderCircle className="spin" size={12} /> : "删除"}
+                  </button>
+                  <button type="button" onClick={() => setPendingDeleteId(null)} disabled={Boolean(deletingId)}>取消</button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="conversation-history__delete"
+                  aria-label={`删除对话：${item.title}`}
+                  title={isRunning ? "生成中，暂不能删除" : "删除整段对话"}
+                  onClick={() => { setHistoryError(""); setPendingDeleteId(item.conversation_id); }}
+                  disabled={isRunning}
+                >
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
           )) : <p>还没有历史对话</p>}
+          {historyError ? <p className="conversation-history__error" role="alert">{historyError}</p> : null}
         </div>
       </aside>
       <div className={`conversation-page${messages.length ? " conversation-page--active" : ""}`}>

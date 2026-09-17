@@ -589,6 +589,13 @@ export function listAgentConversationTurns(conversationId, { signal } = {}) {
   );
 }
 
+export function deleteAgentConversation(conversationId, { signal } = {}) {
+  return apiRequest(`/api/v1/agent/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "DELETE",
+    signal,
+  });
+}
+
 export function confirmAgentTemplateSelection(conversationId, turnId, reportType, { signal } = {}) {
   return apiRequest(
     `/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/turns/${encodeURIComponent(turnId)}/template-selection`,
