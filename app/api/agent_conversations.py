@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.reports import ReportCreateRequest, create_report
 from app.domain.auth import get_actor_user_id, get_shared_owner_user_id
 from app.domain.models import AgentConversation, AgentConversationTurn, Document
+from app.domain.time import as_utc
 from app.rag.database import get_db
 from app.services.agent_conversations import finish_turn, turn_dict
 from app.services.document_queue import DOCUMENT_STATUS_READY
@@ -55,8 +56,8 @@ async def list_conversations(
                 "conversation_id": conversation.id,
                 "title": conversation.title,
                 "turn_count": turn_count,
-                "created_at": conversation.created_at,
-                "updated_at": conversation.updated_at,
+                "created_at": as_utc(conversation.created_at),
+                "updated_at": as_utc(conversation.updated_at),
             }
         )
     return result

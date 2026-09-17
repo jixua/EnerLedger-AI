@@ -40,6 +40,7 @@ from app.domain.schemas import (
     DocumentUpdate,
 )
 from app.domain.text import repair_legacy_mojibake
+from app.domain.time import as_utc
 from app.rag.config import settings
 from app.rag.database import get_db
 from app.rag.models.chunk_record import ChunkRecordDB
@@ -345,16 +346,6 @@ def _document_parse_time_ms(document: Document) -> int | None:
     return document.parse_time_ms
 
 
-def _document_timestamp(value: datetime | None) -> datetime | None:
-    """Expose MySQL's naive UTC document timestamps as timezone-aware UTC values."""
-
-    if value is None:
-        return None
-    if value.tzinfo is None:
-        return value.replace(tzinfo=UTC)
-    return value.astimezone(UTC)
-
-
 def _document_payload(document: Document, *, quality_detail: bool = True) -> dict:
     parse_quality = (
         document.parse_quality
@@ -373,11 +364,11 @@ def _document_payload(document: Document, *, quality_detail: bool = True) -> dic
         "status": document.status,
         "version": document.version,
         "attempt_count": document.attempt_count,
-        "available_at": _document_timestamp(document.available_at),
-        "queued_at": _document_timestamp(document.queued_at),
-        "processing_started_at": _document_timestamp(document.processing_started_at),
-        "lease_expires_at": _document_timestamp(document.lease_expires_at),
-        "finished_at": _document_timestamp(document.finished_at),
+        "available_at": as_utc(document.available_at),
+        "queued_at": as_utc(document.queued_at),
+        "processing_started_at": as_utc(document.processing_started_at),
+        "lease_expires_at": as_utc(document.lease_expires_at),
+        "finished_at": as_utc(document.finished_at),
         "error_code": document.error_code,
         "error_message": repair_legacy_mojibake(document.error_message),
         "reparse_requested": document.reparse_requested,
@@ -397,10 +388,10 @@ def _document_payload(document: Document, *, quality_detail: bool = True) -> dic
         "source_metadata": document.source_metadata,
         "review_status": document.review_status or "NOT_REQUIRED",
         "review_note": document.review_note,
-        "reviewed_at": _document_timestamp(document.reviewed_at),
+        "reviewed_at": as_utc(document.reviewed_at),
         "retrieval_ready": _document_retrieval_ready(document),
-        "created_at": _document_timestamp(document.created_at),
-        "updated_at": _document_timestamp(document.updated_at),
+        "created_at": as_utc(document.created_at),
+        "updated_at": as_utc(document.updated_at),
     }
 
 

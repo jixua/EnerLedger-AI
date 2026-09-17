@@ -17,7 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
 from app.domain.models import Document, ReportArtifact, ReportQuestion, ReportRun
-from app.domain.time import utc_now
+from app.domain.time import as_utc, utc_now
 from app.rag.config import settings
 from app.rag.database import get_db
 from app.rag.models.db_models import LLMModelConfigDB
@@ -151,10 +151,10 @@ def _run_dict(run: ReportRun) -> dict[str, Any]:
         "stage": run.stage,
         "error_code": run.error_code,
         "error_message": run.error_message,
-        "started_at": run.started_at,
-        "finished_at": run.finished_at,
-        "created_at": run.created_at,
-        "updated_at": run.updated_at,
+        "started_at": as_utc(run.started_at),
+        "finished_at": as_utc(run.finished_at),
+        "created_at": as_utc(run.created_at),
+        "updated_at": as_utc(run.updated_at),
     }
 
 
