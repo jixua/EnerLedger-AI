@@ -18,7 +18,10 @@ node {
           depth: 100,
           honorRefspec: true,
           noTags: true,
-          shallow: true
+          shallow: true,
+          // 这台机器到 GitHub 只有约 18 KB/s，depth=100 的浅克隆约 14 MiB，
+          // 需要十几分钟；默认 10 分钟会在 71% 处被 SIGTERM 掉（构建 #18/#19/#20）。
+          timeout: 60
         ]]
       ])
       env.SOURCE_SHA = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
