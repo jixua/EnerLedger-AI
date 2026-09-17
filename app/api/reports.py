@@ -4,10 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+from io import BytesIO
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,6 +27,11 @@ from app.services.report_budget import (
     ReportDocumentTooLargeError,
     assert_document_fits_context,
     load_document_payload_stats,
+)
+from app.services.report_artifacts import (
+    ReportArtifactError,
+    artifact_download_name,
+    read_report_artifact,
 )
 from app.services.report_dispatch import ReportRunDispatcher, mark_report_dispatch_pending
 from app.services.report_ir import validate_report_field_value
@@ -52,7 +60,9 @@ class ReportCreateRequest(BaseModel):
     language: Literal["zh-CN"] = "zh-CN"
     reporting_year: int | None = Field(default=None, ge=1900, le=2200)
     user_instructions: str | None = Field(default=None, max_length=2000)
-    output_formats: list[Literal["ONLINE"]] = Field(default_factory=lambda: ["ONLINE"])
+    output_formats: list[Literal["ONLINE", "MARKDOWN", "DOCX"]] = Field(
+        default_factory=lambda: ["ONLINE", "DOCX"]
+    )
     custom_template_document_id: int | None = Field(default=None, gt=0)
 
     @field_validator("user_instructions")
@@ -622,6 +632,8 @@ async def get_report_ir(
             .order_by(ReportArtifact.id)
         )
     ).all()
+    document = await db.scalar(select(Document).where(Document.id == run.document_id))
+    document_filename = document.filename if document is not None else None
     return {
         "run": _run_dict(run),
         "report_ir": run.report_ir,
@@ -629,11 +641,60 @@ async def get_report_ir(
         "manifest": run.manifest,
         "artifacts": [
             {
+                "id": artifact.id,
                 "artifact_type": artifact.artifact_type,
                 "content_type": artifact.content_type,
                 "content_hash": artifact.content_hash,
                 "size_bytes": artifact.size_bytes,
+                "filename": artifact_download_name(
+                    run=run,
+                    document_filename=document_filename,
+                    artifact_type=artifact.artifact_type,
+                ),
             }
             for artifact in artifacts
         ],
     }
+
+
+@router.get("/report-runs/{run_id}/artifacts/{artifact_id}")
+async def download_report_artifact(
+    run_id: str,
+    artifact_id: int,
+    user_id: Annotated[int, Depends(get_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StreamingResponse:
+    """下载已生成的报告产物（Markdown / DOCX）。"""
+    run = await _owned_run(db, run_id=run_id, user_id=user_id)
+    artifact = await db.scalar(
+        select(ReportArtifact).where(
+            ReportArtifact.id == artifact_id,
+            ReportArtifact.run_id == str(run.id),
+        )
+    )
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="报告产物不存在")
+    document = await db.scalar(select(Document).where(Document.id == run.document_id))
+    try:
+        content = await read_report_artifact(artifact)
+    except ReportArtifactError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "REPORT_ARTIFACT_UNAVAILABLE", "message": str(exc)},
+        ) from exc
+    filename = artifact_download_name(
+        run=run,
+        document_filename=document.filename if document is not None else None,
+        artifact_type=artifact.artifact_type,
+    )
+    return StreamingResponse(
+        BytesIO(content),
+        media_type=artifact.content_type,
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=report.{artifact.artifact_type.lower()}; "
+                f"filename*=UTF-8''{quote(filename, safe='')}"
+            ),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

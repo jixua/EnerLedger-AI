@@ -479,6 +479,44 @@ export async function downloadDocumentAnalysisDocx(documentId, { signal } = {}) 
   return { blob: await response.blob(), filename };
 }
 
+export async function downloadReportArtifact(runId, artifactId, { signal } = {}) {
+  let response;
+  try {
+    response = await fetch(
+      buildApiUrl(
+        `/api/v1/report-runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      ),
+      { method: "GET", headers: createApiHeaders({}), signal },
+    );
+  } catch (error) {
+    if (error?.name === "AbortError") throw error;
+    throw new ApiError("无法连接后端服务", {
+      status: 0,
+      code: "NETWORK_ERROR",
+      cause: error,
+    });
+  }
+  if (!response.ok) {
+    if (response.status === 401) {
+      setApiAccessToken("");
+      if (typeof window !== "undefined") window.dispatchEvent(new Event("auth:expired"));
+    }
+    throw await readApiError(response);
+  }
+
+  const disposition = response.headers.get("content-disposition") || "";
+  const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
+  let filename = "报告.docx";
+  if (encodedName) {
+    try {
+      filename = decodeURIComponent(encodedName);
+    } catch {
+      // 保留安全的默认文件名。
+    }
+  }
+  return { blob: await response.blob(), filename };
+}
+
 export async function getDocumentPreviewContent(documentId, { signal } = {}) {
   let response;
   try {

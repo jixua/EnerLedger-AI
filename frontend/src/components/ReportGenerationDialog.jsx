@@ -1,9 +1,10 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, FileOutput, Loader2, X } from "lucide-react";
+import { AlertCircle, CheckCircle2, Download, FileOutput, Loader2, X } from "lucide-react";
 import {
   answerReportQuestions,
   cancelReportRun,
   createDocumentReport,
+  downloadReportArtifact,
   getGeneratedReport,
   getReportRun,
   listReportQuestions,
@@ -62,6 +63,8 @@ export function ReportGenerationDialog({ document, open, onClose }) {
   const [answers, setAnswers] = useState({});
   const [report, setReport] = useState(null);
   const [runHistory, setRunHistory] = useState([]);
+  const [downloadingArtifact, setDownloadingArtifact] = useState(null);
+  const [downloadError, setDownloadError] = useState("");
 
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.report_type === reportType),
@@ -255,6 +258,27 @@ export function ReportGenerationDialog({ document, open, onClose }) {
     }
   }
 
+  async function handleDownloadArtifact(artifact) {
+    if (!run?.run_id || downloadingArtifact) return;
+    setDownloadError("");
+    setDownloadingArtifact(artifact.id);
+    try {
+      const { blob, filename } = await downloadReportArtifact(run.run_id, artifact.id);
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = filename || "报告";
+      document.body.appendChild(link);
+      link.click();
+      link.remove();
+      URL.revokeObjectURL(url);
+    } catch (requestError) {
+      setDownloadError(requestError instanceof Error ? requestError.message : "报告下载失败");
+    } finally {
+      setDownloadingArtifact(null);
+    }
+  }
+
   return (
     <div className="dialog-backdrop" role="presentation" onMouseDown={submitting ? undefined : onClose}>
       <section
@@ -342,6 +366,23 @@ export function ReportGenerationDialog({ document, open, onClose }) {
             {run.state === "SUCCEEDED" && report?.report_ir ? (
               <div className="report-online-preview">
                 <div><strong>在线报告已生成</strong><span>{report.report_ir.sections?.length || 0} 个章节</span></div>
+                {report.artifacts?.length ? (
+                  <div className="report-online-preview__files">
+                    {report.artifacts.map((artifact) => (
+                      <button
+                        key={artifact.id}
+                        type="button"
+                        className="button button--secondary"
+                        disabled={Boolean(downloadingArtifact)}
+                        onClick={() => { void handleDownloadArtifact(artifact); }}
+                      >
+                        {downloadingArtifact === artifact.id ? <Loader2 className="spin" size={15} /> : <Download size={15} />}
+                        {artifact.artifact_type === "DOCX" ? "下载 Word" : "下载 Markdown"}
+                      </button>
+                    ))}
+                  </div>
+                ) : null}
+                {downloadError ? <p className="form-error" role="alert">{downloadError}</p> : null}
                 {report.report_ir.sections?.map((section) => (
                   <section key={section.section_id}>
                     <h4>{section.title}</h4>

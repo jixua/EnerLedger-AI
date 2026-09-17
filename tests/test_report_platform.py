@@ -26,6 +26,12 @@ from app.services.report_agent_tokens import (
     issue_report_agent_token,
     verify_report_agent_token,
 )
+from app.services.report_artifacts import (
+    artifact_download_name,
+    build_report_docx,
+    persist_report_artifacts,
+    render_report_markdown,
+)
 from app.services.report_budget import (
     ReportDocumentTooLargeError,
     assert_document_fits_context,
@@ -699,3 +705,129 @@ async def test_report_ir_patch_endpoint_applies_to_stored_draft(
         )
     assert excinfo.value.status_code == 422
     assert excinfo.value.detail["code"] == "REPORT_IR_PATCH_INVALID"
+
+
+def _fixture_report_ir() -> tuple[ReportRun, ReportTemplate, dict]:
+    template = ReportTemplateRegistry(_reporting_root()).get("R1")
+    run = _run()
+    run.report_type = "R1"
+    run.template_id = template.template_id
+    run.template_version = template.version
+    run.template_snapshot = template.to_snapshot()
+    report_ir = build_fixture_report_ir(run=run, template=template, answered_questions=[])
+    return run, template, report_ir
+
+
+def test_report_markdown_renders_sections_ledgers_and_evidence() -> None:
+    run, template, report_ir = _fixture_report_ir()
+    report_ir["sections"][0]["blocks"] = [
+        {"type": "paragraph", "text": "正文段落。", "evidence_ids": ["E-1"]},
+        {"type": "callout", "text": "口径提示。", "evidence_ids": []},
+        {
+            "type": "table",
+            "data": {"columns": ["项目", "值"], "rows": [["功能单位", "1 吨"]]},
+            "evidence_ids": [],
+        },
+    ]
+    report_ir["evidence"] = [
+        {
+            "evidence_id": "E-1",
+            "source_type": "DOCUMENT",
+            "chunk_id": "c-1",
+            "content_hash": "a" * 64,
+            "excerpt": "原文摘录",
+        }
+    ]
+
+    markdown = render_report_markdown(run=run, template=template, report_ir=report_ir)
+
+    assert markdown.startswith("# R1 报告")
+    assert f"## {report_ir['sections'][0]['title']}" in markdown
+    assert "正文段落。（证据：E-1）" in markdown
+    # 提示块不能用 Markdown 引用语法：Word 转换器不识别它。
+    assert "**【提示】** 口径提示。" in markdown
+    assert not any(line.startswith(">") for line in markdown.splitlines())
+    assert "| 项目 | 值 |" in markdown and "| 功能单位 | 1 吨 |" in markdown
+    assert "## 附表一：字段台账" in markdown
+    assert "## 附表二：证据台账" in markdown
+    assert "| E-1 | DOCUMENT | c-1 | 原文摘录 |" in markdown
+
+
+def test_report_docx_builds_valid_document() -> None:
+    run, template, report_ir = _fixture_report_ir()
+    markdown = render_report_markdown(run=run, template=template, report_ir=report_ir)
+
+    payload = build_report_docx(run=run, template=template, markdown=markdown)
+
+    assert payload[:2] == b"PK"  # zip 容器
+    assert len(payload) > 2000
+    assert artifact_download_name(
+        run=run, document_filename="清单材料.docx", artifact_type="DOCX"
+    ) == "清单材料-R1报告.docx"
+
+
+class _ArtifactStorage:
+    def __init__(self) -> None:
+        self.uploaded: list[tuple[str, str, int, str]] = []
+        self.removed: list[tuple[str, str]] = []
+
+    def upload_bytes(self, bucket, object_key, content, content_type) -> None:
+        self.uploaded.append((bucket, object_key, len(content), content_type))
+
+    def remove_object(self, bucket, object_key) -> bool:
+        self.removed.append((bucket, object_key))
+        return True
+
+
+class _ArtifactSession:
+    def __init__(self, existing=()) -> None:
+        self.existing = list(existing)
+        self.added: list[Any] = []
+        self.deleted: list[Any] = []
+        self.commits = 0
+
+    async def scalars(self, _statement):
+        class Rows:
+            def __init__(self, values):
+                self._values = values
+
+            def all(self):
+                return list(self._values)
+
+        return Rows(self.existing)
+
+    async def delete(self, value):
+        self.deleted.append(value)
+
+    def add(self, value):
+        self.added.append(value)
+
+    async def commit(self):
+        self.commits += 1
+
+
+@pytest.mark.asyncio
+async def test_persist_report_artifacts_writes_only_requested_formats() -> None:
+    run, template, report_ir = _fixture_report_ir()
+    storage = _ArtifactStorage()
+
+    run.output_formats = ["ONLINE"]
+    session = _ArtifactSession()
+    assert await persist_report_artifacts(
+        session, run=run, template=template, report_ir=report_ir, storage=storage
+    ) == []
+    assert storage.uploaded == []
+
+    run.output_formats = ["ONLINE", "MARKDOWN", "DOCX"]
+    session = _ArtifactSession()
+    created = await persist_report_artifacts(
+        session, run=run, template=template, report_ir=report_ir, storage=storage
+    )
+    assert [artifact.artifact_type for artifact in created] == ["MARKDOWN", "DOCX"]
+    assert [item[3] for item in storage.uploaded] == [
+        "text/markdown; charset=utf-8",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    ]
+    assert all(item[1].startswith(f"reports/11/3/7/{run.id}/report-") for item in storage.uploaded)
+    assert len(session.added) == 2 and session.commits == 1
+    assert all(artifact.content_hash and artifact.size_bytes > 0 for artifact in created)

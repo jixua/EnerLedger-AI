@@ -26,6 +26,7 @@ from app.rag.observability.logging import logger, safe_exception_stack, setup_lo
 from app.rag.services.mq_service import MQService
 from app.services.document_queue import DOCUMENT_STATUS_READY
 from app.services.report_agent_tokens import issue_report_agent_token
+from app.services.report_artifacts import ReportArtifactError, persist_report_artifacts
 from app.services.report_budget import (
     ReportDocumentTooLargeError,
     assert_document_fits_context,
@@ -346,6 +347,17 @@ class PiReportProcessor:
                 "Pi Agent 返回值未通过 FastAPI 权威校验",
                 retryable=False,
             )
+        # 报告已通过权威校验，先落盘可下载产物；产物失败不影响报告本身（内容已在库里）。
+        try:
+            await persist_report_artifacts(
+                db, run=run, template=template, report_ir=submitted_ir
+            )
+        except ReportArtifactError as exc:
+            logger.bind(
+                event="report_artifact_failed",
+                run_id=str(run.id),
+                error=str(exc)[:300],
+            ).error("报告产物落盘失败：报告已通过校验，仍按成功处理")
         encoded = json.dumps(
             submitted_ir, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")

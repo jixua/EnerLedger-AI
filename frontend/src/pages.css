@@ -393,6 +393,7 @@
 .report-run-history { grid-column: 1 / -1; }
 .report-online-preview ul { margin: 0; padding-left: 18px; color: var(--body); font-size: 11px; line-height: 1.8; }
 .report-online-preview p { padding: 8px 10px; border-radius: 8px; background: rgba(183, 126, 32, .08); }
+.report-online-preview > .report-online-preview__files { justify-content: flex-start; gap: 8px; }
 
 /* 解析任务 */
 .page--tasks { max-width: 1320px; padding-top: 42px; }
