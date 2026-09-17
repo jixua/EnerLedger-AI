@@ -129,7 +129,7 @@ Master 合并或 Jenkins 开始运行都不等于已部署；只有上述验收�
 
 根目录 `Dockerfile` 默认通过阿里云 Debian 镜像安装 LibreOffice、字体等系统依赖，避免 Jenkins 直接访问缓慢的 `deb.debian.org`。如构建节点不在中国大陆，可通过 `DEBIAN_MIRROR` 和 `DEBIAN_SECURITY_MIRROR` build args 覆盖，不能在 Jenkins 工作区临时改写 Dockerfile。
 
-Jenkins 生产构建使用 `/opt/enerledger-jenkins/cache/enerledger-nltk/nltk-data-v1.tar.gz` 中的 `punkt`、`punkt_tab`、`stopwords` 和 `wordnet`。流水线先校验文件权限与固定 SHA-256，再解压到受 Git 忽略的 `.build-cache/nltk_data` 并以 `NLTK_ASSETS_MODE=cache` 构建，因此生产构建不访问 NLTK 或 GitHub 下载站点。普通本地构建仍可默认从 NLTK 官方静态站点下载四个固定资源；不使用 jsDelivr、GitHub Raw 或 GitHub 代理。当前链路不需要的 `omw-1.4` 不进入镜像。
+Jenkins 生产构建使用 `/opt/tolink/jenkins-cache/enerledger-nltk/nltk-data-v1.tar.gz` 中的 `punkt`、`punkt_tab`、`stopwords` 和 `wordnet`。流水线先校验文件权限与固定 SHA-256，再解压到受 Git 忽略的 `.build-cache/nltk_data` 并以 `NLTK_ASSETS_MODE=cache` 构建，因此生产构建不访问 NLTK 或 GitHub 下载站点。普通本地构建仍可默认从 NLTK 官方静态站点下载四个固定资源；不使用 jsDelivr、GitHub Raw 或 GitHub 代理。当前链路不需要的 `omw-1.4` 不进入镜像。
 
 ### SSH 输送中断
 

@@ -2,7 +2,7 @@ node {
   timestamps {
     env.DEPLOY_ROOT = '/opt/enerledger-ai'
     env.IMAGE_NAMESPACE = 'ghcr.io/jixua'
-    env.NLTK_BUNDLE = '/opt/enerledger-jenkins/cache/enerledger-nltk/nltk-data-v1.tar.gz'
+    env.NLTK_BUNDLE = '/opt/tolink/jenkins-cache/enerledger-nltk/nltk-data-v1.tar.gz'
     env.NLTK_BUNDLE_SHA256 = 'b2a01515e237cf8746fd659fb66e526b3fba9d6c3d046176de8fdc5035a5040f'
     stage('Checkout master') {
       deleteDir()
