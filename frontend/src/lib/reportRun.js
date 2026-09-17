@@ -64,11 +64,16 @@ export function reportSourceDocumentPath(run) {
   return `/datasets/${run.dataset_id}/documents/${run.document_id}`;
 }
 
+/** 产物格式名：菜单里只写格式，按钮上写完整动作。 */
+export function reportArtifactFormat(artifactType) {
+  if (artifactType === "DOCX") return "Word";
+  if (artifactType === "MARKDOWN") return "Markdown";
+  return artifactType;
+}
+
 /** 产物下载按钮的文案：同一份报告在列表、详情页、对话卡片里措辞一致。 */
 export function reportArtifactLabel(artifactType) {
-  if (artifactType === "DOCX") return "下载 Word";
-  if (artifactType === "MARKDOWN") return "下载 Markdown";
-  return `下载 ${artifactType}`;
+  return `下载 ${reportArtifactFormat(artifactType)}`;
 }
 
 export function formatReportTime(value) {

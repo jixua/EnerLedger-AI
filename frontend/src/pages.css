@@ -451,9 +451,13 @@
 .report-detail__pending h2 { margin: 0 0 6px; color: var(--ink); font-size: 17px; }
 .report-detail__pending p { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .report-detail__pending p:last-child { margin-bottom: 0; }
-.report-detail__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
-.report-detail__toolbar h2 { margin: 0 0 4px; color: var(--ink); font-size: 15px; }
-.report-detail__toolbar p { margin: 0; color: var(--muted); font-size: 11px; }
+/* 页头的下载：一个按钮，多格式时才展开下拉 */
+.report-download { position: relative; display: inline-flex; }
+.report-download__menu { position: absolute; top: calc(100% + 6px); right: 0; z-index: 40; min-width: 150px; display: grid; padding: 5px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface); box-shadow: var(--shadow-hover); }
+.report-download__menu button { padding: 8px 10px; border: 0; border-radius: 7px; background: transparent; color: var(--body); font-size: 12px; text-align: left; }
+.report-download__menu button:hover:not(:disabled) { background: var(--surface-soft); color: var(--ink); }
+/* 错误就地浮在按钮下方，不撑动页头布局 */
+.report-download .form-error { position: absolute; top: calc(100% + 6px); right: 0; width: max-content; max-width: 280px; margin: 0; padding: 6px 9px; border-radius: 8px; background: var(--danger-soft); font-size: 11px; }
 .report-detail__gaps h2 { margin: 0 0 10px; color: var(--ink); font-size: 15px; }
 .report-detail__gaps-lead { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.7; }
 .report-detail__gaps-group { margin-top: 18px; }

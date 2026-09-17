@@ -194,6 +194,14 @@ export function ReportDetailPage() {
         <div className="document-detail-header__actions">
           {/* 返回箭头已经回报告中心，这里不再放一个同目标的按钮 */}
           {sourcePath ? <Link className="button button--secondary" to={sourcePath}><FileText size={15} />源文档</Link> : null}
+          {run.state === "SUCCEEDED" ? (
+            <ReportArtifactButtons
+              runId={run.run_id}
+              artifacts={artifacts}
+              variant="menu"
+              emptyHint="该任务创建时未选择可下载格式，可在源文档页重新生成。"
+            />
+          ) : null}
           {run.state === "FAILED" ? (
             <button type="button" className="button button--primary" onClick={() => { void handleRetry(); }} disabled={busy}>
               {busy ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}重试生成
@@ -261,18 +269,6 @@ export function ReportDetailPage() {
 
       {run.state === "SUCCEEDED" ? (
         <>
-          <section className="panel report-detail__toolbar">
-            <div>
-              <h2>报告产物</h2>
-              <p>{artifacts.length ? "下载后可直接归档或送审。" : "本次任务创建时未选择可下载格式。"}</p>
-            </div>
-            <ReportArtifactButtons
-              runId={run.run_id}
-              artifacts={artifacts}
-              emptyHint="该任务创建时只生成了在线报告；如需 Word/Markdown，请在源文档页重新生成。"
-            />
-          </section>
-
           <section className="panel panel--flush report-detail__body">
             {reportIr ? <ReportIrView reportIr={reportIr} /> : (
               <div className="empty-state empty-state--loading"><Loader2 className="spin" size={20} /><p>正在渲染报告…</p></div>
