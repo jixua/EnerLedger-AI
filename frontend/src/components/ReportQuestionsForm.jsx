@@ -98,7 +98,7 @@ export function ReportQuestionsForm({ questions, submitting, error, submitLabel 
               onChange={(event) => update(question.question_id, event.target.value)}
             />
           )}
-          <small>字段：{question.field_id}</small>
+          <small>字段：{question.field_label || question.field_id}</small>
         </label>
       ))}
       {validationError ? <p className="form-error" role="alert">{validationError}</p> : null}

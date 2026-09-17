@@ -310,8 +310,10 @@
 .task-row-actions { flex-wrap: nowrap; white-space: nowrap; }
 .task-table th:last-child, .task-table td:last-child { min-width: 142px; }
 .report-index-toolbar { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 15px; border-bottom: 1px solid var(--hairline); }
-.analysis-report-table { min-width: 1040px; }
-.analysis-report-table th:last-child, .analysis-report-table td:last-child { width: 108px; text-align: right; }
+.report-index-table { min-width: 1040px; }
+.report-index-table th:last-child, .report-index-table td:last-child { width: 1%; text-align: right; }
+.report-index-table td:last-child .report-run-actions { justify-content: flex-end; margin-top: 0; flex-wrap: nowrap; }
+.report-index-table td:last-child .button { min-height: 32px; white-space: nowrap; }
 .report-title-cell { min-width: 260px; }
 .report-reference-link { min-width: 0; max-width: 250px; display: inline-flex; align-items: center; gap: 7px; color: var(--body); text-decoration: none; }
 .report-reference-link > svg { flex: 0 0 auto; color: var(--muted-soft); }
@@ -383,17 +385,23 @@
 .report-run-workbench h3 { margin: 4px 0 8px; color: var(--ink); font-size: 18px; }
 .report-run-workbench p { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.65; }
 .report-run-workbench code { overflow-wrap: anywhere; color: var(--muted-soft); font-size: 9px; }
-.report-question-form, .report-online-preview { grid-column: 1 / -1; display: grid; gap: 13px; margin-top: 6px; padding: 17px; border: 1px solid var(--hairline); border-radius: 11px; background: var(--surface-soft); }
-.report-question-form__heading, .report-online-preview > div { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
-.report-question-form__heading strong, .report-online-preview strong { color: var(--ink); font-size: 12px; }
-.report-question-form__heading span, .report-online-preview span { color: var(--muted); font-size: 10px; }
+.report-question-form { grid-column: 1 / -1; display: grid; gap: 13px; margin-top: 6px; padding: 17px; border: 1px solid var(--hairline); border-radius: 11px; background: var(--surface-soft); }
+.report-question-form__heading { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 8px; }
+.report-question-form__heading strong { color: var(--ink); font-size: 12px; }
+.report-question-form__heading span { color: var(--muted); font-size: 10px; }
 .report-question-form .button { justify-self: end; }
 .report-date-range { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
 .report-run-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 .report-run-history { grid-column: 1 / -1; }
-.report-online-preview ul { margin: 0; padding-left: 18px; color: var(--body); font-size: 11px; line-height: 1.8; }
-.report-online-preview p { padding: 8px 10px; border-radius: 8px; background: rgba(183, 126, 32, .08); }
-.report-online-preview > .report-online-preview__files { justify-content: flex-start; gap: 8px; }
+
+/* 已有报告列表（生成对话框内） */
+.report-generation-dialog__history { display: grid; gap: 8px; padding: 14px 22px 0; border-top: 1px solid var(--hairline); }
+.report-generation-dialog__history h3 { margin: 0; color: var(--muted); font-size: 11px; font-weight: 650; }
+.report-generation-dialog__history ul { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.report-generation-dialog__history a { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--hairline); border-radius: 9px; background: var(--surface); }
+.report-generation-dialog__history a:hover { border-color: var(--hairline-strong); }
+.report-generation-dialog__history strong { color: var(--ink); font-size: 12px; }
+.report-generation-dialog__history small { margin-left: auto; color: var(--muted-soft); font-size: 10px; }
 
 /* 对话里的报告任务卡片 */
 .chat-report-card { display: grid; gap: 10px; margin-top: 10px; padding: 13px 15px; border: 1px solid var(--hairline); border-radius: 11px; background: var(--surface-soft); }
@@ -413,6 +421,130 @@
 .report-state.is-failed { background: var(--danger-soft); color: var(--danger); }
 .report-state.is-waiting { background: rgba(183, 126, 32, .14); color: #b77e20; }
 .report-state__detail { display: block; margin-top: 4px; color: var(--muted-soft); font-size: 10px; max-width: 240px; }
+
+/* 报告详情页 */
+.page--report-detail { max-width: 1320px; padding-top: 42px; }
+.report-detail__header .document-detail-header__identity .eyebrow { margin: 0 0 4px; }
+.report-detail__header .document-detail-title-line { align-items: center; gap: 12px; }
+.report-detail__pending { display: flex; align-items: flex-start; gap: 14px; color: var(--primary); }
+.report-detail__pending h2 { margin: 0 0 6px; color: var(--ink); font-size: 17px; }
+.report-detail__pending p { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.report-detail__pending p:last-child { margin-bottom: 0; }
+.report-detail__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 20px; flex-wrap: wrap; }
+.report-detail__toolbar h2 { margin: 0 0 4px; color: var(--ink); font-size: 15px; }
+.report-detail__toolbar p { margin: 0; color: var(--muted); font-size: 11px; }
+.report-detail__gaps h2 { margin: 0 0 10px; color: var(--ink); font-size: 15px; }
+.report-detail__gaps-lead { margin: 0 0 12px; color: var(--muted); font-size: 12px; line-height: 1.7; }
+.report-detail__gaps-group { margin-top: 18px; }
+.report-detail__gaps-group h3 { margin: 0 0 8px; color: var(--body); font-size: 12px; font-weight: 650; }
+.report-detail__gaps-group ul { margin: 0; padding-left: 20px; color: var(--body); font-size: 12px; line-height: 1.8; }
+.report-detail__body { padding: 34px clamp(20px, 4vw, 56px); }
+.report-detail__ledger { padding: 0; overflow: hidden; }
+.report-detail__ledger > summary { cursor: pointer; padding: 16px 20px; color: var(--ink); font-size: 13px; font-weight: 650; }
+.report-detail__ledger .data-table-wrap { border-top: 1px solid var(--hairline); }
+
+.report-gap-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
+.report-gap-list li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 9px; padding: 9px 11px; border: 1px solid var(--hairline); border-radius: 9px; background: var(--surface-soft); }
+.report-gap-list strong { color: var(--ink); font-size: 12px; }
+.report-gap-list small { flex-basis: 100%; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.report-gap-tag { padding: 2px 7px; border-radius: 999px; background: var(--surface-card); color: var(--body); font-size: 10px; font-weight: 600; }
+.report-gap-tag.is-missing { background: var(--warning-soft); color: var(--warning); }
+.report-gap-tag.is-conflict { background: var(--danger-soft); color: var(--danger); }
+
+.report-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.report-artifacts .form-error { display: inline-flex; align-items: center; gap: 5px; margin: 0; color: var(--danger); font-size: 11px; }
+.report-artifacts__hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
+.report-artifacts--inline { display: inline-flex; gap: 6px; }
+.report-artifacts--inline .button { min-height: 28px; padding-inline: 10px; font-size: 10px; white-space: nowrap; }
+
+/* 报告正文：块渲染（语义对齐后端 _render_block） */
+.report-document { max-width: 920px; margin: 0 auto; color: var(--ink); }
+.report-section + .report-section { margin-top: 34px; }
+.report-section > h2 { margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--hairline); color: var(--ink); font-size: 19px; font-weight: 650; }
+.report-block { margin: 0 0 12px; color: var(--body); font-size: 13px; line-height: 1.85; }
+.report-block--heading { margin: 22px 0 10px; color: var(--ink); font-size: 15px; }
+.report-block--signature, .report-block--source-note { color: var(--muted); font-size: 11px; }
+.report-block--list { margin: 0 0 14px; padding-left: 20px; color: var(--body); font-size: 13px; line-height: 1.85; }
+.report-block--raw { overflow-x: auto; margin: 0 0 14px; padding: 12px 14px; border: 1px solid var(--hairline); border-radius: 9px; background: var(--surface-soft); color: var(--body); font-size: 11px; line-height: 1.6; }
+.report-callout { display: grid; gap: 5px; margin: 0 0 14px; padding: 12px 14px; border-left: 3px solid var(--warning); border-radius: 0 9px 9px 0; background: var(--warning-soft); }
+.report-callout strong { color: var(--warning); font-size: 11px; font-weight: 650; }
+.report-callout span { color: var(--body); font-size: 13px; line-height: 1.8; }
+.report-evidence { display: inline-flex; flex-wrap: wrap; gap: 4px; margin-left: 6px; vertical-align: middle; }
+.report-evidence code { padding: 1px 5px; border-radius: 5px; background: var(--surface-card); color: var(--muted); font-size: 9px; }
+
+/* 指标卡：并列数值，不做颜色编码 */
+.report-metrics { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 10px; margin: 0 0 16px; }
+.report-metric { display: grid; gap: 4px; padding: 12px 14px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface-soft); }
+.report-metric__label { color: var(--muted); font-size: 11px; }
+.report-metric__value { color: var(--ink); font-size: 19px; font-weight: 650; letter-spacing: -.02em; }
+
+/* 图表：色序经 dataviz 校验器验证，五槽固定不循环 */
+.report-figure { margin: 0 0 20px; }
+.report-figure__data { margin-top: 10px; }
+.report-figure__data > summary { width: fit-content; cursor: pointer; color: var(--primary); font-size: 11px; font-weight: 650; }
+.report-figure__data .data-table-wrap { margin-top: 8px; }
+.report-bars { display: grid; gap: 8px; }
+.report-bar { display: grid; grid-template-columns: minmax(80px, 168px) minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.report-bar__label { color: var(--body); font-size: 12px; overflow-wrap: anywhere; }
+.report-bar__track { height: 12px; border-radius: 4px; background: var(--surface-soft); }
+.report-bar__fill { display: block; height: 100%; min-width: 3px; border-radius: 4px; background: var(--report-series-1); }
+.report-bar__value { color: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
+
+/* 发散条：围绕零基线，正负分列左右 */
+.report-diverging { display: grid; gap: 8px; }
+.report-diverge { display: grid; grid-template-columns: minmax(80px, 168px) minmax(0, 1fr) auto; align-items: center; gap: 12px; }
+.report-diverge__label { color: var(--body); font-size: 12px; overflow-wrap: anywhere; }
+.report-diverge__axis { display: grid; grid-template-columns: 1fr 1fr; height: 12px; }
+.report-diverge__side { display: flex; height: 100%; }
+.report-diverge__side--negative { justify-content: flex-end; border-right: 1px solid var(--hairline-strong); }
+.report-diverge__side--positive { justify-content: flex-start; }
+.report-diverge__fill { display: block; height: 100%; min-width: 2px; }
+.report-diverge__fill.is-positive { border-radius: 0 4px 4px 0; background: var(--report-positive); }
+.report-diverge__fill.is-negative { border-radius: 4px 0 0 4px; background: var(--report-negative); }
+.report-diverge__value { color: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.report-legend--polarity { display: flex; gap: 16px; margin-bottom: 10px; }
+.report-legend--polarity li { display: flex; grid-template-columns: none; }
+.report-figure__note { margin: 0 0 10px; color: var(--muted); font-size: 11px; line-height: 1.6; }
+
+.report-share { display: flex; gap: 2px; height: 20px; margin-bottom: 12px; }
+.report-share__segment { height: 100%; }
+.report-share__segment:first-child { border-radius: 4px 0 0 4px; }
+.report-share__segment:last-child { border-radius: 0 4px 4px 0; }
+.report-legend { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.report-legend li { display: grid; grid-template-columns: 10px minmax(0, 1fr) auto auto; align-items: center; gap: 10px; }
+.report-legend i { width: 10px; height: 10px; border-radius: 3px; }
+.report-legend__label { color: var(--body); font-size: 12px; overflow-wrap: anywhere; }
+.report-legend__value { color: var(--ink); font-size: 12px; font-variant-numeric: tabular-nums; font-weight: 600; }
+.report-legend__share { min-width: 48px; color: var(--muted); font-size: 11px; text-align: right; font-variant-numeric: tabular-nums; }
+
+/* 报告内容表格：与列表页的紧凑表格分开 */
+.report-table { min-width: 0; font-size: 12px; }
+.report-table caption { caption-side: top; padding-bottom: 6px; color: var(--muted); font-size: 11px; text-align: left; }
+.report-table th, .report-table td { padding: 9px 11px; vertical-align: top; }
+
+/* 文档详情页的「本文件的报告」 */
+.document-reports { display: grid; gap: 12px; }
+.document-reports__head { display: flex; align-items: center; justify-content: space-between; gap: 16px; }
+.document-reports__head h2 { margin: 0; color: var(--ink); font-size: 15px; }
+.document-reports__list { display: grid; gap: 6px; margin: 0; padding: 0; list-style: none; }
+.document-reports__list a { display: flex; align-items: center; gap: 10px; padding: 9px 12px; border: 1px solid var(--hairline); border-radius: 9px; background: var(--surface-soft); }
+.document-reports__list a:hover { border-color: var(--hairline-strong); }
+.document-reports__list strong { color: var(--ink); font-size: 12px; }
+.document-reports__list small { margin-left: auto; color: var(--muted-soft); font-size: 10px; }
+
+.knowledge-hero__actions { display: flex; align-items: center; gap: 10px; }
+
+:root {
+  --report-series-1: #2b8a63;
+  --report-series-2: #4874b0;
+  --report-series-3: #cf6a35;
+  --report-series-4: #6d5bb5;
+  --report-series-5: #b08a20;
+  /* 发散对的冷暖两极，单独校验过 CVD 分离度 */
+  --report-positive: #cf6a35;
+  --report-negative: #4874b0;
+}
+
 
 /* 解析任务 */
 .page--tasks { max-width: 1320px; padding-top: 42px; }

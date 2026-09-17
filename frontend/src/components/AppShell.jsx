@@ -23,7 +23,7 @@ const navigation = [
   { to: "/datasets", label: "碳知识库", icon: Database },
   { to: "/crawler/review", label: "资料审核", icon: ShieldCheck },
   { to: "/tasks", label: "解析队列", icon: Workflow },
-  { to: "/analysis-reports", label: "报告中心", icon: FileChartColumn },
+  { to: "/reports", label: "报告中心", icon: FileChartColumn },
   { to: "/models", label: "模型配置", icon: Bot },
 ];
 
@@ -89,6 +89,7 @@ function Sidebar({ admin, collapsed, mobileOpen, onCollapse, onMobileClose }) {
 }
 
 function getBreadcrumb(pathname) {
+  if (/^\/reports\/[^/]+\/?$/.test(pathname)) return "报告详情";
   if (/^\/datasets\/[^/]+\/documents\/[^/]+\/?$/.test(pathname)) return "文档详情";
   if (pathname.startsWith("/datasets/")) return "知识库详情";
   return navigation.find((item) => item.to !== "/" && pathname.startsWith(item.to))?.label || "对话";

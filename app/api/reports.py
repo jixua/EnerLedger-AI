@@ -590,6 +590,7 @@ async def list_report_questions(
         {
             "question_id": question.id,
             "field_id": question.field_id,
+            "field_label": fields.get(question.field_id, {}).get("label") or question.field_id,
             "field_type": fields.get(question.field_id, {}).get("type"),
             "field_unit": fields.get(question.field_id, {}).get("unit"),
             "field_validation": fields.get(question.field_id, {}).get("validation") or {},
@@ -599,7 +600,7 @@ async def list_report_questions(
             "required": question.required,
             "status": question.status,
             "answer": question.answer,
-            "answered_at": question.answered_at,
+            "answered_at": as_utc(question.answered_at),
         }
         for question in questions
     ]

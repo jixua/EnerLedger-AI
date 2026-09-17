@@ -47,6 +47,18 @@ class ReportTemplate:
             "applicable_document_types": self.definition.get("applicable_documents", []),
             "required_field_count": sum(bool(field.get("required")) for field in fields),
             "blocking_field_count": sum(bool(field.get("blocking")) for field in fields),
+            # 字段标签供前端把 field_id 显示成可读名称（待确认清单、字段台账）。
+            "fields": [
+                {
+                    "field_id": field.get("id"),
+                    "label": field.get("label") or field.get("id"),
+                    "type": field.get("type"),
+                    "unit": field.get("unit"),
+                    "required": bool(field.get("required")),
+                    "blocking": bool(field.get("blocking")),
+                }
+                for field in fields
+            ],
             "sections": [
                 {"id": section.get("id"), "title": section.get("title")} for section in sections
             ],

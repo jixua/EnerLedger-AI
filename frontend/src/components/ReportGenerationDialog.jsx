@@ -1,39 +1,40 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertCircle, CheckCircle2, Download, FileOutput, Loader2, X } from "lucide-react";
-import { ReportQuestionsForm } from "./ReportQuestionsForm";
+import { AlertCircle, CheckCircle2, FileOutput, Loader2, X } from "lucide-react";
+import { Link } from "react-router-dom";
+
 import {
-  answerReportQuestions,
-  cancelReportRun,
   createDocumentReport,
-  downloadReportArtifact,
-  getGeneratedReport,
   getReportRun,
-  listReportQuestions,
-  listModelConfigs,
   listDocumentReportRuns,
+  listModelConfigs,
   listReportTemplates,
-  retryReportRun,
 } from "../lib/api";
+import {
+  formatReportTime,
+  isActiveReportRun,
+  reportRunPath,
+  reportStateLabel,
+  reportStateTone,
+} from "../lib/reportRun";
 
-const ACTIVE_STATES = new Set(["PENDING", "PROCESSING"]);
-
-const RUN_LABELS = {
-  PENDING: "等待处理",
-  PROCESSING: "正在生成",
-  NEEDS_INPUT: "等待补充信息",
-  SUCCEEDED: "生成完成",
-  FAILED: "生成失败",
-  STALE_DOCUMENT: "文档版本已变化",
-  CANCELLED: "已取消",
-};
+function documentIdOf(document) {
+  return document?.document_id ?? document?.documentId ?? document?.id;
+}
 
 function templateReviewMessage(template) {
   return template ? "模板可用，可创建报告。" : "";
 }
 
+/**
+ * 生成报告对话框：只负责「创建任务」。
+ *
+ * 报告的正文、产物下载、补充问答都归报告详情页，对话框不再内嵌在线预览，
+ * 否则「看报告」这件事会被藏在「生成报告」按钮后面。
+ */
 export function ReportGenerationDialog({ document, open, onClose }) {
   const [templates, setTemplates] = useState([]);
   const [models, setModels] = useState([]);
+  const [history, setHistory] = useState([]);
   const [loading, setLoading] = useState(false);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
@@ -41,12 +42,9 @@ export function ReportGenerationDialog({ document, open, onClose }) {
   const [modelId, setModelId] = useState("");
   const [reportingYear, setReportingYear] = useState(String(new Date().getFullYear()));
   const [instructions, setInstructions] = useState("");
-  const [run, setRun] = useState(null);
-  const [questions, setQuestions] = useState([]);
-  const [report, setReport] = useState(null);
-  const [runHistory, setRunHistory] = useState([]);
-  const [downloadingArtifact, setDownloadingArtifact] = useState(null);
-  const [downloadError, setDownloadError] = useState("");
+  const [created, setCreated] = useState(null);
+
+  const documentId = documentIdOf(document);
 
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.report_type === reportType),
@@ -54,11 +52,10 @@ export function ReportGenerationDialog({ document, open, onClose }) {
   );
 
   useEffect(() => {
-    if (!open) return undefined;
+    if (!open || !documentId) return undefined;
     const controller = new AbortController();
     setLoading(true);
     setError("");
-    const documentId = document.document_id ?? document.id;
     Promise.all([
       listReportTemplates({ signal: controller.signal }),
       listModelConfigs({ capability: "CHAT" }, { signal: controller.signal }),
@@ -70,8 +67,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
         setModels(toolModels);
         setReportType((current) => current || nextTemplates?.[0]?.report_type || "");
         setModelId((current) => current || String(toolModels?.[0]?.id || ""));
-        setRunHistory(nextRuns || []);
-        setRun((current) => current || nextRuns?.[0] || null);
+        setHistory(nextRuns || []);
       })
       .catch((requestError) => {
         if (requestError?.name !== "AbortError") {
@@ -82,65 +78,24 @@ export function ReportGenerationDialog({ document, open, onClose }) {
         if (!controller.signal.aborted) setLoading(false);
       });
     return () => controller.abort();
-  }, [open]);
+  }, [open, documentId]);
 
+  // 刚创建的任务只在这里显示状态；详情页负责完整进度与结果。
   useEffect(() => {
-    if (!open || !run?.run_id || !ACTIVE_STATES.has(run.state)) return undefined;
-    let stopped = false;
-    const controller = new AbortController();
+    if (!open || !created?.run_id) return undefined;
+    if (!["PENDING", "PROCESSING"].includes(created.state)) return undefined;
     const timer = window.setInterval(() => {
-      getReportRun(run.run_id, { signal: controller.signal })
-        .then((next) => {
-          if (!stopped) {
-            setRun(next);
-            setRunHistory((current) => current.map((item) => (
-              item.run_id === next.run_id ? next : item
-            )));
-          }
-        })
-        .catch((requestError) => {
-          if (!stopped && requestError?.name !== "AbortError") {
-            setError(requestError instanceof Error ? requestError.message : "报告状态刷新失败");
-          }
-        });
-    }, 2000);
-    return () => {
-      stopped = true;
-      controller.abort();
-      window.clearInterval(timer);
-    };
-  }, [open, run?.run_id, run?.state]);
-
-  useEffect(() => {
-    if (!open || !run?.run_id || !["NEEDS_INPUT", "SUCCEEDED"].includes(run.state)) return undefined;
-    const controller = new AbortController();
-    const request = run.state === "NEEDS_INPUT"
-      ? listReportQuestions(run.run_id, { signal: controller.signal })
-      : getGeneratedReport(run.run_id, { signal: controller.signal });
-    request
-      .then((result) => {
-        if (controller.signal.aborted) return;
-        if (run.state === "NEEDS_INPUT") {
-          const openQuestions = (result || []).filter((question) => question.status === "OPEN");
-          setQuestions(openQuestions);
-        } else {
-          setReport(result);
-        }
-      })
-      .catch((requestError) => {
-        if (requestError?.name !== "AbortError") {
-          setError(requestError instanceof Error ? requestError.message : "报告结果读取失败");
-        }
-      });
-    return () => controller.abort();
-  }, [open, run?.run_id, run?.state]);
+      getReportRun(created.run_id)
+        .then((next) => setCreated(next))
+        .catch(() => { /* 状态刷新失败不打断创建流程 */ });
+    }, 3000);
+    return () => window.clearInterval(timer);
+  }, [open, created?.run_id, created?.state]);
 
   useEffect(() => {
     if (!open) {
-      setRun(null);
-      setQuestions([]);
-      setReport(null);
-      setRunHistory([]);
+      setCreated(null);
+      setInstructions("");
       setError("");
     }
   }, [open]);
@@ -153,94 +108,19 @@ export function ReportGenerationDialog({ document, open, onClose }) {
     setSubmitting(true);
     setError("");
     try {
-      const next = await createDocumentReport(document.document_id ?? document.id, {
+      const next = await createDocumentReport(documentId, {
         report_type: reportType,
         llm_config_id: Number(modelId),
         language: "zh-CN",
         reporting_year: Number(reportingYear),
         user_instructions: instructions.trim() || null,
       });
-      setRun(next);
-      setRunHistory((current) => [next, ...current]);
+      setCreated(next);
+      setHistory((current) => [next, ...current]);
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "报告创建失败");
     } finally {
       setSubmitting(false);
-    }
-  }
-
-  async function handleAnswers(payload) {
-    if (submitting || !questions.length) return;
-    setSubmitting(true);
-    setError("");
-    try {
-      const next = await answerReportQuestions(run.run_id, payload);
-      setQuestions([]);
-      setRun(next);
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "补充信息提交失败");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleCancel() {
-    if (!run?.run_id || submitting) return;
-    setSubmitting(true);
-    setError("");
-    try {
-      setRun(await cancelReportRun(run.run_id));
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "取消报告失败");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleRetry() {
-    if (!run?.run_id || submitting) return;
-    setSubmitting(true);
-    setError("");
-    try {
-      setRun(await retryReportRun(run.run_id));
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "重试报告失败");
-    } finally {
-      setSubmitting(false);
-    }
-  }
-
-  async function handleSelectRun(event) {
-    const runId = event.target.value;
-    if (!runId || runId === run?.run_id) return;
-    setError("");
-    setReport(null);
-    setQuestions([]);
-    try {
-      setRun(await getReportRun(runId));
-    } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "读取历史报告失败");
-    }
-  }
-
-  async function handleDownloadArtifact(artifact) {
-    if (!run?.run_id || downloadingArtifact) return;
-    setDownloadError("");
-    setDownloadingArtifact(artifact.id);
-    try {
-      const { blob, filename } = await downloadReportArtifact(run.run_id, artifact.id);
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = filename || "报告";
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      URL.revokeObjectURL(url);
-    } catch (requestError) {
-      setDownloadError(requestError instanceof Error ? requestError.message : "报告下载失败");
-    } finally {
-      setDownloadingArtifact(null);
     }
   }
 
@@ -262,82 +142,27 @@ export function ReportGenerationDialog({ document, open, onClose }) {
           <button type="button" className="icon-button" onClick={onClose} disabled={submitting} aria-label="关闭报告窗口"><X size={18} /></button>
         </header>
 
-        {run ? (
+        {created ? (
           <div className="report-run-workbench">
-            {runHistory.length > 1 ? (
-              <label className="form-field report-run-history">
-                <span>当前文档的报告记录</span>
-                <select value={run.run_id} onChange={handleSelectRun}>
-                  {runHistory.map((item) => (
-                    <option key={item.run_id} value={item.run_id}>
-                      {item.report_type} · {RUN_LABELS[item.state] || item.state} · {item.run_id.slice(0, 8)}
-                    </option>
-                  ))}
-                </select>
-              </label>
-            ) : null}
-            <span className={`report-run-workbench__icon report-run-workbench__icon--${String(run.state).toLowerCase()}`}>
-              {run.state === "SUCCEEDED" ? <CheckCircle2 size={24} /> : ACTIVE_STATES.has(run.state) ? <Loader2 className="spin" size={24} /> : <AlertCircle size={24} />}
+            <span className={`report-run-workbench__icon report-run-workbench__icon--${String(created.state).toLowerCase()}`}>
+              {created.state === "SUCCEEDED" ? <CheckCircle2 size={24} /> : isActiveReportRun(created.state) ? <Loader2 className="spin" size={24} /> : <AlertCircle size={24} />}
             </span>
             <div>
-              <p className="eyebrow">{run.report_type} · {run.template_version}</p>
-              <h3>{RUN_LABELS[run.state] || run.state}</h3>
-              <p>当前阶段：{run.stage}。任务已冻结文档、模板和模型版本。</p>
-              {run.error_message ? <p className="form-error">{run.error_message}</p> : null}
-              <code>{run.run_id}</code>
+              <p className="eyebrow">{created.report_type} · {created.template_version}</p>
+              <h3>{reportStateLabel(created.state)}</h3>
+              <p>任务已冻结文档、模板和模型版本，生成过程与结果都在报告页。</p>
+              <code>{created.run_id}</code>
               <div className="report-run-actions">
-                {ACTIVE_STATES.has(run.state) || run.state === "NEEDS_INPUT" ? (
-                  <button type="button" className="button button--ghost" onClick={handleCancel} disabled={submitting}>取消任务</button>
-                ) : null}
-                {run.state === "FAILED" ? (
-                  <button type="button" className="button button--ghost" onClick={handleRetry} disabled={submitting}>重试任务</button>
-                ) : null}
-                {["SUCCEEDED", "FAILED", "CANCELLED", "STALE_DOCUMENT"].includes(run.state) ? (
-                  <button type="button" className="button button--ghost" onClick={() => { setRun(null); setReport(null); setQuestions([]); }}>创建新报告</button>
-                ) : null}
+                <Link className="button button--primary" to={reportRunPath(created.run_id)}>打开报告页</Link>
+                <button
+                  type="button"
+                  className="button button--ghost"
+                  onClick={() => { setCreated(null); setInstructions(""); }}
+                >
+                  继续创建
+                </button>
               </div>
             </div>
-            {run.state === "NEEDS_INPUT" ? (
-              <ReportQuestionsForm
-                questions={questions}
-                submitting={submitting}
-                error={error}
-                onSubmit={handleAnswers}
-              />
-            ) : null}
-            {run.state === "SUCCEEDED" && report?.report_ir ? (
-              <div className="report-online-preview">
-                <div><strong>在线报告已生成</strong><span>{report.report_ir.sections?.length || 0} 个章节</span></div>
-                {report.artifacts?.length ? (
-                  <div className="report-online-preview__files">
-                    {report.artifacts.map((artifact) => (
-                      <button
-                        key={artifact.id}
-                        type="button"
-                        className="button button--secondary"
-                        disabled={Boolean(downloadingArtifact)}
-                        onClick={() => { void handleDownloadArtifact(artifact); }}
-                      >
-                        {downloadingArtifact === artifact.id ? <Loader2 className="spin" size={15} /> : <Download size={15} />}
-                        {artifact.artifact_type === "DOCX" ? "下载 Word" : "下载 Markdown"}
-                      </button>
-                    ))}
-                  </div>
-                ) : null}
-                {downloadError ? <p className="form-error" role="alert">{downloadError}</p> : null}
-                {report.report_ir.sections?.map((section) => (
-                  <section key={section.section_id}>
-                    <h4>{section.title}</h4>
-                    {(section.blocks || []).map((block, index) => (
-                      <p key={`${section.section_id}-${index}`}>
-                        {block.text || (block.data ? JSON.stringify(block.data) : "")}
-                      </p>
-                    ))}
-                  </section>
-                ))}
-                {report.report_ir.warnings?.map((warning) => <p key={warning}>{warning}</p>)}
-              </div>
-            ) : null}
           </div>
         ) : (
           <form onSubmit={handleSubmit}>
@@ -367,7 +192,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
                 </label>
                 <label className="form-field">
                   <span>输出格式</span>
-                  <input value="在线报告（首期）" readOnly />
+                  <input value="在线报告 + Word" readOnly />
                 </label>
               </div>
               <label className="form-field">
@@ -381,9 +206,26 @@ export function ReportGenerationDialog({ document, open, onClose }) {
                   <small>章节：{selectedTemplate.sections?.map((section) => section.title).join("、") || "待配置"}</small>
                 </div>
               ) : null}
-              {runHistory.length ? <small>已恢复当前文档最近的报告任务，可在任务完成后创建新报告。</small> : null}
               {error ? <p className="form-error" role="alert">{error}</p> : null}
             </div>
+
+            {history.length ? (
+              <div className="report-generation-dialog__history">
+                <h3>本文件已有的报告（{history.length}）</h3>
+                <ul>
+                  {history.slice(0, 5).map((item) => (
+                    <li key={item.run_id}>
+                      <Link to={reportRunPath(item.run_id)}>
+                        <strong>{item.report_type}</strong>
+                        <span className={`report-state ${reportStateTone(item.state)}`}>{reportStateLabel(item.state)}</span>
+                        <small>{formatReportTime(item.created_at)}</small>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            ) : null}
+
             <footer className="dialog__footer">
               <button type="button" className="button button--ghost" onClick={onClose} disabled={submitting}>取消</button>
               <button type="submit" className="button button--primary" disabled={submitting || loading || !selectedTemplate || !modelId}>
