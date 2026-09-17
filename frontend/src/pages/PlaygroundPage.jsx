@@ -278,9 +278,9 @@ export function PlaygroundPage() {
           status: "OPEN",
           question: "当前材料可能对应多类报告，请确认要生成哪一种？",
           options: [
-            { value: "R2", label: "R2 · 组织温室气体排放清单报告", description: "适合 Scope 1/2/3 年度盘查与组织边界材料。" },
-            { value: "R3", label: "R3 · ESG/可持续发展报告", description: "适合同时包含治理、战略、风险与指标目标的材料。" },
-            { value: "R6", label: "R6 · SBTi 目标设定报告", description: "适合基准年清单、近期目标与净零路径材料。" },
+            { value: "R2", label: "组织温室气体排放清单报告", description: "适合 Scope 1/2/3 年度盘查与组织边界材料。" },
+            { value: "R3", label: "ESG/可持续发展报告", description: "适合同时包含治理、战略、风险与指标目标的材料。" },
+            { value: "R6", label: "SBTi 目标设定报告", description: "适合基准年清单、近期目标与净零路径材料。" },
           ],
         },
       },
@@ -438,7 +438,7 @@ export function PlaygroundPage() {
       if (isDemo) {
         setMessages((current) => updateMessage(current, message.id, (item) => ({
           ...item,
-          content: `已按 ${reportType} 创建预览报告任务。`,
+          content: `已按「${message.interaction?.options?.find((item) => item.value === reportType)?.label || reportType}」创建预览报告任务。`,
           interaction: { ...item.interaction, status: "ANSWERED", selected: reportType },
           confirmationBusy: false,
         })));

@@ -131,12 +131,15 @@ def _input_hash(
 
 
 def _run_dict(run: ReportRun) -> dict[str, Any]:
+    snapshot = run.template_snapshot if isinstance(run.template_snapshot, dict) else {}
     return {
         "run_id": run.id,
         "document_id": run.document_id,
         "dataset_id": run.dataset_id,
         "document_version": run.document_version,
         "report_type": run.report_type,
+        # 面向用户展示的名称。R1–R7 是内部编号，不直接呈现给使用者。
+        "report_type_name": str(snapshot.get("name") or run.report_type),
         "template_id": run.template_id,
         "template_version": run.template_version,
         "custom_template_document_id": run.custom_template_document_id,

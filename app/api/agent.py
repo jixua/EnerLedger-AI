@@ -1009,6 +1009,15 @@ async def agent_stream(
                 classification = template_classification
         if classification.state == "CONFIDENT":
             report_type = str(classification.selected_report_type)
+            # 对话里只说报告类型名称，不暴露 R1–R7 这类内部编号。
+            report_type_name = next(
+                (
+                    candidate["name"]
+                    for candidate in classification.candidates
+                    if candidate["report_type"] == report_type
+                ),
+                report_type,
+            )
             try:
                 report = await create_report(
                     document_id=int(source_documents[0].id),
@@ -1035,7 +1044,7 @@ async def agent_stream(
                 )
                 raise
             answer = (
-                f"已识别为 {report_type}，并创建报告任务 {report['run_id'][:8]}。"
+                f"已识别为「{report_type_name}」，并创建报告任务 {report['run_id'][:8]}。"
                 + ("生成时会参考你上传的模板版式与章节表达。" if template_documents else "")
             )
             await finish_turn(
@@ -1059,7 +1068,7 @@ async def agent_stream(
         options = [
             {
                 "value": candidate["report_type"],
-                "label": f"{candidate['report_type']} · {candidate['name']}",
+                "label": candidate["name"],
                 "description": (
                     "命中：" + "、".join(candidate["matched_terms"][:4])
                     if candidate["matched_terms"]

@@ -45,6 +45,7 @@ import {
   reportRunPath,
   reportStateLabel,
   reportStateTone,
+  reportTypeName,
 } from "../lib/reportRun";
 import { documentErrorMessage } from "../lib/text";
 import { useApp } from "../state/AppContext";
@@ -527,7 +528,7 @@ export function DocumentDetailPage() {
             {documentReports.slice(0, 5).map((item) => (
               <li key={item.run_id}>
                 <Link to={reportRunPath(item.run_id)}>
-                  <strong>{item.report_type} 报告</strong>
+                  <strong>{reportTypeName(item)}</strong>
                   <span className={`report-state ${reportStateTone(item.state)}`}>
                     {reportStateLabel(item.state)}
                   </span>

@@ -10,7 +10,7 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import { listReportRuns, listReportTemplates } from "../lib/api";
+import { listReportRuns } from "../lib/api";
 import { useApp } from "../state/AppContext";
 import {
   formatReportTime,
@@ -19,6 +19,7 @@ import {
   reportSourceDocumentPath,
   reportStateLabel,
   reportStateTone,
+  reportTypeName,
 } from "../lib/reportRun";
 
 const FILTERS = [
@@ -44,7 +45,6 @@ function matchesFilter(run, filter) {
 export function ReportsPage() {
   const { isDemo } = useApp();
   const [runs, setRuns] = useState([]);
-  const [templates, setTemplates] = useState([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [error, setError] = useState("");
@@ -77,29 +77,14 @@ export function ReportsPage() {
     return () => controller.abort();
   }, [load]);
 
-  useEffect(() => {
-    const controller = new AbortController();
-    listReportTemplates({ signal: controller.signal })
-      .then((items) => setTemplates(Array.isArray(items) ? items : []))
-      .catch(() => { /* 模板名缺失时退回报告类型 */ });
-    return () => controller.abort();
-  }, []);
-
-  const templateNames = useMemo(() => {
-    const map = new Map();
-    for (const template of templates) map.set(template.report_type, template.name);
-    return map;
-  }, [templates]);
-
   const visibleRuns = useMemo(() => {
     const normalized = keyword.trim().toLowerCase();
     return runs.filter((run) => {
       if (!matchesFilter(run, filter)) return false;
       if (!normalized) return true;
       return [
-        run.report_type,
+        reportTypeName(run),
         run.document_filename,
-        templateNames.get(run.report_type),
         reportStateLabel(run.state),
       ]
         .filter(Boolean)
@@ -107,7 +92,7 @@ export function ReportsPage() {
         .toLowerCase()
         .includes(normalized);
     });
-  }, [filter, keyword, runs, templateNames]);
+  }, [filter, keyword, runs]);
 
   const counts = useMemo(
     () => Object.fromEntries(
@@ -123,7 +108,7 @@ export function ReportsPage() {
           <p className="eyebrow">REPORT CENTER</p>
           <h1>报告中心</h1>
           <p className="knowledge-hero__subtitle">
-            {runs.length} 个报告任务 · 覆盖 R1–R7 全部报告类型
+            {runs.length} 个报告任务 · 支持产品碳足迹、组织碳盘查、ESG、核查验证等 7 类报告
           </p>
         </div>
         <div className="knowledge-hero__actions">
@@ -197,10 +182,8 @@ export function ReportsPage() {
                         <div className="table-primary-cell report-title-cell">
                           <span className="file-icon"><Sparkles size={15} /></span>
                           <span>
-                            <Link to={reportRunPath(run.run_id)}>
-                              {templateNames.get(run.report_type) || `${run.report_type} 报告`}
-                            </Link>
-                            <small>{run.report_type} · 任务 {String(run.run_id).slice(0, 8)}</small>
+                            <Link to={reportRunPath(run.run_id)}>{reportTypeName(run)}</Link>
+                            <small>任务 {String(run.run_id).slice(0, 8)}</small>
                           </span>
                         </div>
                       </td>

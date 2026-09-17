@@ -30,6 +30,7 @@ import {
   reportSourceDocumentPath,
   reportStateLabel,
   reportStateTone,
+  reportTypeName,
   unresolvedFields,
 } from "../lib/reportRun";
 
@@ -174,7 +175,7 @@ export function ReportDetailPage() {
 
   const sourcePath = reportSourceDocumentPath(run);
   const failed = FAILED_REPORT_STATES.has(run.state);
-  const title = template?.name || `${run.report_type} 报告`;
+  const title = reportTypeName(run);
 
   return (
     <div className="page page--report-detail">
@@ -182,7 +183,6 @@ export function ReportDetailPage() {
         <div className="document-detail-header__main">
           <Link className="icon-button" to="/reports" aria-label="返回报告中心"><ArrowLeft size={18} /></Link>
           <div className="document-detail-header__identity">
-            <p className="eyebrow">{run.report_type} 报告</p>
             <div className="document-detail-title-line">
               <h1>{title}</h1>
               <span className={`report-state ${reportStateTone(run.state)}`}>

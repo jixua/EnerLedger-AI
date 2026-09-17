@@ -41,6 +41,16 @@ export function reportStateTone(state) {
   return REPORT_STATE_TONES[state] || "";
 }
 
+/**
+ * 面向用户展示的报告类型名称。
+ *
+ * R1–R7 是模板注册表里的内部编号，只在接口字段和后端匹配逻辑里使用；界面上
+ * 一律显示模板名称（如「产品碳足迹评价报告」）。
+ */
+export function reportTypeName(run) {
+  return run?.report_type_name || run?.report_type || "报告";
+}
+
 export function isActiveReportRun(state) {
   return ACTIVE_REPORT_STATES.has(state);
 }

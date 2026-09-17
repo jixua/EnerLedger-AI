@@ -153,7 +153,9 @@ async def confirm_template_selection(
         turn.interaction = {**interaction, "status": "OPEN"}
         await db.commit()
         raise
-    answer = f"已按 {payload.report_type} 创建报告任务，任务编号 {run['run_id'][:8]}。"
+    # 对话里只说报告类型名称，不暴露 R1–R7 这类内部编号。
+    report_name = run.get("report_type_name") or payload.report_type
+    answer = f"已按「{report_name}」创建报告任务，任务编号 {run['run_id'][:8]}。"
     await finish_turn(
         db,
         turn=turn,

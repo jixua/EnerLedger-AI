@@ -29,7 +29,8 @@ def build_report_clarification_user_prompt(*, filename: str, candidates: list[di
     lines = [f"材料文件名：{filename}", "", "候选报告类型（括号内为匹配到的材料特征）："]
     for candidate in candidates:
         terms = "、".join(candidate.get("matched_terms") or []) or "未见明显命中词"
-        lines.append(f"- {candidate.get('report_type')} {candidate.get('name')}（{terms}）")
+        # 只给可读名称：R1–R7 是内部编号，不应出现在给用户看的说明里。
+        lines.append(f"- {candidate.get('name')}（{terms}）")
     lines.append("")
     lines.append("请输出确认说明。")
     return "\n".join(lines)

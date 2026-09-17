@@ -17,6 +17,7 @@ import {
   reportRunPath,
   reportSourceDocumentPath,
   reportStateLabel,
+  reportTypeName,
 } from "../lib/reportRun";
 
 /**
@@ -115,7 +116,7 @@ export function ChatReportCard({ runId }) {
           {run.state === "SUCCEEDED" ? <CheckCircle2 size={18} /> : active ? <Loader2 className="spin" size={18} /> : <AlertCircle size={18} />}
         </span>
         <div>
-          <strong>{run.report_type} 报告任务</strong>
+          <strong>{reportTypeName(run)}</strong>
           <small>{reportStateLabel(run.state)} · {formatReportTime(run.created_at)}</small>
         </div>
         {sourcePath ? <Link className="chat-report-card__link" to={sourcePath}>查看源文档</Link> : null}

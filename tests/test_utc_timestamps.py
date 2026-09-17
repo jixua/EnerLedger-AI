@@ -133,6 +133,7 @@ def _report_run_stub() -> SimpleNamespace:
         dataset_id=1,
         document_version=1,
         report_type="R1",
+        template_snapshot={"name": "产品碳足迹评价报告"},
         template_id="r1",
         template_version="1.0.0",
         custom_template_document_id=None,
@@ -160,6 +161,13 @@ def test_report_run_payload_marks_timestamps_as_utc() -> None:
     for key in ("started_at", "finished_at", "created_at", "updated_at"):
         assert payload[key].tzinfo is not None, key
     assert payload["created_at"] == datetime(2026, 9, 17, 8, 46, 54, tzinfo=UTC)
+
+
+def test_report_run_payload_exposes_readable_type_name() -> None:
+    payload = _run_dict(_report_run_stub())
+
+    assert payload["report_type_name"] == "产品碳足迹评价报告"
+    assert payload["report_type"] == "R1"  # 内部编号仍保留，供接口侧匹配使用
 
 
 class _FakeScalars:

@@ -13,7 +13,6 @@ const [reportRun, reportsPage, detailPage, chatCard, dialog, appShell, app] = aw
   read("components/AppShell.jsx"),
   read("App.jsx"),
 ]);
-
 test("报告状态文案只有一份来源", async () => {
   const consumers = [reportsPage, detailPage, chatCard, dialog];
   for (const source of consumers) {
@@ -58,4 +57,34 @@ test("离线图表不落成 JSON：块类型逐一渲染", async () => {
   // 含负值时不能画成占比，也不能画成零宽的普通条
   assert.match(irView, /hasNegative/);
   assert.match(irView, /report-diverge/);
+});
+
+test("界面只讲报告类型名称，不暴露 R1–R7 内部编号", async () => {
+  const playground = await read("pages/PlaygroundPage.jsx");
+  const leakPatterns = [
+    /\{run\.report_type\}/,
+    /\{item\.report_type\}/,
+    /\{created\.report_type\}/,
+    /\$\{run\.report_type\}/,
+    /report_type\} ·/,
+    /"R[1-7] · /,
+    /R1–R7|R1-R7/,
+  ];
+  for (const [name, source] of Object.entries({
+    reportsPage,
+    detailPage,
+    chatCard,
+    dialog,
+    playground,
+  })) {
+    for (const pattern of leakPatterns) {
+      assert.doesNotMatch(source, pattern, `${name} 把内部编号渲染给了用户`);
+    }
+  }
+  // 展示名称统一走 helper，取值来自接口的 report_type_name
+  for (const source of [reportsPage, detailPage, chatCard, dialog]) {
+    assert.match(source, /reportTypeName\(/);
+  }
+  assert.match(reportRun, /export function reportTypeName/);
+  assert.match(reportRun, /run\?\.report_type_name/);
 });

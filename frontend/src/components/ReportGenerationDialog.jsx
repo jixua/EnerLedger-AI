@@ -15,6 +15,7 @@ import {
   reportRunPath,
   reportStateLabel,
   reportStateTone,
+  reportTypeName,
 } from "../lib/reportRun";
 
 function documentIdOf(document) {
@@ -148,7 +149,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
               {created.state === "SUCCEEDED" ? <CheckCircle2 size={24} /> : isActiveReportRun(created.state) ? <Loader2 className="spin" size={24} /> : <AlertCircle size={24} />}
             </span>
             <div>
-              <p className="eyebrow">{created.report_type} · {created.template_version}</p>
+              <p className="eyebrow">{reportTypeName(created)} · 模板 v{created.template_version}</p>
               <h3>{reportStateLabel(created.state)}</h3>
               <p>任务已冻结文档、模板和模型版本，生成过程与结果都在报告页。</p>
               <code>{created.run_id}</code>
@@ -174,7 +175,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
                   <select value={reportType} onChange={(event) => setReportType(event.target.value)} disabled={loading}>
                     {templates.map((template) => (
                       <option key={template.report_type} value={template.report_type}>
-                        {template.report_type} · {template.name}
+                        {template.name}
                       </option>
                     ))}
                   </select>
@@ -216,7 +217,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
                   {history.slice(0, 5).map((item) => (
                     <li key={item.run_id}>
                       <Link to={reportRunPath(item.run_id)}>
-                        <strong>{item.report_type}</strong>
+                        <strong>{reportTypeName(item)}</strong>
                         <span className={`report-state ${reportStateTone(item.state)}`}>{reportStateLabel(item.state)}</span>
                         <small>{formatReportTime(item.created_at)}</small>
                       </Link>
