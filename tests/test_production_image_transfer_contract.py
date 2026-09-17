@@ -34,7 +34,10 @@ def test_production_pipeline_uses_posix_compatible_script_installation() -> None
 def test_production_pipeline_fetches_only_master_history() -> None:
     pipeline = JENKINSFILE.read_text(encoding="utf-8")
 
-    assert "+refs/heads/master:refs/remotes/origin/master" in pipeline
-    assert "refs/remotes/origin/master" in pipeline
-    assert "honorRefspec: true" in pipeline
-    assert "+refs/heads/*:refs/remotes/origin/*" not in pipeline
+    # 检出分成两步：先把新增提交刷进本地镜像，再从镜像克隆。两步都只取 master 一个
+    # 分支、都保持浅克隆——拉全量历史或全部分支会让本来就难走的链路更慢。
+    assert "--single-branch --branch master" in pipeline  # 克隆只取 master
+    assert "+refs/heads/master:refs/heads/master" in pipeline  # 刷新也只映射 master
+    assert pipeline.count("--depth=100") >= 2  # 刷新与克隆都是浅的
+    assert pipeline.count("--no-tags") >= 2
+    assert "+refs/heads/*" not in pipeline  # 绝不拉全部分支
