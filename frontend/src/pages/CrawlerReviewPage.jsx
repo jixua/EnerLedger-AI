@@ -10,7 +10,6 @@ import {
   ExternalLink,
   LoaderCircle,
   RefreshCw,
-  ShieldCheck,
   XCircle,
 } from "lucide-react";
 import { formatBytes } from "../components/ui";
@@ -217,13 +216,11 @@ export function CrawlerReviewPage() {
   }
 
   return (
-    <div className="page crawler-page">
-      <header className="crawler-hero">
-        <span className="crawler-hero__icon"><ShieldCheck size={22} /></span>
-        <div>
-          <p className="eyebrow">内容准入</p>
+    <div className="page page--crawler feature-page">
+      <header className="knowledge-hero">
+        <div className="knowledge-hero__copy">
           <h1>采集资料审核</h1>
-          <p>审核第三方爬虫上传的文章或论文；只有人工通过后，文件才会进入解析队列。</p>
+          <p className="knowledge-hero__subtitle">审核第三方爬虫上传的文章或论文；只有人工通过后，文件才会进入解析队列。</p>
         </div>
       </header>
 
