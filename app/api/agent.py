@@ -6,13 +6,16 @@ import asyncio
 import hmac
 import json
 import logging
+import tempfile
 from collections.abc import AsyncGenerator
+from pathlib import Path
 from typing import Literal
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Request, status
+from fastapi import APIRouter, Depends, File, Header, HTTPException, Request, UploadFile, status
+from fastapi.concurrency import run_in_threadpool
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -36,6 +39,7 @@ from app.rag.core.llm.exceptions import ConfigurationException, LLMConfigResolut
 from app.rag.core.llm.provider_lifecycle import aclose_dataset_execution_contexts
 from app.rag.core.llm.runtime_repository import RuntimeConfigRepository
 from app.rag.core.llm.user_model_resolver import aresolve_model
+from app.rag.core.parser.exceptions import ParseBaseException
 from app.rag.core.pipeline.chunk_content import fetch_chunk_sources
 from app.rag.core.pipeline.recall.generation import assemble_context
 from app.rag.core.prompts import (
@@ -48,6 +52,13 @@ from app.rag.core.prompts import (
 )
 from app.rag.database import get_db, get_db_context
 from app.rag.models.chunk_record import ChunkRecordDB
+from app.services.agent_attachment_text import (
+    DIRECT_ATTACHMENT_SUPPORTED_TYPES,
+    TOO_LARGE_MESSAGE,
+    DirectAttachmentTooLargeError,
+    extract_direct_attachment_text,
+    normalize_extension,
+)
 from app.services.agent_conversations import finish_turn, start_turn
 from app.services.agent_runs import agent_run_registry
 from app.services.agent_turn_intent import (
@@ -126,11 +137,33 @@ async def _report_clarification_reply(
 
 
 class AgentAttachment(BaseModel):
+    """对话附件，两种形态二选一。
+
+    - 知识库形态：``document_id``（已入库解析的文档，走报告/召回链路）
+    - 直传形态：``filename`` + ``content``（小文件就地提取的文本，直接作为上下文）
+    """
+
     model_config = ConfigDict(extra="forbid")
 
-    document_id: int = Field(gt=0)
+    document_id: int | None = Field(default=None, gt=0)
     # 可省略：不声明时由模型判断各文件用途（见 report_attachment_roles）。
     role: Literal["SOURCE", "TEMPLATE"] | None = None
+    filename: str | None = Field(default=None, min_length=1, max_length=512)
+    content: str | None = Field(
+        default=None, min_length=1, max_length=settings.AGENT_DIRECT_ATTACHMENT_MAX_CHARS
+    )
+
+    @model_validator(mode="after")
+    def validate_kind(self) -> AgentAttachment:
+        has_document = self.document_id is not None
+        has_inline = self.filename is not None and self.content is not None
+        if has_document == has_inline:
+            raise ValueError("附件二选一：document_id，或 filename 与 content 同时提供")
+        return self
+
+    @property
+    def is_direct(self) -> bool:
+        return self.content is not None
 
 
 class AgentHistoryMessage(BaseModel):
@@ -399,7 +432,11 @@ async def _agent_document_tree(db: AsyncSession, context, doc_id: int) -> dict:
 
 
 async def _owned_datasets(
-    db: AsyncSession, *, user_id: int, dataset_ids: list[int] | None
+    db: AsyncSession,
+    *,
+    user_id: int,
+    dataset_ids: list[int] | None,
+    allow_empty: bool = False,
 ) -> dict[int, Dataset]:
     statement = select(Dataset).where(
         Dataset.user_id == user_id,
@@ -411,7 +448,7 @@ async def _owned_datasets(
     by_id = {row.id: row for row in rows}
     if dataset_ids and len(by_id) != len(dataset_ids):
         raise HTTPException(status_code=404, detail="数据集不存在或无权访问")
-    if not by_id:
+    if not by_id and not allow_empty:
         raise HTTPException(status_code=409, detail={"code": "KNOWLEDGE_SCOPE_EMPTY"})
     return by_id
 
@@ -503,7 +540,7 @@ async def internal_agent_scope(
     if context is None:
         raise HTTPException(status_code=404, detail={"code": "AGENT_RUN_NOT_FOUND"})
     datasets = await _owned_datasets(
-        db, user_id=context.user_id, dataset_ids=list(context.dataset_ids)
+        db, user_id=context.user_id, dataset_ids=list(context.dataset_ids), allow_empty=True
     )
     available = _knowledge_base_payload(context, datasets)
     if not body.requested_names:
@@ -555,6 +592,33 @@ async def internal_agent_recall(
         dataset_ids = list(resolved_ids)
     else:
         dataset_ids = list(context.dataset_ids)
+    if not dataset_ids:
+        # 无知识库范围（如零知识库用户只上传了直传小文件）：召回为空是正常结果，
+        # 不能当成错误抛出，否则 Agent 的召回工具会直接失败。
+        return {
+            "query": body.query,
+            "intent": body.intent,
+            "scope": {"mode": context.scope_mode, "knowledge_base_count": 0, "policy": "dataset"},
+            "retrieval": {
+                "strategy": "bm25_sparse_dense",
+                "active_sources": [],
+                "weights": {},
+                "per_source_counts": {},
+                "candidate_count": 0,
+                "context_count": 0,
+                "rerank_applied": False,
+                "degraded": False,
+                "failed_sources": [],
+                "failed_knowledge_bases": [],
+                "elapsed_ms": 0,
+            },
+            "per_knowledge_base_counts": [],
+            "ranked_hits": [],
+            "evidence_blocks": [],
+            "hits": [],
+            "failed_sources": [],
+            "elapsed_ms": 0,
+        }
     datasets = await _owned_datasets(db, user_id=context.user_id, dataset_ids=dataset_ids)
 
     execution_contexts = {}
@@ -895,6 +959,61 @@ async def internal_agent_read_section(
     }
 
 
+@router.post("/api/v1/agent/attachments")
+async def upload_agent_attachment(
+    file: UploadFile = File(...),
+    user_id: int = Depends(get_shared_owner_user_id),
+) -> dict:
+    """对话直传附件：就地提取文本，不进知识库链路。
+
+    超过大小/页数/字符任一阈值即返回 413，提示用户先导入知识库。
+    """
+    if not settings.AGENT_ENABLED:
+        raise HTTPException(status_code=503, detail={"code": "AGENT_DISABLED"})
+
+    filename = file.filename or ""
+    ext = normalize_extension(filename)
+    if ext not in DIRECT_ATTACHMENT_SUPPORTED_TYPES:
+        raise HTTPException(
+            status_code=415,
+            detail={"code": "ATTACHMENT_UNSUPPORTED_TYPE", "message": "不支持的文件类型"},
+        )
+
+    with tempfile.TemporaryDirectory(prefix="agent-attachment-") as temp_dir:
+        path = Path(temp_dir) / f"attachment.{ext}"
+        size = 0
+        with path.open("wb") as sink:
+            while chunk := await file.read(1024 * 1024):
+                size += len(chunk)
+                if size > settings.AGENT_DIRECT_ATTACHMENT_MAX_BYTES:
+                    raise HTTPException(
+                        status_code=413,
+                        detail={"code": "ATTACHMENT_TOO_LARGE", "message": TOO_LARGE_MESSAGE},
+                    )
+                sink.write(chunk)
+        try:
+            content, page_count = await run_in_threadpool(
+                extract_direct_attachment_text, path, ext
+            )
+        except DirectAttachmentTooLargeError as exc:
+            raise HTTPException(
+                status_code=413,
+                detail={"code": "ATTACHMENT_TOO_LARGE", "message": str(exc)},
+            ) from exc
+        except (ParseBaseException, ValueError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "ATTACHMENT_UNREADABLE", "message": str(exc)},
+            ) from exc
+
+    return {
+        "filename": filename,
+        "content": content,
+        "page_count": page_count,
+        "char_count": len(content),
+    }
+
+
 @router.post("/api/v1/agent/stream")
 async def agent_stream(
     body: AgentStreamBody,
@@ -906,7 +1025,11 @@ async def agent_stream(
     if not settings.AGENT_ENABLED:
         raise HTTPException(status_code=503, detail={"code": "AGENT_DISABLED"})
 
-    datasets = await _owned_datasets(db, user_id=user_id, dataset_ids=body.dataset_ids)
+    # 直传附件（小文件就地提取的文本）不依赖知识库，因此允许空知识库范围；
+    # 此时召回拿不到内容，但模型仍可依据附件文本作答。
+    datasets = await _owned_datasets(
+        db, user_id=user_id, dataset_ids=body.dataset_ids, allow_empty=True
+    )
     dataset_ids = list(body.dataset_ids) if body.dataset_ids else list(datasets)
     config_id = _chat_config_id(datasets, body.llm_config_id)
 
@@ -927,14 +1050,13 @@ async def agent_stream(
     source_documents: list[Document] = []
     template_documents: list[Document] = []
     attachment_snapshots: list[dict] = []
-    if body.attachments:
-        attachment_ids = [item.document_id for item in body.attachments]
-        if len(set(attachment_ids)) != len(attachment_ids):
-            raise HTTPException(status_code=422, detail="附件不能重复")
-        if len(attachment_ids) > 2:
-            raise HTTPException(
-                status_code=422, detail="一次最多两份文件：一份来源文档与一份报告模板"
-            )
+    # 直传附件只作本轮上下文：不参与角色判定与报告链路，也无需归属校验。
+    direct_attachments = [item for item in body.attachments if item.is_direct]
+    kb_attachments = [item for item in body.attachments if not item.is_direct]
+    attachment_ids = [int(item.document_id) for item in kb_attachments]
+    if len(set(attachment_ids)) != len(attachment_ids):
+        raise HTTPException(status_code=422, detail="附件不能重复")
+    if kb_attachments:
         owned = (
             await db.scalars(
                 select(Document).where(
@@ -947,7 +1069,7 @@ async def agent_stream(
         by_id = {int(document.id): document for document in owned}
         if set(by_id) != set(attachment_ids):
             raise HTTPException(status_code=404, detail="附件不存在或不在当前知识库范围")
-        for item in body.attachments:
+        for item in kb_attachments:
             document = by_id[item.document_id]
             if document.status != DOCUMENT_STATUS_READY:
                 raise HTTPException(
@@ -959,7 +1081,7 @@ async def agent_stream(
                 )
 
         # 用户显式指定的用途优先，未指定的按规则补全；一个都没指定时才交给模型判断。
-        declared = {item.document_id: item.role for item in body.attachments if item.role}
+        declared = {item.document_id: item.role for item in kb_attachments if item.role}
         if declared:
             try:
                 subject_id, template_id = resolve_declared_roles(
@@ -1000,6 +1122,12 @@ async def agent_stream(
             template_id,
         )
 
+    # 直传附件只留文件名与标记，不落全文，避免撑大会话记录。
+    attachment_snapshots.extend(
+        {"filename": item.filename, "role": "SOURCE", "direct": True}
+        for item in direct_attachments
+    )
+
     # 附件曾经等同于「发起报告生成」：只要判定出主体材料就无条件走报告分类，
     # 于是「这两份材料分别是什么」也会被要求先选报告类型。这里先判一次意图，
     # 只有确实要报告才进报告链路，提问落到下面的问答链路。
@@ -1015,7 +1143,12 @@ async def agent_stream(
         if source_documents
         else TurnIntent(intent=REPORT_INTENT, decided_by="none")
     )
-    wants_report = bool(source_documents) and turn_intent.intent == REPORT_INTENT
+    # 直传附件一律走问答链路：报告生成依赖入库文档的切块与分类，直传文本不具备。
+    wants_report = (
+        bool(source_documents)
+        and not direct_attachments
+        and turn_intent.intent == REPORT_INTENT
+    )
     if source_documents:
         logger.info(
             "[agent] turn intent resolved intent=%s decided_by=%s attachments=%s",
@@ -1216,6 +1349,14 @@ async def agent_stream(
     if source_documents and not wants_report:
         names = "、".join(document.filename for document in attached_documents)
         question = f"{question}\n\n（本轮上传的文件：{names}；本轮检索范围已限定在这些文件内。）"
+    # 直传附件没有入库，检索拿不到，只能把提取出的文本原样交代给模型；问题放在末尾，
+    # 避免被长正文淹没。
+    if direct_attachments:
+        blocks = "\n".join(
+            f'<uploaded_file name="{item.filename}">\n{item.content}\n</uploaded_file>'
+            for item in direct_attachments
+        )
+        question = f"以下是用户本轮上传的文件内容：\n{blocks}\n\n用户的问题：{question}"
 
     payload = {
         "runId": run_id,

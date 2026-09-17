@@ -27,6 +27,7 @@ import {
   deleteAgentConversation,
   listAgentConversations,
   listAgentConversationTurns,
+  uploadAgentAttachment,
 } from "../lib/api";
 import { isDocumentRetrievalReady } from "../lib/parse-quality";
 import { ChatReportCard } from "../components/ChatReportCard";
@@ -122,9 +123,18 @@ function flattenDocuments(documents) {
   return Object.values(documents || {}).flatMap((items) => Array.isArray(items) ? items : []);
 }
 
+/** 预览模式不连后端：文本类文件本地读，其余给一段占位文本。 */
+async function mockAgentAttachment(file) {
+  const textLike = /\.(md|markdown|txt|html|htm)$/i.test(file.name || "");
+  const content = textLike
+    ? (await file.text()).slice(0, 60000)
+    : `（预览模式）已读取文件《${file.name}》的正文内容。`;
+  return { filename: file.name, content, page_count: null, char_count: content.length };
+}
+
 export function PlaygroundPage() {
   const location = useLocation();
-  const { datasets = [], models = [], documents = {}, streamAgent, uploadDocuments, loadDocuments, isDemo } = useApp();
+  const { datasets = [], models = [], documents = {}, streamAgent, isDemo } = useApp();
   const [selectedDatasetIds, setSelectedDatasetIds] = useState([]);
   const [selectedModelId, setSelectedModelId] = useState("");
   const [question, setQuestion] = useState("");
@@ -186,7 +196,9 @@ export function PlaygroundPage() {
     () => new Set(effectiveDatasets.map((dataset) => dataset.chat_config_id).filter(Boolean).map(String)),
     [effectiveDatasets],
   );
-  const needsExplicitModel = effectiveDatasets.length > 1
+  // 没有可用知识库时后端无从推断模型配置，必须由用户显式选一个。
+  const needsExplicitModel = !effectiveDatasets.length
+    || effectiveDatasets.length > 1
     || effectiveDatasets.some((dataset) => !dataset.chat_config_id)
     || boundChatIds.size > 1;
   const showModelSelector = needsExplicitModel && chatModels.length > 1;
@@ -198,26 +210,8 @@ export function PlaygroundPage() {
     () => conversations.find((item) => item.conversation_id === conversationId)?.title || "对话",
     [conversations, conversationId],
   );
-  const documentsById = useMemo(() => new Map(
-    flattenDocuments(documents).map((document) => [
-      Number(document.document_id ?? document.id),
-      document,
-    ]),
-  ), [documents]);
-  const resolvedAttachments = useMemo(() => attachments.map((attachment) => ({
-    ...attachment,
-    document: documentsById.get(Number(attachment.documentId)) ?? attachment.document,
-  })), [attachments, documentsById]);
-  const attachmentsReady = resolvedAttachments.every(
-    (attachment) => String(attachment.document?.status || "").toUpperCase() === "READY",
-  );
-  const attachmentsFailed = resolvedAttachments.some(
-    (attachment) => String(attachment.document?.status || "").toUpperCase() === "FAILED",
-  );
-  // 用途由服务端判断，前端只保证份数不超过上限
-  const attachmentCountValid = resolvedAttachments.length <= 2;
-  // 只有两份文件时"哪份是模板"才有歧义，也才需要用户指明
-  const allowRoleToggle = resolvedAttachments.length === 2;
+  // 附件是小文件直传形态：上传时已提取好文本，无需轮询解析状态，随即可用。
+  const attachmentCountValid = attachments.length <= 2;
   const datasetTriggerLabel = !selectedDatasetIds.length
     ? `全部知识库${activeDatasets.length ? `（${activeDatasets.length}）` : ""}`
     : selectedDatasets.length === 1
@@ -226,14 +220,12 @@ export function PlaygroundPage() {
       ? `${selectedDatasets.length} 个数据集`
       : "选择数据集";
   const isRunning = messages.some((message) => message.role === "assistant" && isStreamingMessage(message));
-  const hasRetrievalScope = activeDatasets.length > 0;
+  // 不强制知识库：零知识库时也能上传小文件或直接提问。
   const canSubmit = Boolean(
     question.trim()
-    && hasRetrievalScope
     && (!needsExplicitModel || selectedModelId)
     && !isRunning
     && !uploading
-    && attachmentsReady
     && attachmentCountValid
   );
   const sourceMessage = messages.find((message) => message.id === sourceMessageId);
@@ -280,19 +272,6 @@ export function PlaygroundPage() {
   useEffect(() => {
     refreshConversations();
   }, []);
-
-  useEffect(() => {
-    const pending = resolvedAttachments.filter(
-      (attachment) => !["READY", "FAILED"].includes(String(attachment.document?.status || "").toUpperCase()),
-    );
-    if (!pending.length) return undefined;
-    const timer = window.setInterval(() => {
-      for (const datasetId of new Set(pending.map((attachment) => Number(attachment.document?.dataset_id)))) {
-        if (datasetId) loadDocuments?.(datasetId).catch(() => {});
-      }
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [loadDocuments, resolvedAttachments]);
 
   useEffect(() => {
     if (!new URLSearchParams(location.search).has("new")) return;
@@ -451,34 +430,25 @@ export function PlaygroundPage() {
 
   async function uploadConversationFile(file) {
     if (!file) return;
-    const targetDatasetId = selectedDatasetIds.length === 1
-      ? Number(selectedDatasetIds[0])
-      : activeDatasets.length === 1 ? Number(activeDatasets[0].id) : null;
-    if (!targetDatasetId) {
-      throw new Error("上传对话资料前，请只选择一个知识库。");
-    }
-    // 上传时不问用途：哪份是来源文档、哪份是报告模板由服务端判断
     if (attachments.length >= 2) {
       throw new Error("一次最多上传两份文件，请先移除现有的。");
     }
     setUploading(true);
     try {
-      const [result] = await uploadDocuments(targetDatasetId, [file], { stopOnError: true });
-      const documentId = Number(result?.document_id ?? result?.id);
-      if (!documentId) throw new Error("上传成功但未返回文档编号");
-      setAttachments((current) => [...current, { documentId, document: result }]);
+      // 小文件就地提取文本直接交给模型；超限时后端返回"文件过大，请先导入知识库"。
+      const result = isDemo ? await mockAgentAttachment(file) : await uploadAgentAttachment(file);
+      const content = result?.content;
+      if (!content) throw new Error("上传成功但未提取到内容");
+      setAttachments((current) => [...current, {
+        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+        filename: result.filename || file.name,
+        content,
+        pageCount: result.page_count ?? null,
+        charCount: result.char_count ?? content.length,
+      }]);
     } finally {
       setUploading(null);
     }
-  }
-
-  /** 指明某份文件是报告模板；再点一次取消标记，回到自动判断。 */
-  function toggleTemplateRole(documentId) {
-    setAttachments((current) => current.map((item) => ({
-      ...item,
-      // 模板只能有一份：标记某一份会清掉其它份的标记
-      role: item.documentId === documentId && item.role !== "TEMPLATE" ? "TEMPLATE" : undefined,
-    })));
   }
 
   async function handleFileSelection(event) {
@@ -588,11 +558,9 @@ export function PlaygroundPage() {
     const prompt = question.trim();
     const idBase = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const assistantId = `assistant-${idBase}`;
-    const submittedAttachments = resolvedAttachments.map((attachment) => ({
-      documentId: attachment.documentId,
-      role: attachment.role,
-      filename: attachment.document?.filename,
-      status: attachment.document?.status,
+    const submittedAttachments = attachments.map((attachment) => ({
+      filename: attachment.filename,
+      content: attachment.content,
     }));
     const userMessage = {
       id: `user-${idBase}`,
@@ -613,7 +581,7 @@ export function PlaygroundPage() {
     setOpenSelector(null);
     setMessages((current) => [...current, userMessage, assistantMessage]);
     setQuestion("");
-    setAttachments([]);
+    // 附件保留在输入区，追问时继续带上同一份文件；由用户显式移除。
     activeAssistantRef.current = assistantId;
     const controller = new AbortController();
     abortRef.current = controller;
@@ -679,42 +647,21 @@ export function PlaygroundPage() {
   const composer = (
     <form className="chat-composer" onSubmit={submitQuestion}>
       <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={handleFileSelection} />
-      {resolvedAttachments.length ? (
+      {attachments.length ? (
         <>
-        <div className="composer-attachments" aria-label="本轮附件">
-          {resolvedAttachments.map((attachment) => {
-            const status = String(attachment.document?.status || "").toUpperCase();
-            const ready = status === "READY";
-            const failed = status === "FAILED";
-            const isTemplate = attachment.role === "TEMPLATE";
-            return (
-              <span className={`composer-attachment${ready ? " is-ready" : failed ? " is-failed" : " is-pending"}${isTemplate ? " is-template" : ""}`} key={attachment.documentId}>
-                <FileText size={14} />
-                <span>
-                  <strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong>
-                  <small>
-                    {ready ? "可用" : failed ? "解析失败" : "解析中"}
-                    {/* 只有两份时才有"哪份是模板"的歧义；用户不点就交给服务端判断 */}
-                    {allowRoleToggle ? (
-                      <button
-                        type="button"
-                        className="composer-attachment__role"
-                        aria-pressed={isTemplate}
-                        title={isTemplate ? "取消模板标记，改为自动判断" : "把这份文件指定为报告模板"}
-                        onClick={() => toggleTemplateRole(attachment.documentId)}
-                      >
-                        {isTemplate ? "模板" : "设为模板"}
-                      </button>
-                    ) : null}
-                  </small>
-                </span>
-                <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => item.documentId !== attachment.documentId))}><X size={13} /></button>
+        <div className="composer-attachments" aria-label="对话附件">
+          {attachments.map((attachment) => (
+            <span className="composer-attachment is-ready" key={attachment.id}>
+              <FileText size={14} />
+              <span>
+                <strong>{attachment.filename}</strong>
+                <small>{attachment.pageCount ? `${attachment.pageCount} 页 · 已读取` : "已读取"}</small>
               </span>
-            );
-          })}
+              <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={13} /></button>
+            </span>
+          ))}
         </div>
-        {/* 附件不再等于"发起生成"：问问题也行，所以提示要把两种用法都讲清楚 */}
-        <p className="composer-attachments-hint">可以直接就这些文件提问，也可以让系统据此生成报告。生成时模板是可选的，不指定则由系统判断哪份是报告主体材料、哪份提供版式。</p>
+        <p className="composer-attachments-hint">已读取文件内容，将直接交给模型分析。</p>
         </>
       ) : null}
       <textarea
@@ -879,14 +826,8 @@ export function PlaygroundPage() {
           <button className="composer-send" type="submit" disabled={!canSubmit} aria-label="发送"><ArrowUp size={18} /></button>
         )}
       </div>
-      {!activeDatasets.length ? (
-        <p className="composer-warning composer-warning--action">开始对话前，请先<Link to="/datasets">创建数据集并上传文档</Link>。</p>
-      ) : attachmentError ? (
+      {attachmentError ? (
         <p className="composer-warning" role="alert">{attachmentError}</p>
-      ) : attachmentsFailed ? (
-        <p className="composer-warning" role="alert">附件解析失败，请移除后重新上传。</p>
-      ) : resolvedAttachments.length && !attachmentsReady ? (
-        <p className="composer-warning">附件正在解析，完成后即可发送。</p>
       ) : needsExplicitModel && !chatModels.length ? (
         <p className="composer-warning composer-warning--action">开始对话前，请先<Link to="/models">配置可用的对话模型</Link>。</p>
       ) : needsExplicitModel && !selectedModelId ? <p className="composer-warning">请选择用于本次对话的模型。</p> : null}
@@ -968,7 +909,7 @@ export function PlaygroundPage() {
               <article className="chat-message chat-message--user" key={message.id}>
                 <div className="chat-message__avatar">U</div>
                 <div className="chat-message__body">
-                  {message.attachments?.length ? <div className="chat-message__attachments">{message.attachments.map((attachment) => <span key={`${attachment.role}-${attachment.document_id ?? attachment.documentId}`}><FileText size={13} />{attachment.filename || `文档 #${attachment.document_id ?? attachment.documentId}`}<small>{attachment.role === "TEMPLATE" ? "模板" : "来源文档"}</small></span>)}</div> : null}
+                  {message.attachments?.length ? <div className="chat-message__attachments">{message.attachments.map((attachment, index) => <span key={`${attachment.filename}-${index}`}><FileText size={13} />{attachment.filename || `文档 #${attachment.document_id ?? attachment.documentId}`}<small>{attachment.direct || attachment.content ? "文件内容" : attachment.role === "TEMPLATE" ? "模板" : "来源文档"}</small></span>)}</div> : null}
                   <p>{message.content}</p>
                   {message.content ? (
                     <footer className="chat-message__actions">

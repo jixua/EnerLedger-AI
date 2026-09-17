@@ -112,11 +112,17 @@ function toAgentRequestBody(payload) {
   const conversationId = payload.conversationId ?? payload.conversation_id;
   if (conversationId) body.conversation_id = conversationId;
   if (payload.attachments?.length) {
-    body.attachments = payload.attachments.map((attachment) => ({
-      document_id: attachment.documentId ?? attachment.document_id,
-      // 用途由服务端判断，界面不再声明；调用方显式指定时才带上
-      ...(attachment.role ? { role: attachment.role } : {}),
-    }));
+    body.attachments = payload.attachments.map((attachment) => {
+      // 直传附件携带提取后的文本；知识库附件仍按 document_id 引用。
+      if (attachment.content) {
+        return { filename: attachment.filename, content: attachment.content };
+      }
+      return {
+        document_id: attachment.documentId ?? attachment.document_id,
+        // 用途由服务端判断，界面不再声明；调用方显式指定时才带上
+        ...(attachment.role ? { role: attachment.role } : {}),
+      };
+    });
   }
   return body;
 }

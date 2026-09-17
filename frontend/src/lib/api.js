@@ -585,6 +585,18 @@ export function uploadDocument(datasetId, file, { signal, folderId } = {}) {
   );
 }
 
+export function uploadAgentAttachment(file, { signal } = {}) {
+  const isFile = typeof File !== "undefined" && file instanceof File;
+  const isBlob = typeof Blob !== "undefined" && file instanceof Blob;
+  if (!isFile && !isBlob) {
+    throw new TypeError("file 必须是 File 或 Blob");
+  }
+  const form = new FormData();
+  form.append("file", file, file.name || "attachment");
+  // 后端就地提取文本；超过阈值返回 413（detail.message 即"文件过大，请先导入知识库"）。
+  return apiRequest("/api/v1/agent/attachments", { method: "POST", body: form, signal });
+}
+
 export function listAgentConversations({ signal, limit = 50 } = {}) {
   return apiRequest(appendQuery("/api/v1/agent/conversations", { limit }), { signal });
 }
