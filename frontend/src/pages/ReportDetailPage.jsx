@@ -7,8 +7,9 @@ import {
   Loader2,
   RefreshCw,
   ShieldAlert,
+  Trash2,
 } from "lucide-react";
-import { Link, useParams } from "react-router-dom";
+import { Link, useNavigate, useParams } from "react-router-dom";
 
 import { ReportArtifactButtons } from "../components/ReportArtifactButtons";
 import { ReportIrView } from "../components/ReportIrView";
@@ -16,6 +17,7 @@ import { ReportQuestionsForm } from "../components/ReportQuestionsForm";
 import {
   answerReportQuestions,
   cancelReportRun,
+  deleteReportRun,
   getGeneratedReport,
   getReportRun,
   listReportQuestions,
@@ -42,6 +44,7 @@ import {
  */
 export function ReportDetailPage() {
   const { runId } = useParams();
+  const navigate = useNavigate();
   const [run, setRun] = useState(null);
   const [detail, setDetail] = useState(null);
   const [templates, setTemplates] = useState([]);
@@ -50,6 +53,8 @@ export function ReportDetailPage() {
   const [error, setError] = useState("");
   const [actionError, setActionError] = useState("");
   const [busy, setBusy] = useState(false);
+  const [confirmingDelete, setConfirmingDelete] = useState(false);
+  const [deleting, setDeleting] = useState(false);
 
   const load = useCallback(async ({ signal } = {}) => {
     setError("");
@@ -139,6 +144,21 @@ export function ReportDetailPage() {
     }
   }
 
+  async function handleDelete() {
+    setDeleting(true);
+    setActionError("");
+    try {
+      await deleteReportRun(runId);
+      // 报告已不存在，留在这一页没有意义
+      navigate("/reports", { replace: true });
+    } catch (requestError) {
+      setActionError(requestError instanceof Error ? requestError.message : "删除报告失败");
+      setConfirmingDelete(false);
+    } finally {
+      setDeleting(false);
+    }
+  }
+
   async function handleCancel() {
     setBusy(true);
     setActionError("");
@@ -202,6 +222,25 @@ export function ReportDetailPage() {
               emptyHint="该任务创建时未选择可下载格式，可在来源文档页重新生成。"
             />
           ) : null}
+          {confirmingDelete ? (
+            <div className="report-run-actions__confirm" role="group" aria-label="确认删除报告">
+              <button type="button" className="button is-danger" onClick={() => { void handleDelete(); }} disabled={deleting}>
+                {deleting ? <Loader2 className="spin" size={15} /> : "删除"}
+              </button>
+              <button type="button" className="button" onClick={() => setConfirmingDelete(false)} disabled={deleting}>取消</button>
+            </div>
+          ) : (
+            <button
+              type="button"
+              className="button button--secondary report-detail__delete"
+              aria-label="删除报告"
+              title={isActiveReportRun(run.state) ? "任务进行中，请先取消再删除" : "删除报告"}
+              onClick={() => { setActionError(""); setConfirmingDelete(true); }}
+              disabled={isActiveReportRun(run.state)}
+            >
+              <Trash2 size={15} />
+            </button>
+          )}
           {run.state === "FAILED" ? (
             <button type="button" className="button button--primary" onClick={() => { void handleRetry(); }} disabled={busy}>
               {busy ? <Loader2 className="spin" size={15} /> : <RefreshCw size={15} />}重试生成

@@ -481,6 +481,11 @@
 .report-limitations h3 { margin: 0; color: var(--muted-soft); font-size: 11px; font-weight: 650; }
 .report-limitations ul { margin: 0; padding-left: 18px; color: var(--muted); font-size: 11px; line-height: 1.7; }
 
+/* 页头的删除：图标按钮，悬停才出现危险色 */
+.report-detail__delete { width: 40px; padding-inline: 0; color: var(--muted); }
+.report-detail__delete:hover:not(:disabled) { border-color: color-mix(in srgb, var(--danger) 34%, var(--hairline)); background: var(--danger-soft); color: var(--danger); }
+.report-detail__delete:disabled { opacity: .45; cursor: not-allowed; }
+
 .report-gap-list { display: grid; gap: 8px; margin: 0; padding: 0; list-style: none; }
 .report-gap-list li { display: flex; align-items: baseline; flex-wrap: wrap; gap: 9px; padding: 9px 11px; border: 1px solid var(--hairline); border-radius: 9px; background: var(--surface-soft); }
 .report-gap-list strong { color: var(--ink); font-size: 12px; }
@@ -494,7 +499,7 @@
 .report-artifacts__hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
 
 /* 报告正文：块渲染（语义对齐后端 _render_block） */
-.report-document { max-width: 920px; margin: 0 auto; color: var(--ink); }
+.report-document { max-width: var(--reading-column); margin: 0 auto; color: var(--ink); }
 .report-section + .report-section { margin-top: 34px; }
 .report-section > h2 { margin: 0 0 14px; padding-bottom: 8px; border-bottom: 1px solid var(--hairline); color: var(--ink); font-size: 19px; font-weight: 650; }
 .report-block { margin: 0 0 12px; color: var(--body); font-size: 13px; line-height: 1.85; }
@@ -687,11 +692,12 @@
   background: var(--panel);
 }
 
-/* 对话页统一列宽：空状态、消息列与输入框共用一条，发送首条消息时布局不再横向跳动。 */
-:root { --conversation-column: 760px; }
+/* 全文统一的阅读列宽：对话页（空状态/消息列/输入框）与报告正文共用一条，
+   避免不同页面各行其是造成的阅读跳动。 */
+:root { --reading-column: 760px; }
 
 .conversation-empty {
-  width: min(var(--conversation-column), calc(100% - 40px));
+  width: min(var(--reading-column), calc(100% - 40px));
   min-height: 0;
   flex: 1;
   display: flex;
@@ -826,7 +832,7 @@
 .chat-suggestions button:hover { border-color: var(--primary-mid); background: var(--primary-soft); color: var(--primary-active); }
 
 .conversation-thread { min-height: 0; flex: 1; overflow-y: auto; }
-.message-column { width: min(var(--conversation-column), calc(100% - 48px)); min-height: calc(100% - 150px); display: flex; flex-direction: column; gap: 30px; margin: 0 auto; padding: 38px 0 28px; }
+.message-column { width: min(var(--reading-column), calc(100% - 48px)); min-height: calc(100% - 150px); display: flex; flex-direction: column; gap: 30px; margin: 0 auto; padding: 38px 0 28px; }
 .chat-message { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: flex-start; gap: 13px; }
 .chat-message__avatar { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; background: var(--surface-soft); color: var(--muted); font-size: 11px; font-weight: 700; }
 .chat-message--assistant .chat-message__avatar { background: var(--primary-soft); color: var(--primary); }
@@ -894,7 +900,7 @@
 .chat-message__actions button { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 10px; }
 .chat-message__actions button:hover { color: var(--primary); }
 .chat-message__actions > span { margin-left: auto; color: var(--muted-soft); font: 500 8px/1 var(--font-mono); }
-.conversation-composer-dock { position: sticky; bottom: 0; z-index: 20; width: min(var(--conversation-column), calc(100% - 40px)); margin: 0 auto; padding: 14px 0 22px; background: var(--panel); }
+.conversation-composer-dock { position: sticky; bottom: 0; z-index: 20; width: min(var(--reading-column), calc(100% - 40px)); margin: 0 auto; padding: 14px 0 22px; background: var(--panel); }
 
 .source-drawer-layer { position: fixed; inset: 0; z-index: 120; display: flex; justify-content: flex-end; }
 .source-drawer-scrim { position: absolute; inset: 0; width: 100%; border: 0; background: rgba(36, 54, 50, .24); }
