@@ -218,14 +218,12 @@ export function ReportsPage() {
                       <td>{formatReportTime(run.created_at)}</td>
                       <td>
                         <div className="report-run-actions">
-                          <Link className="button button--tiny button--primary" to={reportRunPath(run.run_id)}>
-                            查看报告
-                          </Link>
                           {pendingDeleteId === run.run_id ? (
+                            /* 确认时整组替换：三个按钮并排既挤、又会把这一列撑宽影响所有行 */
                             <div className="report-run-actions__confirm" role="group" aria-label="确认删除报告">
                               <button
                                 type="button"
-                                className="button button--tiny is-danger"
+                                className="button is-danger"
                                 onClick={() => { void handleDelete(run.run_id); }}
                                 disabled={deletingId === run.run_id}
                               >
@@ -233,7 +231,7 @@ export function ReportsPage() {
                               </button>
                               <button
                                 type="button"
-                                className="button button--tiny"
+                                className="button"
                                 onClick={() => setPendingDeleteId(null)}
                                 disabled={Boolean(deletingId)}
                               >
@@ -241,16 +239,21 @@ export function ReportsPage() {
                               </button>
                             </div>
                           ) : (
-                            <button
-                              type="button"
-                              className="button button--tiny report-run-delete"
-                              aria-label={`删除报告：${reportTypeName(run)}`}
-                              title={isActiveReportRun(run.state) ? "任务进行中，请先取消再删除" : "删除报告"}
-                              onClick={() => { setError(""); setPendingDeleteId(run.run_id); }}
-                              disabled={isActiveReportRun(run.state)}
-                            >
-                              <Trash2 size={13} />
-                            </button>
+                            <>
+                              <Link className="button button--tiny button--primary" to={reportRunPath(run.run_id)}>
+                                查看报告
+                              </Link>
+                              <button
+                                type="button"
+                                className="button button--tiny report-run-delete"
+                                aria-label={`删除报告：${reportTypeName(run)}`}
+                                title={isActiveReportRun(run.state) ? "任务进行中，请先取消再删除" : "删除报告"}
+                                onClick={() => { setError(""); setPendingDeleteId(run.run_id); }}
+                                disabled={isActiveReportRun(run.state)}
+                              >
+                                <Trash2 size={14} />
+                              </button>
+                            </>
                           )}
                         </div>
                       </td>

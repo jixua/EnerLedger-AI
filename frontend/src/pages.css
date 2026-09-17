@@ -312,8 +312,13 @@
 /* 报告中心列表：只做索引，产物下载统一在详情页 */
 .report-index-table { min-width: 1040px; }
 .report-index-table th:last-child, .report-index-table td:last-child { width: 1%; text-align: right; }
-.report-index-table td:last-child .report-run-actions { justify-content: flex-end; margin-top: 0; }
+.report-index-table td:last-child .report-run-actions { flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 0; }
 .report-index-table td:last-child .button { min-height: 32px; white-space: nowrap; }
+/* 删除是行级次要操作，用无边框图标而不是第二个按钮：与「查看报告」并列时不该同级，
+   也不该被 flex-wrap 挤到下一行。悬停才出现危险色。 */
+.report-index-table td:last-child .report-run-delete { width: 30px; min-width: 30px; height: 30px; min-height: 30px; padding: 0; border: 0; background: transparent; color: var(--muted-soft); }
+.report-index-table td:last-child .report-run-delete:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
+.report-index-table td:last-child .report-run-delete:disabled { opacity: .4; cursor: not-allowed; }
 .report-title-cell { min-width: 260px; }
 /* 报告中心列表：标题该是这一列的主角。此前它是 10px，反而比旁边 36px 的图标块还小。 */
 .report-index-table .table-primary-cell > span:last-child { gap: 3px; }
@@ -324,10 +329,8 @@
 .report-reference-link:hover { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
 
 /* 删除报告：两步确认，与对话列表同一套做法 */
-.report-run-delete { min-width: 32px; padding-inline: 0; color: var(--muted); }
-.report-run-delete:hover:not(:disabled) { border-color: color-mix(in srgb, var(--danger) 34%, var(--hairline)); background: var(--danger-soft); color: var(--danger); }
-.report-run-delete:disabled { opacity: .45; cursor: not-allowed; }
-.report-run-actions__confirm { display: inline-flex; gap: 6px; }
+.report-run-actions__confirm { display: inline-flex; align-items: center; gap: 6px; }
+.report-run-actions__confirm .button { min-height: 32px; padding-inline: 12px; font-size: 11px; }
 .report-run-actions__confirm .is-danger { border-color: transparent; background: var(--danger); color: #fff; }
 .report-run-actions__confirm .is-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 82%, black); }
 .pending-action-group small, .task-row-actions small { color: var(--muted-soft); font-size: 7px; }
