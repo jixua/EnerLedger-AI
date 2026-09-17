@@ -106,6 +106,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0009_structured_assets.py",
         "0010_structured_report_merge.py",
         "0011_agent_conversations.py",
+        "0012_report_ir_draft.py",
     ]
 
     root_revision = runpy.run_path(str(version_files[0]))
@@ -122,6 +123,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     structured_assets_revision = runpy.run_path(str(version_files[11]))
     merge_revision = runpy.run_path(str(version_files[12]))
     conversation_revision = runpy.run_path(str(version_files[13]))
+    draft_revision = runpy.run_path(str(version_files[14]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
@@ -159,6 +161,8 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     )
     assert conversation_revision["revision"] == "0011_agent_conversations"
     assert conversation_revision["down_revision"] == "0010_structured_report_merge"
+    assert draft_revision["revision"] == "0012_report_ir_draft"
+    assert draft_revision["down_revision"] == "0011_agent_conversations"
 
 
 def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
