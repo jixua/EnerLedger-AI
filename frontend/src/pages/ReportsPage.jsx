@@ -1,16 +1,16 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
-  FileText,
   Loader2,
   Plus,
   RefreshCw,
   Search,
   Sparkles,
+  Trash2,
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import { listReportRuns } from "../lib/api";
+import { deleteReportRun, listReportRuns } from "../lib/api";
 import { useApp } from "../state/AppContext";
 import {
   formatReportTime,
@@ -50,6 +50,8 @@ export function ReportsPage() {
   const [error, setError] = useState("");
   const [keyword, setKeyword] = useState("");
   const [filter, setFilter] = useState("ALL");
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
 
   const load = useCallback(async ({ signal, refresh = false } = {}) => {
     if (refresh) setRefreshing(true);
@@ -76,6 +78,20 @@ export function ReportsPage() {
     void load({ signal: controller.signal });
     return () => controller.abort();
   }, [load]);
+
+  async function handleDelete(runId) {
+    setDeletingId(runId);
+    setError("");
+    try {
+      await deleteReportRun(runId);
+      setPendingDeleteId(null);
+      await load({ refresh: true });
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "删除报告失败");
+    } finally {
+      setDeletingId(null);
+    }
+  }
 
   const visibleRuns = useMemo(() => {
     const normalized = keyword.trim().toLowerCase();
@@ -189,7 +205,7 @@ export function ReportsPage() {
                       <td>
                         {sourcePath ? (
                           <Link className="report-reference-link" to={sourcePath}>
-                            <FileText size={14} /><span>{run.document_filename || `文档 #${run.document_id}`}</span>
+                            <span>{run.document_filename || `文档 #${run.document_id}`}</span>
                           </Link>
                         ) : <span className="muted-copy">—</span>}
                       </td>
@@ -205,6 +221,37 @@ export function ReportsPage() {
                           <Link className="button button--tiny button--primary" to={reportRunPath(run.run_id)}>
                             查看报告
                           </Link>
+                          {pendingDeleteId === run.run_id ? (
+                            <div className="report-run-actions__confirm" role="group" aria-label="确认删除报告">
+                              <button
+                                type="button"
+                                className="button button--tiny is-danger"
+                                onClick={() => { void handleDelete(run.run_id); }}
+                                disabled={deletingId === run.run_id}
+                              >
+                                {deletingId === run.run_id ? <Loader2 className="spin" size={13} /> : "删除"}
+                              </button>
+                              <button
+                                type="button"
+                                className="button button--tiny"
+                                onClick={() => setPendingDeleteId(null)}
+                                disabled={Boolean(deletingId)}
+                              >
+                                取消
+                              </button>
+                            </div>
+                          ) : (
+                            <button
+                              type="button"
+                              className="button button--tiny report-run-delete"
+                              aria-label={`删除报告：${reportTypeName(run)}`}
+                              title={isActiveReportRun(run.state) ? "任务进行中，请先取消再删除" : "删除报告"}
+                              onClick={() => { setError(""); setPendingDeleteId(run.run_id); }}
+                              disabled={isActiveReportRun(run.state)}
+                            >
+                              <Trash2 size={13} />
+                            </button>
+                          )}
                         </div>
                       </td>
                     </tr>

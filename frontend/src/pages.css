@@ -319,11 +319,17 @@
 .report-index-table .table-primary-cell > span:last-child { gap: 3px; }
 .report-index-table .table-primary-cell a { color: var(--ink); font-size: 14px; font-weight: 600; }
 .report-index-table .table-primary-cell small { font-size: 10px; }
-.report-reference-link { min-width: 0; max-width: 250px; display: inline-flex; align-items: center; gap: 7px; color: var(--body); text-decoration: none; }
-.report-reference-link > svg { flex: 0 0 auto; color: var(--muted-soft); }
+.report-reference-link { min-width: 0; max-width: 280px; display: inline-flex; align-items: center; gap: 7px; color: var(--body); font-size: 12px; text-decoration: none; }
 .report-reference-link > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .report-reference-link:hover { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
-.report-reference-link:hover > svg { color: var(--primary); }
+
+/* 删除报告：两步确认，与对话列表同一套做法 */
+.report-run-delete { min-width: 32px; padding-inline: 0; color: var(--muted); }
+.report-run-delete:hover:not(:disabled) { border-color: color-mix(in srgb, var(--danger) 34%, var(--hairline)); background: var(--danger-soft); color: var(--danger); }
+.report-run-delete:disabled { opacity: .45; cursor: not-allowed; }
+.report-run-actions__confirm { display: inline-flex; gap: 6px; }
+.report-run-actions__confirm .is-danger { border-color: transparent; background: var(--danger); color: #fff; }
+.report-run-actions__confirm .is-danger:hover:not(:disabled) { background: color-mix(in srgb, var(--danger) 82%, black); }
 .pending-action-group small, .task-row-actions small { color: var(--muted-soft); font-size: 7px; }
 .recall-lab { display: grid; grid-template-columns: minmax(300px, 0.7fr) minmax(420px, 1.3fr); gap: 16px; }
 .recall-form { display: flex; flex-direction: column; gap: 12px; }

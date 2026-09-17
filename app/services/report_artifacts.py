@@ -292,6 +292,39 @@ def artifact_download_name(*, run: ReportRun, document_filename: str | None, art
     return f"{stem}-{run.report_type}报告.{_EXTENSIONS[artifact_type]}"
 
 
+async def purge_report_artifacts(
+    db: AsyncSession,
+    *,
+    run_id: str,
+    storage: BaseObjectStorage | None = None,
+) -> int:
+    """删除某个 run 的全部产物：尽力清对象，再删登记行。
+
+    对象删除失败只记警告、不中断。产物是可再生的导出件，报告真值在
+    ``report_run.report_ir``；这里若因为某个对象已不存在就让整个删除失败，
+    用户反而清不掉一条报告。
+    """
+
+    object_storage = storage or StorageFactory.get_storage()
+    existing = (
+        await db.scalars(select(ReportArtifact).where(ReportArtifact.run_id == run_id))
+    ).all()
+    for artifact in existing:
+        try:
+            await asyncio.to_thread(
+                object_storage.remove_object, artifact.bucket, artifact.object_key
+            )
+        except Exception as exc:  # 对象可能已不存在，不影响删除
+            logger.bind(
+                event="report_artifact_object_remove_failed",
+                run_id=run_id,
+                artifact_type=artifact.artifact_type,
+                error=str(exc)[:200],
+            ).warning("清理报告产物失败")
+        await db.delete(artifact)
+    return len(existing)
+
+
 async def persist_report_artifacts(
     db: AsyncSession,
     *,
@@ -314,20 +347,7 @@ async def persist_report_artifacts(
     if "DOCX" in requested:
         payloads.append(("DOCX", build_report_docx(run=run, template=template, markdown=markdown)))
 
-    existing = (
-        await db.scalars(select(ReportArtifact).where(ReportArtifact.run_id == str(run.id)))
-    ).all()
-    for artifact in existing:
-        try:
-            object_storage.remove_object(artifact.bucket, artifact.object_key)
-        except Exception as exc:  # 对象可能已不存在，不影响重写
-            logger.bind(
-                event="report_artifact_object_remove_failed",
-                run_id=str(run.id),
-                artifact_type=artifact.artifact_type,
-                error=str(exc)[:200],
-            ).warning("清理旧报告产物失败")
-        await db.delete(artifact)
+    await purge_report_artifacts(db, run_id=str(run.id), storage=object_storage)
 
     created: list[ReportArtifact] = []
     for artifact_type, data in payloads:

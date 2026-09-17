@@ -403,6 +403,13 @@ export function retryReportRun(runId, { signal } = {}) {
   });
 }
 
+export function deleteReportRun(runId, { signal } = {}) {
+  return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}`, {
+    method: "DELETE",
+    signal,
+  });
+}
+
 export function listReportQuestions(runId, { signal } = {}) {
   return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}/questions`, { signal });
 }

@@ -12,11 +12,18 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
-from app.domain.models import Document, ReportArtifact, ReportQuestion, ReportRun
+from app.domain.models import (
+    AgentConversationTurn,
+    Document,
+    ReportArtifact,
+    ReportQuestion,
+    ReportRun,
+)
 from app.domain.time import as_utc, utc_now
 from app.rag.config import settings
 from app.rag.database import get_db
@@ -31,6 +38,7 @@ from app.services.report_budget import (
 from app.services.report_artifacts import (
     ReportArtifactError,
     artifact_download_name,
+    purge_report_artifacts,
     read_report_artifact,
 )
 from app.services.report_dispatch import ReportRunDispatcher, mark_report_dispatch_pending
@@ -530,6 +538,37 @@ async def cancel_report_run(
     await db.commit()
     await db.refresh(run)
     return _run_dict(run)
+
+
+@router.delete("/report-runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_report_run(
+    run_id: str,
+    user_id: Annotated[int, Depends(get_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """删除一个报告任务，连同其产物、澄清问题与对话里的软引用。
+
+    进行中的任务不能直接删：worker 仍持有租约并会回写该行，请先取消。
+    """
+
+    run = await _owned_run(db, run_id=run_id, user_id=user_id)
+    if run.state in {"PENDING", "PROCESSING"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "REPORT_RUN_ACTIVE", "message": "任务正在进行，请先取消再删除"},
+        )
+
+    await purge_report_artifacts(db, run_id=run_id)
+    await db.execute(sa_delete(ReportQuestion).where(ReportQuestion.run_id == run_id))
+    # 对话回合只持有 report_run_id 这个软引用。不清掉的话，聊天里会留下一张
+    # 指向已删报告的空卡片，点开只会报错。
+    await db.execute(
+        update(AgentConversationTurn)
+        .where(AgentConversationTurn.report_run_id == run_id)
+        .values(report_run_id=None)
+    )
+    await db.execute(sa_delete(ReportRun).where(ReportRun.id == run_id))
+    await db.commit()
 
 
 @router.post("/report-runs/{run_id}/retry", status_code=status.HTTP_202_ACCEPTED)

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 from docx import Document as WordDocument
@@ -18,7 +19,7 @@ os.environ.setdefault("ADMIN_PASSWORD_HASH", "scrypt:test-only")
 
 import app.api.reports as reports_api
 from app.api.report_agent_internal import _chunk_page, get_run_clarifications
-from app.api.reports import ReportCreateRequest, create_report
+from app.api.reports import ReportCreateRequest, create_report, delete_report_run
 from app.domain.models import Document, ReportQuestion, ReportRun
 from app.rag.config import settings
 from app.rag.core.mq.messages import ReportGenerationMessage
@@ -841,3 +842,83 @@ async def test_persist_report_artifacts_writes_only_requested_formats() -> None:
     assert all(item[1].startswith(f"reports/11/3/7/{run.id}/report-") for item in storage.uploaded)
     assert len(session.added) == 2 and session.commits == 1
     assert all(artifact.content_hash and artifact.size_bytes > 0 for artifact in created)
+
+
+class _DeleteRunSession:
+    """删除报告任务用的最小会话替身：记录写操作，不连库。"""
+
+    def __init__(self, run: Any, artifacts: list[Any] | None = None) -> None:
+        self._run = run
+        self._artifacts = list(artifacts or [])
+        self.executed: list[Any] = []
+        self.deleted: list[Any] = []
+        self.commits = 0
+
+    async def scalar(self, _statement):
+        return self._run
+
+    async def scalars(self, _statement):
+        values = list(self._artifacts)
+
+        class Rows:
+            def all(self):
+                return values
+
+        return Rows()
+
+    async def execute(self, statement):
+        self.executed.append(statement)
+
+    async def delete(self, value):
+        self.deleted.append(value)
+
+    async def commit(self):
+        self.commits += 1
+
+
+@pytest.mark.asyncio
+async def test_delete_report_run_purges_artifacts_and_clears_soft_references(monkeypatch) -> None:
+    run, _template, _ir = _fixture_report_ir()
+    run.state = "SUCCEEDED"
+    artifact = SimpleNamespace(
+        bucket="private", object_key="reports/11/3/7/run-1/report-abc.docx", artifact_type="DOCX"
+    )
+    session = _DeleteRunSession(run, [artifact])
+    storage = _ArtifactStorage()
+    monkeypatch.setattr(
+        "app.services.report_artifacts.StorageFactory.get_storage", staticmethod(lambda: storage)
+    )
+
+    await delete_report_run(run.id, user_id=11, db=session)
+
+    # 产物对象与登记行一并清掉
+    assert storage.removed == [("private", "reports/11/3/7/run-1/report-abc.docx")]
+    assert session.deleted == [artifact]
+    # 澄清问题 → 对话里的软引用 → 任务本体；顺序即依赖顺序
+    assert [statement.table.name for statement in session.executed] == [
+        "report_question",
+        "agent_conversation_turn",
+        "report_run",
+    ]
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_report_run_refuses_run_still_in_progress(monkeypatch) -> None:
+    """进行中的任务不能删：worker 仍持有租约并会回写该行。"""
+
+    run, _template, _ir = _fixture_report_ir()
+    run.state = "PROCESSING"
+    session = _DeleteRunSession(run)
+    storage = _ArtifactStorage()
+    monkeypatch.setattr(
+        "app.services.report_artifacts.StorageFactory.get_storage", staticmethod(lambda: storage)
+    )
+
+    with pytest.raises(HTTPException) as failure:
+        await delete_report_run(run.id, user_id=11, db=session)
+
+    assert failure.value.status_code == 409
+    assert session.executed == []
+    assert session.commits == 0
+    assert storage.removed == []
