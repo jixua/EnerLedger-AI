@@ -580,8 +580,9 @@ export function PlaygroundPage() {
     };
     setOpenSelector(null);
     setMessages((current) => [...current, userMessage, assistantMessage]);
+    // 附件随本轮一起发出，发送后即清空，不残留到下一轮。
     setQuestion("");
-    // 附件保留在输入区，追问时继续带上同一份文件；由用户显式移除。
+    setAttachments([]);
     activeAssistantRef.current = assistantId;
     const controller = new AbortController();
     abortRef.current = controller;
@@ -648,7 +649,6 @@ export function PlaygroundPage() {
     <form className="chat-composer" onSubmit={submitQuestion}>
       <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={handleFileSelection} />
       {attachments.length ? (
-        <>
         <div className="composer-attachments" aria-label="对话附件">
           {attachments.map((attachment) => (
             <span className="composer-attachment is-ready" key={attachment.id}>
@@ -661,8 +661,6 @@ export function PlaygroundPage() {
             </span>
           ))}
         </div>
-        <p className="composer-attachments-hint">已读取文件内容，将直接交给模型分析。</p>
-        </>
       ) : null}
       <textarea
         value={question}
