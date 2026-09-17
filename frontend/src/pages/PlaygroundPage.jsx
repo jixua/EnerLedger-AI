@@ -450,7 +450,7 @@ export function PlaygroundPage() {
       throw new Error("上传对话资料前，请只选择一个知识库。");
     }
     if (role === "SOURCE" && attachments.some((item) => item.role === "SOURCE")) {
-      throw new Error("每轮只能添加一个源文件，请先移除现有源文件。");
+      throw new Error("每轮只能添加一份来源文档，请先移除现有材料。");
     }
     setUploadingRole(role);
     try {
@@ -671,7 +671,7 @@ export function PlaygroundPage() {
             return (
               <span className={`composer-attachment${ready ? " is-ready" : failed ? " is-failed" : " is-pending"}`} key={`${attachment.role}-${attachment.documentId}`}>
                 <FileText size={14} />
-                <span><strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong><small>源文件 · {ready ? "可用" : failed ? "解析失败" : "解析中"}</small></span>
+                <span><strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong><small>来源文档 · {ready ? "可用" : failed ? "解析失败" : "解析中"}</small></span>
                 <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => !(item.role === attachment.role && item.documentId === attachment.documentId)))}><X size={13} /></button>
               </span>
             );
@@ -925,7 +925,7 @@ export function PlaygroundPage() {
               <article className="chat-message chat-message--user" key={message.id}>
                 <div className="chat-message__avatar">U</div>
                 <div className="chat-message__body">
-                  {message.attachments?.length ? <div className="chat-message__attachments">{message.attachments.map((attachment) => <span key={`${attachment.role}-${attachment.document_id ?? attachment.documentId}`}><FileText size={13} />{attachment.filename || `文档 #${attachment.document_id ?? attachment.documentId}`}<small>{attachment.role === "TEMPLATE" ? "模板" : "源文件"}</small></span>)}</div> : null}
+                  {message.attachments?.length ? <div className="chat-message__attachments">{message.attachments.map((attachment) => <span key={`${attachment.role}-${attachment.document_id ?? attachment.documentId}`}><FileText size={13} />{attachment.filename || `文档 #${attachment.document_id ?? attachment.documentId}`}<small>{attachment.role === "TEMPLATE" ? "模板" : "来源文档"}</small></span>)}</div> : null}
                   <p>{message.content}</p>
                   {message.content ? (
                     <footer className="chat-message__actions">

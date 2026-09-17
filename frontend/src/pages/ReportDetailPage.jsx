@@ -193,13 +193,13 @@ export function ReportDetailPage() {
         </div>
         <div className="document-detail-header__actions">
           {/* 返回箭头已经回报告中心，这里不再放一个同目标的按钮 */}
-          {sourcePath ? <Link className="button button--secondary" to={sourcePath}><FileText size={15} />源文档</Link> : null}
+          {sourcePath ? <Link className="button button--secondary" to={sourcePath}><FileText size={15} />来源文档</Link> : null}
           {run.state === "SUCCEEDED" ? (
             <ReportArtifactButtons
               runId={run.run_id}
               artifacts={artifacts}
               variant="menu"
-              emptyHint="该任务创建时未选择可下载格式，可在源文档页重新生成。"
+              emptyHint="该任务创建时未选择可下载格式，可在来源文档页重新生成。"
             />
           ) : null}
           {run.state === "FAILED" ? (
@@ -256,13 +256,13 @@ export function ReportDetailPage() {
         <section className="panel report-detail__pending">
           <AlertCircle size={20} />
           <div>
-            <h2>{run.state === "CANCELLED" ? "任务已取消" : "源文档已更新"}</h2>
+            <h2>{run.state === "CANCELLED" ? "任务已取消" : "来源文档已更新"}</h2>
             <p>
               {run.state === "CANCELLED"
-                ? "该任务已停止，不会继续生成。可以在源文档页重新发起。"
-                : "报告冻结的文档版本已变化，本次结果不再适用。请到源文档页重新创建报告。"}
+                ? "该任务已停止，不会继续生成。可以在来源文档页重新发起。"
+                : "报告冻结的文档版本已变化，本次结果不再适用。请到来源文档页重新创建报告。"}
             </p>
-            {sourcePath ? <Link className="button button--secondary" to={sourcePath}>前往源文档</Link> : null}
+            {sourcePath ? <Link className="button button--secondary" to={sourcePath}>前往来源文档</Link> : null}
           </div>
         </section>
       ) : null}
@@ -344,7 +344,7 @@ export function ReportDetailPage() {
           <AlertCircle size={20} />
           <div>
             <h2>报告未能生成</h2>
-            <p>{run.error_code ? `原因代码：${run.error_code}。` : ""}可以直接重试；若源文档或材料有更新，请改为重新创建报告。</p>
+            <p>{run.error_code ? `原因代码：${run.error_code}。` : ""}可以直接重试；若来源文档或材料有更新，请改为重新创建报告。</p>
           </div>
         </section>
       ) : null}

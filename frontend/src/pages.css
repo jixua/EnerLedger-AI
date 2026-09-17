@@ -141,7 +141,8 @@
   font: 650 9px/1 var(--font-mono);
 }
 .text-link, .text-button { color: var(--primary); text-decoration: none; font-size: 10px; font-weight: 600; }
-.text-link:hover { text-decoration: underline; }
+/* 原先靠下划线提示可点，去掉后改用变深，悬停仍有反馈 */
+.text-link:hover { color: var(--primary-active); }
 .text-button { display: inline-flex; align-items: center; gap: 6px; border: 0; background: transparent; }
 .spin { animation: spin 900ms linear infinite; }
 @keyframes spin { to { transform: rotate(360deg); } }
@@ -333,7 +334,9 @@
 .report-index-table .table-primary-cell small { font-size: 10px; }
 .report-reference-link { min-width: 0; max-width: 280px; display: inline-flex; align-items: center; gap: 7px; color: var(--body); font-size: 12px; text-decoration: none; }
 .report-reference-link > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.report-reference-link:hover { color: var(--primary); text-decoration: underline; text-underline-offset: 3px; }
+/* 文档类链接悬停只换色、不加下划线：下划线会让表格与列表在悬停时抖动，
+   而位置本身就是链接的线索。 */
+.report-reference-link:hover { color: var(--primary); }
 
 /* 删除报告：两步确认，与对话列表同一套做法 */
 .report-run-actions__confirm { display: inline-flex; align-items: center; gap: 6px; }
@@ -1602,8 +1605,8 @@
 .document-reader-image-state--error { color: var(--danger); }
 .document-reader__empty { min-height: 360px; border: 0; border-radius: 0; box-shadow: none; }
 .document-reader__empty--error { min-height: 280px; }
-.document-name-link { overflow-wrap: anywhere; color: var(--ink); font-size: 12px; font-weight: 600; line-height: 1.45; text-decoration: none; text-underline-offset: 3px; }
-.document-name-link:hover { color: var(--action); text-decoration: underline; }
+.document-name-link { overflow-wrap: anywhere; color: var(--ink); font-size: 12px; font-weight: 600; line-height: 1.45; text-decoration: none; }
+.document-name-link:hover { color: var(--action); }
 .document-view-link { border-color: var(--hero-line); background: var(--surface); color: var(--action); text-decoration: none; }
 .document-view-link:hover { border-color: color-mix(in srgb, var(--action) 35%, var(--hairline)); background: color-mix(in srgb, var(--action) 7%, var(--surface)); }
 

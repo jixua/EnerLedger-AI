@@ -166,7 +166,7 @@ export function ReportsPage() {
             <input
               value={keyword}
               onChange={(event) => setKeyword(event.target.value)}
-              placeholder="搜索报告、源文件或状态"
+              placeholder="搜索报告、来源文档或状态"
             />
           </label>
         </div>
@@ -187,7 +187,7 @@ export function ReportsPage() {
           <div className="data-table-wrap">
             <table className="data-table report-index-table">
               <thead>
-                <tr><th>报告</th><th>源文件</th><th>状态</th><th>创建时间</th><th>操作</th></tr>
+                <tr><th>报告</th><th>来源文档</th><th>状态</th><th>创建时间</th><th>操作</th></tr>
               </thead>
               <tbody>
                 {visibleRuns.map((run) => {

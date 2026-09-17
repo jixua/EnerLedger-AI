@@ -119,7 +119,7 @@ export function ChatReportCard({ runId }) {
           <strong>{reportTypeName(run)}</strong>
           <small>{reportStateLabel(run.state)} · {formatReportTime(run.created_at)}</small>
         </div>
-        {sourcePath ? <Link className="chat-report-card__link" to={sourcePath}>查看源文档</Link> : null}
+        {sourcePath ? <Link className="chat-report-card__link" to={sourcePath}>查看来源文档</Link> : null}
       </div>
 
       {run.state === "SUCCEEDED" ? (

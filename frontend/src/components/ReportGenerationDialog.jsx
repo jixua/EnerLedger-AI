@@ -138,7 +138,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
           <div>
             <p className="eyebrow">文档报告</p>
             <h2 id="report-generation-title">生成报告</h2>
-            <p className="dialog__subtitle">源文件：{document?.filename || "当前文档"} · v{document?.version || 1}</p>
+            <p className="dialog__subtitle">来源文档：{document?.filename || "当前文档"} · v{document?.version || 1}</p>
           </div>
           <button type="button" className="icon-button" onClick={onClose} disabled={submitting} aria-label="关闭报告窗口"><X size={18} /></button>
         </header>

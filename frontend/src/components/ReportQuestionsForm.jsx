@@ -21,7 +21,7 @@ function normalizeAnswerValue(question, value) {
 
 /**
  * 报告补充问题的作答表单（生成报告对话框与对话页报告卡片共用）。
- * 答案会以 USER_INPUT 身份进入报告证据链，不会被当作源文档事实。
+ * 答案会以 USER_INPUT 身份进入报告证据链，不会被当作来源文档事实。
  */
 export function ReportQuestionsForm({ questions, submitting, error, submitLabel = "提交并继续生成", onSubmit }) {
   const [answers, setAnswers] = useState({});
@@ -56,7 +56,7 @@ export function ReportQuestionsForm({ questions, submitting, error, submitLabel 
     <form className="report-question-form" onSubmit={handleSubmit}>
       <div className="report-question-form__heading">
         <strong>需要补充 {questions.length} 项信息</strong>
-        <span>回答将标记为 USER_INPUT，不会改写为源文档事实。</span>
+        <span>回答将标记为 USER_INPUT，不会改写为来源文档事实。</span>
       </div>
       {questions.map((question) => (
         <label key={question.question_id} className="form-field">
