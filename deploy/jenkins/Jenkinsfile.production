@@ -20,22 +20,10 @@ node {
     }
     stage('Checkout master') {
       deleteDir()
-      checkout([
-        $class: 'GitSCM',
-        branches: [[name: 'refs/remotes/origin/master']],
-        userRemoteConfigs: [[
-          url: 'file:///var/jenkins_home/mirror/EnerLedger-AI.git',
-          refspec: '+refs/heads/master:refs/remotes/origin/master'
-        ]],
-        extensions: [[
-          $class: 'CloneOption',
-          depth: 100,
-          honorRefspec: true,
-          noTags: true,
-          shallow: true,
-          timeout: 60
-        ]]
-      ])
+      // 不用 Jenkins 的 checkout 步骤：它默认拒绝 file:// 本地检出（git 插件的
+      // ALLOW_LOCAL_CHECKOUT 默认关闭），除非给 JVM 加系统属性并重启 Jenkins。
+      // 后续阶段本来就用 git rev-parse / git diff 取版本，不依赖 checkout 的变更记录。
+      sh 'git clone --depth=100 --no-tags --single-branch --branch master file:///var/jenkins_home/mirror/EnerLedger-AI.git .'
       env.SOURCE_SHA = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
       env.SOURCE_SHORT = sh(returnStdout: true, script: 'git rev-parse --short=7 HEAD').trim()
     }

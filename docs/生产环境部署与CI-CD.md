@@ -137,7 +137,7 @@ Jenkins 生产构建使用 `/opt/tolink/jenkins-cache/enerledger-nltk/nltk-data-
 
 - 镜像位置 `/var/jenkins_home/mirror/EnerLedger-AI.git`（Jenkins 持久卷内，不受工作区 `deleteDir()` 影响），由 `git clone --bare --depth=100 --single-branch --branch master` 建立。
 - 每次构建先执行 `Refresh source mirror`：`git -C <镜像> fetch --depth=100 origin master`，只拉新增提交，`timeout 600` 兜底。**刷新失败即终止构建**，不会拿镜像里的旧代码去部署。
-- 随后 `Checkout master` 从 `file://` 克隆本地镜像，秒级完成。
+- 随后 `Checkout master` 从 `file://` 克隆本地镜像，秒级完成。这一步用 `sh` 里的 `git clone` 而不是 Jenkins 的 `checkout` 步骤——后者默认拒绝 `file://` 本地检出（git 插件的 `ALLOW_LOCAL_CHECKOUT` 默认关闭），除非给 JVM 加系统属性并重启 Jenkins。后续阶段只用 `git rev-parse` / `git diff` 取版本，不依赖 `checkout` 提供的变更记录。
 
 镜像丢了或损坏时，重新建一份即可（在构建机上）：
 
