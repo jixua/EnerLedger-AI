@@ -6,10 +6,12 @@ import os
 from collections import deque
 from copy import deepcopy
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from docx import Document as WordDocument
 from fastapi import HTTPException
 
 os.environ.setdefault("ADMIN_PASSWORD_HASH", "scrypt:test-only")
@@ -764,6 +766,14 @@ def test_report_docx_builds_valid_document() -> None:
     assert artifact_download_name(
         run=run, document_filename="清单材料.docx", artifact_type="DOCX"
     ) == "清单材料-R1报告.docx"
+
+    exported = WordDocument(BytesIO(payload))
+    text = "\n".join(paragraph.text for paragraph in exported.paragraphs)
+    assert "R1 报告" in text
+    section = exported.sections[0]
+    assert section.page_width.cm == pytest.approx(21, abs=0.01)
+    assert section.page_height.cm == pytest.approx(29.7, abs=0.01)
+    assert exported.styles["Heading 1"].font.size.pt == 15
 
 
 class _ArtifactStorage:

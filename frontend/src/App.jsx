@@ -7,7 +7,6 @@ import { AuthProvider, useAuth } from "./state/AuthContext";
 const DatasetsPage = lazy(() => import("./pages/DatasetsPage").then((module) => ({ default: module.DatasetsPage })));
 const DatasetDetailPage = lazy(() => import("./pages/DatasetDetailPage").then((module) => ({ default: module.DatasetDetailPage })));
 const DocumentDetailPage = lazy(() => import("./pages/DocumentDetailPage").then((module) => ({ default: module.DocumentDetailPage })));
-const DocumentAnalysisPage = lazy(() => import("./pages/DocumentAnalysisPage").then((module) => ({ default: module.DocumentAnalysisPage })));
 const AnalysisReportsPage = lazy(() => import("./pages/AnalysisReportsPage").then((module) => ({ default: module.AnalysisReportsPage })));
 const TasksPage = lazy(() => import("./pages/TasksPage").then((module) => ({ default: module.TasksPage })));
 const PlaygroundPage = lazy(() => import("./pages/PlaygroundPage").then((module) => ({ default: module.PlaygroundPage })));
@@ -44,7 +43,6 @@ export function App() {
             <Route path="datasets" element={<AdminRoute><Suspense fallback={<PageLoader />}><DatasetsPage /></Suspense></AdminRoute>} />
             <Route path="datasets/:datasetId" element={<AdminRoute><Suspense fallback={<PageLoader />}><DatasetDetailPage /></Suspense></AdminRoute>} />
             <Route path="datasets/:datasetId/documents/:documentId" element={<AdminRoute><Suspense fallback={<PageLoader />}><DocumentDetailPage /></Suspense></AdminRoute>} />
-            <Route path="datasets/:datasetId/documents/:documentId/analysis" element={<AdminRoute><Suspense fallback={<PageLoader />}><DocumentAnalysisPage /></Suspense></AdminRoute>} />
             <Route path="analysis-reports" element={<AdminRoute><Suspense fallback={<PageLoader />}><AnalysisReportsPage /></Suspense></AdminRoute>} />
             <Route path="tasks" element={<AdminRoute><Suspense fallback={<PageLoader />}><TasksPage /></Suspense></AdminRoute>} />
             <Route path="playground" element={<Navigate to="/" replace />} />

@@ -1,16 +1,12 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useRef, useState } from "react";
 import {
-  analyzeDocument as analyzeDocumentRequest,
   ApiError,
   createDataset as createDatasetRequest,
   createModelConfig,
   deleteDataset as deleteDatasetRequest,
   deleteDocument as deleteDocumentRequest,
   deleteModelConfig,
-  downloadDocumentAnalysisDocx as downloadDocumentAnalysisDocxRequest,
   getDocument as getDocumentRequest,
-  getDocumentAnalysis as getDocumentAnalysisRequest,
-  getDocumentAnalysisStatus as getDocumentAnalysisStatusRequest,
   getDocumentPreviewContent,
   getDocumentPreviewMap,
   getHealth,
@@ -32,7 +28,6 @@ import { useAuth } from "./AuthContext";
 import { streamAgent as streamAgentRequest } from "../lib/sse";
 import {
   PREVIEW_DATA_NOTICE,
-  getMockDocumentAnalysis,
   mockDatasets,
   getMockDocumentChunks,
   getMockDocumentPreview,
@@ -586,102 +581,6 @@ export function AppProvider({ children }) {
     }
   }, [isDemo]);
 
-  const analyzeDocument = useCallback(async (documentId, payload = {}, options = {}) => {
-    const id = Number(documentId);
-    try {
-      if (isDemo) {
-        await wait(520);
-        const preview = clone(getMockDocumentAnalysis(id));
-        if (!preview) throw new Error("未找到文档分析预览");
-        setLastError(null);
-        return {
-          run_id: `preview-${Date.now()}`,
-          document_id: id,
-          dataset_id: Number(preview.dataset_id || 0),
-          document_version: Number(preview.document_version || 1),
-          state: "RUNNING",
-          stage: "ANALYZING",
-          started_at: new Date().toISOString(),
-          finished_at: null,
-          error_code: null,
-          error_message: null,
-        };
-      }
-      const result = await analyzeDocumentRequest(id, payload, options);
-      setLastError(null);
-      return result;
-    } catch (error) {
-      if (options.signal?.aborted || error?.name === "AbortError") throw error;
-      setLastError(normalizeMessage(error));
-      throw error;
-    }
-  }, [isDemo]);
-
-  const loadDocumentAnalysis = useCallback(async (documentId, options = {}) => {
-    const id = Number(documentId);
-    try {
-      if (isDemo) {
-        await wait(120, options.signal);
-        return clone(getMockDocumentAnalysis(id));
-      }
-      const result = await getDocumentAnalysisRequest(id, options);
-      setLastError(null);
-      return result;
-    } catch (error) {
-      if (options.signal?.aborted || error?.name === "AbortError") throw error;
-      if (error instanceof ApiError && error.code === "DOCUMENT_ANALYSIS_NOT_FOUND") {
-        return null;
-      }
-      setLastError(normalizeMessage(error));
-      throw error;
-    }
-  }, [isDemo]);
-
-  const loadDocumentAnalysisStatus = useCallback(async (documentId, options = {}) => {
-    const id = Number(documentId);
-    try {
-      if (isDemo) {
-        await wait(80, options.signal);
-        const preview = getMockDocumentAnalysis(id);
-        return {
-          run_id: null,
-          document_id: id,
-          dataset_id: Number(preview?.dataset_id || 0),
-          document_version: Number(preview?.document_version || 1),
-          state: preview ? "SUCCEEDED" : "IDLE",
-          stage: preview ? "COMPLETED" : "IDLE",
-          started_at: null,
-          finished_at: preview?.generated_at || null,
-          error_code: null,
-          error_message: null,
-        };
-      }
-      const result = await getDocumentAnalysisStatusRequest(id, options);
-      setLastError(null);
-      return result;
-    } catch (error) {
-      if (options.signal?.aborted || error?.name === "AbortError") throw error;
-      setLastError(normalizeMessage(error));
-      throw error;
-    }
-  }, [isDemo]);
-
-  const downloadDocumentAnalysisDocx = useCallback(async (documentId, options = {}) => {
-    const id = Number(documentId);
-    try {
-      if (isDemo) {
-        throw new Error("预览模式不生成 Word 文件，请连接后端后下载");
-      }
-      const result = await downloadDocumentAnalysisDocxRequest(id, options);
-      setLastError(null);
-      return result;
-    } catch (error) {
-      if (options.signal?.aborted || error?.name === "AbortError") throw error;
-      setLastError(normalizeMessage(error));
-      throw error;
-    }
-  }, [isDemo]);
-
   const updateDocument = useCallback(async (datasetId, documentId, payload) => {
     const dsId = Number(datasetId);
     const id = Number(documentId);
@@ -823,17 +722,13 @@ export function AppProvider({ children }) {
     loadDocument,
     loadDocumentChunks,
     loadDocumentPreview,
-    loadDocumentAnalysis,
-    loadDocumentAnalysisStatus,
-    downloadDocumentAnalysisDocx,
-    analyzeDocument,
     uploadDocuments,
     updateDocument,
     retryDocument,
     reparseDocument,
     deleteDocument: removeDocument,
     recall,
-  }), [analyzeDocument, createDataset, downloadDocumentAnalysisDocx, loadAllDocuments, loadDocument, loadDocumentAnalysis, loadDocumentAnalysisStatus, loadDocumentChunks, loadDocumentPreview, loadDocuments, recall, removeDataset, removeDocument, reparseDocument, retryDocument, updateDataset, updateDocument, uploadDocuments]);
+  }), [createDataset, loadAllDocuments, loadDocument, loadDocumentChunks, loadDocumentPreview, loadDocuments, recall, removeDataset, removeDocument, reparseDocument, retryDocument, updateDataset, updateDocument, uploadDocuments]);
   const value = useMemo(() => ({
     datasets,
     models,
@@ -863,10 +758,6 @@ export function AppProvider({ children }) {
     loadDocument,
     loadDocumentChunks,
     loadDocumentPreview,
-    loadDocumentAnalysis,
-    loadDocumentAnalysisStatus,
-    downloadDocumentAnalysisDocx,
-    analyzeDocument,
     uploadDocuments,
     updateDocument,
     retryDocument,
@@ -875,7 +766,7 @@ export function AppProvider({ children }) {
     recall,
     streamAgent,
     actions,
-  }), [actions, allDocuments, analyzeDocument, apiReachable, connectionMode, createDataset, createModel, datasets, documents, downloadDocumentAnalysisDocx, health, healthLoading, isDemo, lastError, loadAllDocuments, loadDocument, loadDocumentAnalysis, loadDocumentAnalysisStatus, loadDocumentChunks, loadDocumentPreview, loadDocuments, loading, models, recall, refreshAll, refreshHealth, refreshing, removeDataset, removeDocument, removeModel, reparseDocument, retryDocument, streamAgent, updateDataset, updateDocument, updateModel, uploadDocuments, userId]);
+  }), [actions, allDocuments, apiReachable, connectionMode, createDataset, createModel, datasets, documents, health, healthLoading, isDemo, lastError, loadAllDocuments, loadDocument, loadDocumentChunks, loadDocumentPreview, loadDocuments, loading, models, recall, refreshAll, refreshHealth, refreshing, removeDataset, removeDocument, removeModel, reparseDocument, retryDocument, streamAgent, updateDataset, updateDocument, updateModel, uploadDocuments, userId]);
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
 }

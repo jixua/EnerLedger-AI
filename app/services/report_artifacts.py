@@ -29,11 +29,10 @@ from app.rag.config import settings
 from app.rag.observability.logging import logger
 from app.rag.services.storage.base import BaseObjectStorage
 from app.rag.services.storage.factory import StorageFactory
-from app.services.document_analysis_docx import (
-    _add_inline,
-    _add_markdown,
-    _configure_styles,
-    _set_run_font,
+from app.services.markdown_docx import (
+    add_markdown,
+    configure_document_styles,
+    set_run_font,
 )
 from app.services.report_templates import ReportTemplate
 
@@ -209,9 +208,9 @@ def _evidence_location(item: dict[str, Any]) -> str:
 
 
 def build_report_docx(*, run: ReportRun, template: ReportTemplate, markdown: str) -> bytes:
-    """把渲染好的 Markdown 转成 Word（复用文档分析报告的排版原子）。"""
+    """把渲染好的 Markdown 转成 Word。"""
     output = WordDocument()
-    _configure_styles(output)
+    configure_document_styles(output)
     output.core_properties.title = f"{run.report_type} 报告"
     output.core_properties.subject = template.definition.get("name") or run.template_id
 
@@ -225,14 +224,14 @@ def build_report_docx(*, run: ReportRun, template: ReportTemplate, markdown: str
 
     title = output.add_paragraph()
     title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_run_font(title.add_run(f"{run.report_type} 报告"), size=22, bold=True)
+    set_run_font(title.add_run(f"{run.report_type} 报告"), size=22, bold=True)
     subtitle = output.add_paragraph()
     subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_run_font(subtitle.add_run(template.definition.get("name") or run.template_id), size=13)
+    set_run_font(subtitle.add_run(template.definition.get("name") or run.template_id), size=13)
 
     meta = output.add_paragraph()
     meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_run_font(
+    set_run_font(
         meta.add_run(
             f"任务 {run.id}　文档版本 v{run.document_version}　"
             f"模板 {run.template_id} v{run.template_version}"
@@ -241,7 +240,7 @@ def build_report_docx(*, run: ReportRun, template: ReportTemplate, markdown: str
     )
     output.add_paragraph()
 
-    _add_markdown(output, markdown)
+    add_markdown(output, markdown)
 
     stream = BytesIO()
     output.save(stream)

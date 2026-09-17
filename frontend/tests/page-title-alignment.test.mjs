@@ -22,14 +22,12 @@ test("top-level pages use the knowledge-library title-first hierarchy", async ()
 });
 
 test("detail pages place context below the title", async () => {
-  const [dataset, document, analysis] = await Promise.all([
+  const [dataset, document] = await Promise.all([
     readPage("DatasetDetailPage.jsx"),
     readPage("DocumentDetailPage.jsx"),
-    readPage("DocumentAnalysisPage.jsx"),
   ]);
 
   assert.match(dataset, /<h1>\{dataset\.name\}<\/h1><p>数据集 #/);
   assert.doesNotMatch(dataset, /<p className="eyebrow">数据集/);
   assert.doesNotMatch(document, /<p className="eyebrow">文档详情/);
-  assert.doesNotMatch(analysis, /<p className="eyebrow">分析报告/);
 });
