@@ -311,7 +311,14 @@
 .report-index-toolbar > .search-field { align-self: center; }
 /* 报告中心列表：只做索引，产物下载统一在详情页 */
 .report-index-table { min-width: 1040px; }
-.report-index-table th:last-child, .report-index-table td:last-child { width: 1%; text-align: right; }
+/* 显式列宽：auto 布局会把余量按内容比例分给文字列，导致「源文件」留下大片空白，
+   而「操作」只拿到最小宽度、按钮贴着边。这里按各列实际需要重新分配。 */
+.report-index-table th:nth-child(1) { width: 30%; }   /* 报告 */
+.report-index-table th:nth-child(2) { width: 26%; }   /* 源文件 */
+.report-index-table th:nth-child(3) { width: 12%; }   /* 状态 */
+.report-index-table th:nth-child(4) { width: 15%; }   /* 创建时间 */
+.report-index-table th:nth-child(5) { width: 17%; }   /* 操作 */
+.report-index-table th:last-child, .report-index-table td:last-child { text-align: right; }
 .report-index-table td:last-child .report-run-actions { flex-wrap: nowrap; align-items: center; justify-content: flex-end; gap: 10px; margin-top: 0; }
 .report-index-table td:last-child .button { min-height: 32px; white-space: nowrap; }
 /* 删除是行级次要操作，用无边框图标而不是第二个按钮：与「查看报告」并列时不该同级，
