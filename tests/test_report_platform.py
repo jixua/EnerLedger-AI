@@ -75,7 +75,8 @@ async def _load_payload_stats(_db, *, document_id, document_version):
     return 4, 1200
 
 
-def _run() -> ReportRun:    return ReportRun(
+def _run() -> ReportRun:
+    return ReportRun(
         id="run-1",
         user_id=11,
         dataset_id=3,
@@ -550,3 +551,48 @@ def test_thinking_reserve_shrinks_prompt_budget(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(settings, "REPORT_AGENT_MODEL_THINKING", True)
     with pytest.raises(ReportDocumentTooLargeError):
         assert_document_fits_context(**document)
+
+
+@pytest.mark.asyncio
+async def test_report_ir_draft_is_validated_from_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """候选 IR 只落库一次，validate 不再回传整份 IR（这是报告会话里最大的可省项）。"""
+    from app.api import report_agent_internal as internal
+
+    template = ReportTemplateRegistry(_reporting_root()).get("R2")
+    run = _run()
+    run.template_snapshot = template.to_snapshot()
+    report_ir = build_fixture_report_ir(run=run, template=template, answered_questions=[])
+
+    async def load_context(_db, *, run):
+        return None, SimpleNamespace(items=())
+
+    monkeypatch.setattr(internal, "load_report_source_context", load_context)
+
+    class Session:
+        async def commit(self):
+            return None
+
+    session = Session()
+    receipt = await internal.save_report_ir_draft(
+        payload=internal.ReportIRRequest(report_ir=report_ir), run=run, db=session
+    )
+    assert receipt["saved"] is True
+    assert receipt["field_ledger_count"] == len(report_ir["field_ledger"])
+    assert len(receipt["revision"]) == 12
+    assert run.report_ir_draft == report_ir
+
+    result = await internal.validate_candidate_report(
+        payload=internal.ReportIRValidateRequest(), run=run, db=session
+    )
+    assert {"schema_valid", "publishable", "errors"} <= set(result)
+
+    # 草稿缺失时必须明确报错，而不是拿旧内容校验或静默通过。
+    run.report_ir_draft = None
+    with pytest.raises(HTTPException) as excinfo:
+        await internal.validate_candidate_report(
+            payload=internal.ReportIRValidateRequest(), run=run, db=session
+        )
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["code"] == "REPORT_IR_DRAFT_MISSING"

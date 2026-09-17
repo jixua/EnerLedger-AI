@@ -79,8 +79,17 @@ class ReportIRRequest(BaseModel):
     report_ir: dict[str, Any]
 
 
-class ReportIRSubmitRequest(ReportIRRequest):
+class ReportIRValidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # 不带 report_ir 时校验已落库的草稿（save_report_ir_draft 写入）。
+    report_ir: dict[str, Any] | None = None
+
+
+class ReportIRSubmitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     coverage: dict[str, Any]
+    # 兼容旧契约：不带 report_ir 时提交已落库的草稿。
+    report_ir: dict[str, Any] | None = None
 
 
 def _answer_content_hash(answer: dict[str, Any] | None) -> str | None:
@@ -120,6 +129,20 @@ def _trim_validation_payload(payload: dict[str, Any]) -> dict[str, Any]:
                 f"（其余 {len(items) - MAX_VALIDATION_ITEMS} 条同类信息已省略）",
             ]
     return trimmed
+
+
+def _require_report_ir(payload_ir: dict[str, Any] | None, run: ReportRun) -> dict[str, Any]:
+    """取本次要校验/提交的 ReportIR：请求体优先，否则用已落库的草稿。"""
+    candidate = payload_ir if payload_ir is not None else run.report_ir_draft
+    if not isinstance(candidate, dict):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "REPORT_IR_DRAFT_MISSING",
+                "message": "尚未落库候选 ReportIR，请先调用 save_report_ir_draft",
+            },
+        )
+    return candidate
 
 
 def _structure_hint(raw: Any) -> dict[str, Any]:
@@ -536,15 +559,44 @@ async def request_clarification(
     }
 
 
+@router.post("/runs/{run_id}/ir-draft")
+async def save_report_ir_draft(
+    payload: ReportIRRequest,
+    run: Annotated[ReportRun, Depends(_authorized_run)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """把候选 ReportIR 落库，只回一份轻量回执。
+
+    整份 IR 只在这一次调用里进入模型上下文；后续 validate / submit 直接引用落库版本，
+    不再重复回传同一份大对象——这是报告会话上下文里最大的可省项。
+    """
+    report_ir = payload.report_ir
+    encoded = json.dumps(
+        report_ir, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    run.report_ir_draft = report_ir
+    await db.commit()
+    ledger = report_ir.get("field_ledger")
+    evidence = report_ir.get("evidence")
+    sections = report_ir.get("sections")
+    return {
+        "saved": True,
+        "revision": hashlib.sha256(encoded).hexdigest()[:12],
+        "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
+        "field_ledger_count": len(ledger) if isinstance(ledger, list) else 0,
+        "section_count": len(sections) if isinstance(sections, list) else 0,
+    }
+
+
 @router.post("/runs/{run_id}/validate")
 async def validate_candidate_report(
-    payload: ReportIRRequest,
+    payload: ReportIRValidateRequest,
     run: Annotated[ReportRun, Depends(_authorized_run)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     evidence_context, _manifest = await load_report_source_context(db, run=run)
     validation = validate_report_ir(
-        payload.report_ir,
+        _require_report_ir(payload.report_ir, run),
         run=run,
         template=_template_for_run(run),
         evidence_context=evidence_context,
@@ -559,8 +611,9 @@ async def submit_candidate_report(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     evidence_context, chunk_manifest = await load_report_source_context(db, run=run)
+    report_ir = _require_report_ir(payload.report_ir, run)
     validation = validate_report_ir(
-        payload.report_ir,
+        report_ir,
         run=run,
         template=_template_for_run(run),
         evidence_context=evidence_context,
@@ -576,7 +629,7 @@ async def submit_candidate_report(
             },
         )
     encoded = json.dumps(
-        payload.report_ir, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        report_ir, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     manifest = {
         "run_id": run.id,

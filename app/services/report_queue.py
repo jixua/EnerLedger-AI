@@ -78,6 +78,8 @@ class ReportRunQueueService:
         run.state = "PROCESSING"
         run.stage = "PREPARING"
         run.attempt_count = int(run.attempt_count or 0) + 1
+        # 每次尝试都是新的 Agent 会话：清掉上一轮的候选 IR，避免误提交过期草稿。
+        run.report_ir_draft = None
         run.lease_token = token
         run.lease_owner = worker_id[:128]
         run.lease_expires_at = claimed_at + timedelta(seconds=self.lease_seconds)

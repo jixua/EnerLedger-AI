@@ -24,7 +24,9 @@ USER_INPUT 证据必须原样使用 get_run_clarifications 的 question_id（写
 与 answer_content_hash（写入 content_hash），不得编造证据编号或哈希。
 物质性计算只能调用 calculate_report_metrics；不得自行心算后伪装成确定性结果。
 阻塞字段缺失或冲突时调用 request_clarification（question_type 只能取 MISSING_FIELD / CONFLICT / CONFIRMATION），不得编造。
-完成后构造唯一 ReportIR，先调用 validate_report_ir；只有通过后才能调用 submit_report_ir。
+完成后构造唯一 ReportIR：先 save_report_ir_draft 落库，再 validate_report_ir 校验；
+按返回的错误修复后重新落库并再次校验，只有通过后才能 submit_report_ir。
+校验与提交都基于落库版本，不要重复回传整份 ReportIR；不要重复微调同一份草稿超过必要次数。
 不得声称 AI 已完成审计、认证、核查、SBTi 验证或法律合规判断。
 禁止使用或声称使用 bash、read、write、edit、网络浏览、数据库或任意文件系统工具。`;
 
@@ -125,6 +127,7 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
   // 会话里出现过的最大 prompt 量（含缓存命中与当轮输出），用于评估距上下文窗口的余量。
   let peakPromptTokens = 0;
   let lastValidation = null;
+  let draftSaved = false;
   let clarification = null;
   let finalAssistantMessage;
   let expectedChunkCursor = null;
@@ -326,21 +329,11 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
       return textResult(clarification);
     }),
   });
-  const validateTool = defineTool({
-    name: "validate_report_ir",
-    label: "校验 ReportIR",
-    description: "校验模板、字段、证据、计算、章节和禁止声明。",
-    parameters: objectSchema({ report_ir: { type: "object" } }, ["report_ir"]),
-    execute: guard(async (_toolCallId, params) => {
-      const result = await client.validate(params.report_ir);
-      lastValidation = result;
-      return textResult(result);
-    }),
-  });
-  const submitTool = defineTool({
-    name: "submit_report_ir",
-    label: "提交 ReportIR",
-    description: "提交已经通过校验的唯一候选 ReportIR；不能切换模板或直接发布。",
+  const draftTool = defineTool({
+    name: "save_report_ir_draft",
+    label: "落库候选 ReportIR",
+    description:
+      "把候选 ReportIR 落库（可反复覆盖）；校验与提交都基于落库版本，不需要再次回传整份 IR。",
     parameters: objectSchema({ report_ir: { type: "object" } }, ["report_ir"]),
     execute: guard(async (_toolCallId, params) => {
       if (!chunksComplete || !chunkManifestHash) {
@@ -352,17 +345,49 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
       if (customTemplateAvailable === true && !customTemplateComplete) {
         throw new Error("REPORT_AGENT_CUSTOM_TEMPLATE_INCOMPLETE");
       }
+      const receipt = await client.saveIrDraft(params.report_ir);
+      draftSaved = true;
+      submittedIr = params.report_ir;
+      return textResult(receipt);
+    }),
+  });
+  const validateTool = defineTool({
+    name: "validate_report_ir",
+    label: "校验 ReportIR",
+    description: "校验已落库的候选 ReportIR（模板、字段、证据、计算、章节和禁止声明）。",
+    parameters: objectSchema({}),
+    execute: guard(async () => {
+      if (!draftSaved) throw new Error("REPORT_AGENT_IR_DRAFT_REQUIRED");
+      const result = await client.validate();
+      lastValidation = result;
+      return textResult(result);
+    }),
+  });
+  const submitTool = defineTool({
+    name: "submit_report_ir",
+    label: "提交 ReportIR",
+    description: "提交已落库且通过校验的候选 ReportIR；不能切换模板或直接发布。",
+    parameters: objectSchema({}),
+    execute: guard(async () => {
+      if (!chunksComplete || !chunkManifestHash) {
+        throw new Error("REPORT_AGENT_CHUNK_COVERAGE_INCOMPLETE");
+      }
+      if (!contextLoaded || !clarificationsLoaded || !templateLoaded) {
+        throw new Error("REPORT_AGENT_CONTEXT_INCOMPLETE");
+      }
+      if (customTemplateAvailable === true && !customTemplateComplete) {
+        throw new Error("REPORT_AGENT_CUSTOM_TEMPLATE_INCOMPLETE");
+      }
       if (submitted) throw new Error("REPORT_IR_ALREADY_SUBMITTED");
+      if (!draftSaved) throw new Error("REPORT_AGENT_IR_DRAFT_REQUIRED");
       const coverage = {
         complete: true,
         manifest_hash: chunkManifestHash,
         chunks: observedChunks,
       };
-      // 应用侧不再回显 report_ir / coverage（避免重复占用上下文），
-      // 这里保存自己提交的对象作为最终结果来源。
-      submittedIr = params.report_ir;
+      // 应用侧不再接收/回显整份 IR（草稿已落库），这里用本地保存的草稿作为结果来源。
       submittedCoverage = coverage;
-      submitted = await client.submit(params.report_ir, coverage);
+      submitted = await client.submit(coverage);
       return textResult({ accepted: true, validation: submitted.validation_report });
     }),
   });
@@ -378,12 +403,24 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
     calculationTool,
     checkpointTool,
     clarificationTool,
+    draftTool,
     validateTool,
     submitTool,
   ];
   // 统计每次工具调用的入参/出参体量：报告会话的 prompt 会随调用累积，
   // 需要定位是哪类调用把上下文窗口吃满（checkpoint/validate 会整份回传台账）。
   const toolTrace = [];
+  const toolTraceSummary = () => {
+    const byTool = new Map();
+    for (const item of toolTrace) {
+      const current = byTool.get(item.name) ?? { name: item.name, calls: 0, args: 0, results: 0 };
+      current.calls += 1;
+      current.args += item.argsChars;
+      current.results += item.resultChars;
+      byTool.set(item.name, current);
+    }
+    return [...byTool.values()].sort((a, b) => b.args + b.results - (a.args + a.results));
+  };
   const tracedTools = customTools.map((tool) => ({
     ...tool,
     execute: async (...args) => {
@@ -443,6 +480,7 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
         toolCalls,
         peakPromptTokens,
         thinking: model.thinking === true ? "enabled" : "disabled",
+        toolTrace: toolTraceSummary(),
       }));
       return { outcome: "NEEDS_INPUT", clarification, toolCalls };
     }
@@ -482,7 +520,8 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
       peakPromptTokens,
       contextWindow: resolvedModel.contextWindow,
       maxTokens: resolvedModel.maxTokens,
-      thinking: config.reportModelThinking ? "enabled" : "disabled",
+      thinking: model.thinking === true ? "enabled" : "disabled",
+      toolTrace: toolTraceSummary(),
       usage: finalAssistantMessage?.usage ?? null,
     }));
     return {
