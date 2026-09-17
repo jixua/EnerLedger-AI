@@ -24,9 +24,10 @@ USER_INPUT 证据必须原样使用 get_run_clarifications 的 question_id（写
 与 answer_content_hash（写入 content_hash），不得编造证据编号或哈希。
 物质性计算只能调用 calculate_report_metrics；不得自行心算后伪装成确定性结果。
 阻塞字段缺失或冲突时调用 request_clarification（question_type 只能取 MISSING_FIELD / CONFLICT / CONFIRMATION），不得编造。
-完成后构造唯一 ReportIR：先 save_report_ir_draft 落库，再 validate_report_ir 校验；
-按返回的错误修复后重新落库并再次校验，只有通过后才能 submit_report_ir。
-校验与提交都基于落库版本，不要重复回传整份 ReportIR；不要重复微调同一份草稿超过必要次数。
+完成后构造唯一 ReportIR：先 save_report_ir_draft 整份落库一次，再 validate_report_ir 校验；
+按返回的错误修复时用 patch_report_ir 只提交发生变化的条目（按 evidence_id / field_id /
+section_id 覆盖或删除），不要为改一条证据而整份重发；章节整体重写等少数情况才重新整份落库。
+只有校验通过后才能 submit_report_ir；校验与提交都基于落库版本。
 不得声称 AI 已完成审计、认证、核查、SBTi 验证或法律合规判断。
 禁止使用或声称使用 bash、read、write、edit、网络浏览、数据库或任意文件系统工具。`;
 
@@ -114,7 +115,8 @@ function assertCompleted(message) {
   if (message.stopReason === "aborted") throw new Error("REPORT_AGENT_ABORTED");
 }
 
-export async function executeReportAgentRun({ config, runId, runToken, model, signal }) {  const client = createEnerLedgerClient(config, runId, runToken, signal);
+export async function executeReportAgentRun({ config, runId, runToken, model, signal }) {
+  const client = createEnerLedgerClient(config, runId, runToken, signal);
   const { modelRuntime, model: resolvedModel } = await configuredModel(config, model);
   let skillsLoaded = false;
   let contextLoaded = false;
@@ -122,7 +124,6 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
   let templateLoaded = false;
   let toolCalls = 0;
   let submitted = null;
-  let submittedIr = null;
   let submittedCoverage = null;
   // 会话里出现过的最大 prompt 量（含缓存命中与当轮输出），用于评估距上下文窗口的余量。
   let peakPromptTokens = 0;
@@ -347,8 +348,42 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
       }
       const receipt = await client.saveIrDraft(params.report_ir);
       draftSaved = true;
-      submittedIr = params.report_ir;
       return textResult(receipt);
+    }),
+  });
+  const patchTool = defineTool({
+    name: "patch_report_ir",
+    label: "增量修补候选 ReportIR",
+    description:
+      "只提交发生变化的条目（按 evidence_id / field_id / section_id 覆盖或删除）；修复校验错误优先用它，不要整份重发。",
+    parameters: objectSchema({
+      upsert_evidence: {
+        type: "array",
+        items: { type: "object" },
+        description: "按 evidence_id 覆盖或新增的完整证据项",
+      },
+      delete_evidence: { type: "array", items: { type: "string" } },
+      upsert_field_ledger: {
+        type: "array",
+        items: { type: "object" },
+        description: "按 field_id 覆盖或新增的完整字段台账项",
+      },
+      delete_field_ledger: { type: "array", items: { type: "string" } },
+      upsert_sections: {
+        type: "array",
+        items: { type: "object" },
+        description: "按 section_id 覆盖或新增的完整章节（含 blocks）",
+      },
+      delete_sections: { type: "array", items: { type: "string" } },
+      calculations: { type: "array", items: { type: "object" } },
+      meta: { type: "object" },
+      warnings: { type: "array", items: { type: "string" } },
+      limitations: { type: "array", items: { type: "string" } },
+      render_profile: { type: "string" },
+    }),
+    execute: guard(async (_toolCallId, params) => {
+      if (!draftSaved) throw new Error("REPORT_AGENT_IR_DRAFT_REQUIRED");
+      return textResult(await client.patchIrDraft(params));
     }),
   });
   const validateTool = defineTool({
@@ -404,6 +439,7 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
     checkpointTool,
     clarificationTool,
     draftTool,
+    patchTool,
     validateTool,
     submitTool,
   ];
@@ -484,7 +520,7 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
       }));
       return { outcome: "NEEDS_INPUT", clarification, toolCalls };
     }
-    if (!submitted?.accepted || !submittedIr) {
+    if (!submitted?.accepted || !draftSaved) {
       // 诊断：会话在未提交 ReportIR 的情况下结束——记录最后一轮模型输出与校验状态。
       const lastMessageText = (finalAssistantMessage?.content ?? [])
         .map((part) => (part.type === "text" ? part.text : `[${part.type}]`))
@@ -526,7 +562,8 @@ export async function executeReportAgentRun({ config, runId, runToken, model, si
     }));
     return {
       outcome: "SUBMITTED",
-      reportIr: submittedIr,
+      // 不返回 reportIr：草稿可能被增量修补过，pi 本地没有完整副本；
+      // 应用侧在 submit 通过时已把权威版本落库，worker 直接读库做二次校验。
       validationReport: submitted.validation_report,
       manifest: submitted.manifest,
       coverage: submittedCoverage,

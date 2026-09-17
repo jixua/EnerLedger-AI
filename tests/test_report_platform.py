@@ -34,6 +34,8 @@ from app.services.report_budget import (
 from app.services.report_calculations import execute_registered_formula
 from app.services.report_ir import (
     ReportEvidenceContext,
+    ReportIRPatchError,
+    apply_report_ir_patch,
     build_fixture_report_ir,
     validate_report_ir,
 )
@@ -596,3 +598,104 @@ async def test_report_ir_draft_is_validated_from_storage(
         )
     assert excinfo.value.status_code == 409
     assert excinfo.value.detail["code"] == "REPORT_IR_DRAFT_MISSING"
+
+
+def test_report_ir_patch_updates_only_touched_items() -> None:
+    """补丁只带变化条目：按主键覆盖/追加/删除，章节保序。"""
+    draft = {
+        "schema_version": 1,
+        "meta": {"run_id": "run-1", "language": "zh-CN"},
+        "evidence": [
+            {"evidence_id": "E-1", "source_type": "DOCUMENT", "content_hash": "a" * 64},
+            {"evidence_id": "E-2", "source_type": "DOCUMENT", "content_hash": "b" * 64},
+        ],
+        "field_ledger": [{"field_id": "f1", "status": "MISSING"}],
+        "sections": [
+            {"section_id": "s1", "title": "摘要", "blocks": []},
+            {"section_id": "s2", "title": "范围", "blocks": []},
+        ],
+        "calculations": [],
+    }
+    updated, summary = apply_report_ir_patch(
+        draft,
+        {
+            "upsert_evidence": [
+                {"evidence_id": "E-2", "source_type": "USER_INPUT", "content_hash": "c" * 64},
+                {"evidence_id": "E-3", "source_type": "DOCUMENT", "content_hash": "d" * 64},
+            ],
+            "delete_evidence": ["E-1"],
+            "upsert_field_ledger": [{"field_id": "f2", "status": "FOUND"}],
+            "upsert_sections": [{"section_id": "s1", "title": "摘要", "blocks": [{"type": "text"}]}],
+            "limitations": ["草稿"],
+        },
+    )
+
+    assert [item["evidence_id"] for item in updated["evidence"]] == ["E-2", "E-3"]
+    assert updated["evidence"][0]["content_hash"] == "c" * 64
+    assert [item["field_id"] for item in updated["field_ledger"]] == ["f1", "f2"]
+    # 章节保序：s1 仍是第一位，内容被替换。
+    assert [item["section_id"] for item in updated["sections"]] == ["s1", "s2"]
+    assert updated["sections"][0]["blocks"] == [{"type": "text"}]
+    assert updated["limitations"] == ["草稿"]
+    assert summary["evidence"] == {"added": 1, "replaced": 1, "removed": 1, "total": 2}
+    # 原草稿不被就地修改，便于回滚。
+    assert [item["evidence_id"] for item in draft["evidence"]] == ["E-1", "E-2"]
+
+
+def test_report_ir_patch_rejects_empty_or_keyless_items() -> None:
+    draft = {"evidence": [], "field_ledger": [], "sections": []}
+    with pytest.raises(ReportIRPatchError):
+        apply_report_ir_patch(draft, {"upsert_evidence": []})
+    with pytest.raises(ReportIRPatchError):
+        apply_report_ir_patch(draft, {"upsert_evidence": [{"source_type": "DOCUMENT"}]})
+
+
+@pytest.mark.asyncio
+async def test_report_ir_patch_endpoint_applies_to_stored_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """落库后的修补直接改变后续校验看到的草稿。"""
+    from app.api import report_agent_internal as internal
+
+    template = ReportTemplateRegistry(_reporting_root()).get("R2")
+    run = _run()
+    run.template_snapshot = template.to_snapshot()
+    report_ir = build_fixture_report_ir(run=run, template=template, answered_questions=[])
+    run.report_ir_draft = report_ir
+
+    async def load_context(_db, *, run):
+        return None, SimpleNamespace(items=())
+
+    monkeypatch.setattr(internal, "load_report_source_context", load_context)
+
+    class Session:
+        async def commit(self):
+            return None
+
+    session = Session()
+    section_id = report_ir["sections"][0]["section_id"]
+    receipt = await internal.patch_report_ir_draft(
+        payload=internal.ReportIRPatchRequest(delete_sections=[section_id]),
+        run=run,
+        db=session,
+    )
+    assert receipt["saved"] is True
+    assert receipt["changed"]["sections"]["removed"] == 1
+    assert section_id not in [
+        section["section_id"] for section in run.report_ir_draft["sections"]
+    ]
+
+    result = await internal.validate_candidate_report(
+        payload=internal.ReportIRValidateRequest(), run=run, db=session
+    )
+    assert "报告章节必须与模板章节完整一致" in result["errors"]
+
+    # 空补丁必须被拒绝，避免模型用无效调用浪费一轮。
+    with pytest.raises(HTTPException) as excinfo:
+        await internal.patch_report_ir_draft(
+            payload=internal.ReportIRPatchRequest(),
+            run=run,
+            db=session,
+        )
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.detail["code"] == "REPORT_IR_PATCH_INVALID"

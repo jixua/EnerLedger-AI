@@ -75,6 +75,10 @@ export function createEnerLedgerClient(config, runId, runToken, signal) {
       method: "POST",
       body: JSON.stringify({ report_ir: reportIr }),
     }),
+    patchIrDraft: (patch) => request(`${prefix}/ir-draft/patch`, {
+      method: "POST",
+      body: JSON.stringify(patch),
+    }),
     submit: (coverage) => request(`${prefix}/submit`, {
       method: "POST",
       body: JSON.stringify({ coverage }),

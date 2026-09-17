@@ -324,12 +324,18 @@ class PiReportProcessor:
                 },
                 analysis_coverage=None,
             )
-        if outcome != "SUBMITTED" or not isinstance(result.get("reportIr"), dict):
+        if outcome != "SUBMITTED":
             raise PiReportProcessorError("Pi Agent 未提交有效 ReportIR", retryable=False)
         template = ReportTemplate.from_snapshot(run.template_snapshot)
         evidence_context, chunk_manifest = await load_report_source_context(db, run=run)
+        # 提交接口已把通过校验的候选 IR 落库（草稿可能被增量修补过，pi 本地没有完整
+        # 副本），权威二次校验直接读库里的版本。
+        await db.refresh(run)
+        submitted_ir = run.report_ir
+        if not isinstance(submitted_ir, dict):
+            raise PiReportProcessorError("Pi Agent 未提交有效 ReportIR", retryable=False)
         validation = validate_report_ir(
-            result["reportIr"],
+            submitted_ir,
             run=run,
             template=template,
             evidence_context=evidence_context,
@@ -341,7 +347,7 @@ class PiReportProcessor:
                 retryable=False,
             )
         encoded = json.dumps(
-            result["reportIr"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            submitted_ir, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
         manifest = {
             "run_id": str(run.id),
@@ -357,7 +363,7 @@ class PiReportProcessor:
         return ReportProcessingResult(
             state="SUCCEEDED",
             stage="COMPLETED",
-            report_ir=result["reportIr"],
+            report_ir=submitted_ir,
             validation_report=validation.to_dict(),
             manifest=manifest,
             analysis_coverage=result.get("coverage"),

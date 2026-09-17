@@ -23,7 +23,12 @@ from app.services.report_agent_tokens import (
 )
 from app.services.report_calculations import ReportCalculationError, execute_registered_formula
 from app.services.report_budget import STRUCTURE_HINT_CHARS_PER_CHUNK
-from app.services.report_ir import report_ir_contract_schema, validate_report_ir
+from app.services.report_ir import (
+    ReportIRPatchError,
+    apply_report_ir_patch,
+    report_ir_contract_schema,
+    validate_report_ir,
+)
 from app.services.report_source_context import (
     load_report_source_context,
     validate_chunk_coverage,
@@ -92,6 +97,23 @@ class ReportIRSubmitRequest(BaseModel):
     report_ir: dict[str, Any] | None = None
 
 
+class ReportIRPatchRequest(BaseModel):
+    """增量修补草稿：只带发生变化的部分条目。"""
+
+    model_config = ConfigDict(extra="forbid")
+    upsert_evidence: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
+    delete_evidence: list[str] = Field(default_factory=list, max_length=2000)
+    upsert_field_ledger: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
+    delete_field_ledger: list[str] = Field(default_factory=list, max_length=2000)
+    upsert_sections: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+    delete_sections: list[str] = Field(default_factory=list, max_length=500)
+    calculations: list[dict[str, Any]] | None = None
+    meta: dict[str, Any] | None = None
+    warnings: list[str] | None = None
+    limitations: list[str] | None = None
+    render_profile: str | None = None
+
+
 def _answer_content_hash(answer: dict[str, Any] | None) -> str | None:
     if answer is None:
         return None
@@ -143,6 +165,23 @@ def _require_report_ir(payload_ir: dict[str, Any] | None, run: ReportRun) -> dic
             },
         )
     return candidate
+
+
+def _draft_receipt(report_ir: dict[str, Any]) -> dict[str, Any]:
+    """草稿回执：只回版本号与规模，不回整份 IR（否则又把大对象塞回上下文）。"""
+    encoded = json.dumps(
+        report_ir, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    evidence = report_ir.get("evidence")
+    ledger = report_ir.get("field_ledger")
+    sections = report_ir.get("sections")
+    return {
+        "saved": True,
+        "revision": hashlib.sha256(encoded).hexdigest()[:12],
+        "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
+        "field_ledger_count": len(ledger) if isinstance(ledger, list) else 0,
+        "section_count": len(sections) if isinstance(sections, list) else 0,
+    }
 
 
 def _structure_hint(raw: Any) -> dict[str, Any]:
@@ -571,21 +610,45 @@ async def save_report_ir_draft(
     不再重复回传同一份大对象——这是报告会话上下文里最大的可省项。
     """
     report_ir = payload.report_ir
-    encoded = json.dumps(
-        report_ir, ensure_ascii=False, sort_keys=True, separators=(",", ":")
-    ).encode("utf-8")
     run.report_ir_draft = report_ir
     await db.commit()
-    ledger = report_ir.get("field_ledger")
-    evidence = report_ir.get("evidence")
-    sections = report_ir.get("sections")
-    return {
-        "saved": True,
-        "revision": hashlib.sha256(encoded).hexdigest()[:12],
-        "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
-        "field_ledger_count": len(ledger) if isinstance(ledger, list) else 0,
-        "section_count": len(sections) if isinstance(sections, list) else 0,
-    }
+    return _draft_receipt(report_ir)
+
+
+@router.post("/runs/{run_id}/ir-draft/patch")
+async def patch_report_ir_draft(
+    payload: ReportIRPatchRequest,
+    run: Annotated[ReportRun, Depends(_authorized_run)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """增量修补已落库的候选 ReportIR：只提交发生变化的条目。
+
+    修复校验错误时，模型此前必须整份重发 IR（实测一轮修复约 1.6 万字符）；
+    按 evidence_id / field_id / section_id 做条目级 upsert 后，一次修复通常只有几百到几千字符。
+    """
+    draft = run.report_ir_draft
+    if not isinstance(draft, dict):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "REPORT_IR_DRAFT_MISSING",
+                "message": "尚未落库候选 ReportIR，请先调用 save_report_ir_draft",
+            },
+        )
+    try:
+        updated, summary = apply_report_ir_patch(
+            draft, payload.model_dump(exclude_none=True)
+        )
+    except ReportIRPatchError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    run.report_ir_draft = updated
+    await db.commit()
+    receipt = _draft_receipt(updated)
+    receipt["changed"] = summary
+    return receipt
 
 
 @router.post("/runs/{run_id}/validate")
@@ -641,6 +704,10 @@ async def submit_candidate_report(
         "chunk_manifest_sha256": chunk_manifest.content_hash,
         "chunk_count": len(chunk_manifest.items),
     }
+    # 通过校验的候选 IR 立刻落库：worker 之后直接读取它做二次校验，
+    # pi 不需要把整份 IR 回传（草稿可能是被增量修补出来的，pi 本地没有完整副本）。
+    run.report_ir = report_ir
+    await db.commit()
     # 不回显 report_ir / coverage：模型刚提交过它们，回显只是把同一份大对象再占用
     # 一次上下文（coverage 在大文档上可达数万 token）。pi 侧用自己提交的对象继续。
     return {
