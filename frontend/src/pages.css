@@ -648,8 +648,11 @@
   background: var(--panel);
 }
 
+/* 对话页统一列宽：空状态、消息列与输入框共用一条，发送首条消息时布局不再横向跳动。 */
+:root { --conversation-column: 760px; }
+
 .conversation-empty {
-  width: min(760px, calc(100% - 40px));
+  width: min(var(--conversation-column), calc(100% - 40px));
   min-height: 0;
   flex: 1;
   display: flex;
@@ -777,7 +780,7 @@
 .chat-suggestions button:hover { border-color: var(--primary-mid); background: var(--primary-soft); color: var(--primary-active); }
 
 .conversation-thread { min-height: 0; flex: 1; overflow-y: auto; }
-.message-column { width: min(860px, calc(100% - 48px)); min-height: calc(100% - 150px); display: flex; flex-direction: column; gap: 30px; margin: 0 auto; padding: 38px 0 28px; }
+.message-column { width: min(var(--conversation-column), calc(100% - 48px)); min-height: calc(100% - 150px); display: flex; flex-direction: column; gap: 30px; margin: 0 auto; padding: 38px 0 28px; }
 .chat-message { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: flex-start; gap: 13px; }
 .chat-message__avatar { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 10px; background: var(--surface-soft); color: var(--muted); font-size: 11px; font-weight: 700; }
 .chat-message--assistant .chat-message__avatar { background: var(--primary-soft); color: var(--primary); }
@@ -845,7 +848,7 @@
 .chat-message__actions button { display: inline-flex; align-items: center; gap: 5px; padding: 0; border: 0; background: transparent; color: var(--muted); font-size: 10px; }
 .chat-message__actions button:hover { color: var(--primary); }
 .chat-message__actions > span { margin-left: auto; color: var(--muted-soft); font: 500 8px/1 var(--font-mono); }
-.conversation-composer-dock { position: sticky; bottom: 0; z-index: 20; width: min(880px, calc(100% - 40px)); margin: 0 auto; padding: 14px 10px 22px; background: var(--panel); }
+.conversation-composer-dock { position: sticky; bottom: 0; z-index: 20; width: min(var(--conversation-column), calc(100% - 40px)); margin: 0 auto; padding: 14px 0 22px; background: var(--panel); }
 
 .source-drawer-layer { position: fixed; inset: 0; z-index: 120; display: flex; justify-content: flex-end; }
 .source-drawer-scrim { position: absolute; inset: 0; width: 100%; border: 0; background: rgba(36, 54, 50, .24); }

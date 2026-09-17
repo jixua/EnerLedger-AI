@@ -51,6 +51,20 @@ const STATUS_COPY = {
   error: "生成失败",
 };
 
+/** 仍在流式推进的状态。这段时间不向辅助技术播报，避免逐 token 朗读。 */
+const STREAMING_STATUSES = new Set(["recalling", "generating"]);
+const isStreamingMessage = (message) => STREAMING_STATUSES.has(message.status);
+
+/** 回答正文里的 markdown 标题下沉一级：页面级 h1 是会话标题，正文不应再出现 h1。 */
+const MESSAGE_MARKDOWN_COMPONENTS = {
+  h1: (props) => <h2 {...props} />,
+  h2: (props) => <h3 {...props} />,
+  h3: (props) => <h4 {...props} />,
+  h4: (props) => <h5 {...props} />,
+  h5: (props) => <h6 {...props} />,
+  h6: (props) => <h6 {...props} />,
+};
+
 function normalizeEvent(eventOrName, maybePayload) {
   if (typeof eventOrName === "string") return { event: eventOrName, data: maybePayload ?? {} };
   return {
@@ -180,6 +194,10 @@ export function PlaygroundPage() {
     () => chatModels.find((model) => String(model.id) === String(selectedModelId)) || null,
     [chatModels, selectedModelId],
   );
+  const activeConversationTitle = useMemo(
+    () => conversations.find((item) => item.conversation_id === conversationId)?.title || "对话",
+    [conversations, conversationId],
+  );
   const documentsById = useMemo(() => new Map(
     flattenDocuments(documents).map((document) => [
       Number(document.document_id ?? document.id),
@@ -205,7 +223,7 @@ export function PlaygroundPage() {
     : selectedDatasets.length
       ? `${selectedDatasets.length} 个数据集`
       : "选择数据集";
-  const isRunning = messages.some((message) => message.role === "assistant" && ["recalling", "generating"].includes(message.status));
+  const isRunning = messages.some((message) => message.role === "assistant" && isStreamingMessage(message));
   const hasRetrievalScope = activeDatasets.length > 0;
   const canSubmit = Boolean(
     question.trim()
@@ -868,7 +886,7 @@ export function PlaygroundPage() {
       </aside>
       <div className={`conversation-page${messages.length ? " conversation-page--active" : ""}`}>
       {!messages.length ? (
-        <main className="conversation-empty">
+        <div className="conversation-empty">
           <div className="conversation-empty__intro">
             <h1>把碳知识库<br />变成会回答问题的专家</h1>
             <p>AI 检索政策、标准与核算资料，生成有依据的答案，并回溯原文片段和页码。</p>
@@ -879,11 +897,15 @@ export function PlaygroundPage() {
               <button type="button" key={suggestion} onClick={() => setQuestion(suggestion)}>{suggestion}</button>
             ))}
           </div>
-        </main>
+        </div>
       ) : (
-        <main
+        <div
           className="conversation-thread"
           ref={threadRef}
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+          aria-label="对话消息"
           onScroll={(event) => {
             // 滞回判定：流式增长会垫高"距底距离"，阈间保持现状避免状态抖断。
             const el = event.currentTarget;
@@ -897,6 +919,8 @@ export function PlaygroundPage() {
           }}
         >
           <div className="message-column">
+            {/* 对话视图此前没有任何标题：补一个页面级 h1，供辅助技术定位与朗读上下文。 */}
+            <h1 className="sr-only">{activeConversationTitle}</h1>
             {messages.map((message) => message.role === "user" ? (
               <article className="chat-message chat-message--user" key={message.id}>
                 <div className="chat-message__avatar">U</div>
@@ -911,22 +935,26 @@ export function PlaygroundPage() {
                 </div>
               </article>
             ) : (
-              <article className="chat-message chat-message--assistant" key={message.id}>
+              <article
+                className="chat-message chat-message--assistant"
+                key={message.id}
+                aria-busy={isStreamingMessage(message)}
+              >
                 <div className="chat-message__avatar"><Sparkles size={15} /></div>
                 <div className="chat-message__body">
-                  {message.status !== "done" ? <div className="chat-message__status">
-                    {["recalling", "generating"].includes(message.status) ? <LoaderCircle className="spin" size={14} /> : message.status === "error" ? <CircleAlert size={14} /> : <Check size={14} />}
+                  {message.status !== "done" ? <div className="chat-message__status" role="status">
+                    {isStreamingMessage(message) ? <LoaderCircle className="spin" size={14} /> : message.status === "error" ? <CircleAlert size={14} /> : <Check size={14} />}
                     <span>{STATUS_COPY[message.status] || "处理中"}</span>
                   </div> : null}
                   {message.content ? (
                     <div className="chat-markdown" onClickCapture={(event) => handleRecallChunkLinkClick(event, message)}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MESSAGE_MARKDOWN_COMPONENTS}>
                         {linkifyRecallChunkMentions(message.content, message.hits)}
                       </ReactMarkdown>
                     </div>
                   ) : null}
                   {!message.content && message.status === "empty" ? <p className="chat-message__empty">根据已选择的数据集，暂未找到可以支持回答的相关内容。</p> : null}
-                  {!message.content && ["recalling", "generating"].includes(message.status) ? (
+                  {!message.content && isStreamingMessage(message) ? (
                     <div className="typing-line"><span /><span /><span /></div>
                   ) : null}
                   {message.error ? <p className="chat-message__error">{message.error}</p> : null}
@@ -946,7 +974,7 @@ export function PlaygroundPage() {
                   {message.interaction?.status === "ANSWERED" ? <p className="chat-message__notice">已确认 {message.interaction.selected}，报告任务已经创建。</p> : null}
                   {message.reportRunId ? <ChatReportCard runId={message.reportRunId} /> : null}
                   {message.failedSources?.length ? <p className="chat-message__warning">部分检索服务暂时不可用，本次回答可能不完整。</p> : null}
-                  {!["recalling", "generating"].includes(message.status) ? (
+                  {!isStreamingMessage(message) ? (
                     <footer className="chat-message__actions">
                       {message.hits?.length ? <button type="button" onClick={() => openSourceDrawer(message)}><Search size={14} />查看 {message.hits.length} 个召回片段</button> : null}
                       {message.content ? <button type="button" onClick={() => copyMessage(message)}>{copiedMessageId === message.id ? <Check size={14} /> : <Copy size={14} />}{copiedMessageId === message.id ? "已复制" : "复制"}</button> : null}
@@ -957,7 +985,7 @@ export function PlaygroundPage() {
             ))}
           </div>
           <div className="conversation-composer-dock">{composer}</div>
-        </main>
+        </div>
       )}
 
       {sourceMessage ? (
