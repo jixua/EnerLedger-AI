@@ -284,3 +284,57 @@ test("Pi runtime expands recalled evidence and keeps new citations in final sour
   assert.deepEqual(answerDone.data.hits.map((hit) => hit.evidence_id), ["ev_test_0001", "ev_test_0002"]);
   assert.equal(answerDone.data.answer, "EF 表示排放因子。[片段2]");
 });
+
+function streamCompletionPieces(response, pieces, finishReason = "stop") {
+  response.writeHead(200, { "Content-Type": "text/event-stream" });
+  pieces.forEach((text, index) => {
+    response.write(`data: ${JSON.stringify({
+      id: "mock-completion",
+      object: "chat.completion.chunk",
+      created: 1,
+      model: "mock-agent-model",
+      choices: [{
+        index: 0,
+        delta: index === 0 ? { role: "assistant", content: text } : { content: text },
+        finish_reason: null,
+      }],
+    })}\n\n`);
+  });
+  response.write(`data: ${JSON.stringify({
+    id: "mock-completion",
+    object: "chat.completion.chunk",
+    created: 1,
+    model: "mock-agent-model",
+    choices: [{ index: 0, delta: {}, finish_reason: finishReason }],
+  })}\n\n`);
+  response.end("data: [DONE]\n\n");
+}
+
+test("Pi runtime streams the answer token by token before answer_done", async () => {
+  const pieces = ["你好", "，我", "可以帮你检索", "能碳资料。"];
+  const modelServer = await listen(async (request, response) => {
+    await readJson(request);
+    streamCompletionPieces(response, pieces);
+  });
+  const emitted = [];
+  try {
+    await executeAgentRun({
+      config: { backendBaseUrl: "http://127.0.0.1:1", backendToken: "b".repeat(32), toolTimeoutMs: 5000 },
+      runId: "stream-run",
+      content: "你好",
+      history: [],
+      model: { protocol: "openai", provider: "openai", id: "mock-agent-model", name: "mock-agent-model", apiKey: "mock-api-key", baseUrl: `${address(modelServer)}/v1` },
+      emit: (type, data) => emitted.push({ type, data }),
+      signal: new AbortController().signal,
+    });
+  } finally {
+    await new Promise((resolve) => modelServer.close(resolve));
+  }
+  const deltas = emitted.filter((event) => event.type === "answer_delta");
+  const answerDone = emitted.find((event) => event.type === "answer_done");
+  assert.equal(emitted.at(-1).type, "answer_done");
+  assert.equal(deltas.length, pieces.length);
+  assert.deepEqual(deltas.map((event) => event.data.text), pieces);
+  assert.equal(deltas.map((event) => event.data.text).join(""), answerDone.data.answer);
+  assert.equal(answerDone.data.answer, pieces.join(""));
+});

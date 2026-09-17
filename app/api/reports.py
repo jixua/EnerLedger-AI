@@ -4,21 +4,43 @@ from __future__ import annotations
 
 import hashlib
 import json
+from io import BytesIO
 from typing import Annotated, Any, Literal
+from urllib.parse import quote
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field, field_validator
-from sqlalchemy import func, select
+from sqlalchemy import delete as sa_delete
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.auth import get_user_id
-from app.domain.models import Document, ReportArtifact, ReportQuestion, ReportRun
-from app.domain.time import utc_now
+from app.domain.models import (
+    AgentConversationTurn,
+    Document,
+    ReportArtifact,
+    ReportQuestion,
+    ReportRun,
+)
+from app.domain.time import as_utc, utc_now
 from app.rag.config import settings
 from app.rag.database import get_db
 from app.rag.models.db_models import LLMModelConfigDB
+from app.rag.observability.logging import logger
 from app.services.document_queue import DOCUMENT_STATUS_READY
+from app.services.report_artifacts import (
+    ReportArtifactError,
+    artifact_download_name,
+    purge_report_artifacts,
+    read_report_artifact,
+)
+from app.services.report_budget import (
+    ReportDocumentTooLargeError,
+    assert_document_fits_context,
+    load_document_payload_stats,
+)
 from app.services.report_dispatch import ReportRunDispatcher, mark_report_dispatch_pending
 from app.services.report_ir import validate_report_field_value
 from app.services.report_model_policy import (
@@ -46,7 +68,9 @@ class ReportCreateRequest(BaseModel):
     language: Literal["zh-CN"] = "zh-CN"
     reporting_year: int | None = Field(default=None, ge=1900, le=2200)
     user_instructions: str | None = Field(default=None, max_length=2000)
-    output_formats: list[Literal["ONLINE"]] = Field(default_factory=lambda: ["ONLINE"])
+    output_formats: list[Literal["ONLINE", "MARKDOWN", "DOCX"]] = Field(
+        default_factory=lambda: ["ONLINE", "DOCX"]
+    )
     custom_template_document_id: int | None = Field(default=None, gt=0)
 
     @field_validator("user_instructions")
@@ -71,6 +95,17 @@ class ReportAnswerItem(BaseModel):
     question_id: int = Field(gt=0)
     value: Any
     notes: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("value")
+    @classmethod
+    def _limit_answer_size(cls, value: Any) -> Any:
+        encoded = json.dumps(value, ensure_ascii=False, default=str)
+        if len(encoded) > settings.REPORT_ANSWER_MAX_CHARS:
+            raise ValueError(
+                f"补充内容过长（上限 {settings.REPORT_ANSWER_MAX_CHARS} 字符），"
+                "请精简后重新提交"
+            )
+        return value
 
 
 class ReportAnswersRequest(BaseModel):
@@ -104,12 +139,15 @@ def _input_hash(
 
 
 def _run_dict(run: ReportRun) -> dict[str, Any]:
+    snapshot = run.template_snapshot if isinstance(run.template_snapshot, dict) else {}
     return {
         "run_id": run.id,
         "document_id": run.document_id,
         "dataset_id": run.dataset_id,
         "document_version": run.document_version,
         "report_type": run.report_type,
+        # 面向用户展示的名称。R1–R7 是内部编号，不直接呈现给使用者。
+        "report_type_name": str(snapshot.get("name") or run.report_type),
         "template_id": run.template_id,
         "template_version": run.template_version,
         "custom_template_document_id": run.custom_template_document_id,
@@ -124,10 +162,10 @@ def _run_dict(run: ReportRun) -> dict[str, Any]:
         "stage": run.stage,
         "error_code": run.error_code,
         "error_message": run.error_message,
-        "started_at": run.started_at,
-        "finished_at": run.finished_at,
-        "created_at": run.created_at,
-        "updated_at": run.updated_at,
+        "started_at": as_utc(run.started_at),
+        "finished_at": as_utc(run.finished_at),
+        "created_at": as_utc(run.created_at),
+        "updated_at": as_utc(run.updated_at),
     }
 
 
@@ -228,6 +266,35 @@ async def create_report(
                 status_code=409,
                 detail={"code": "CUSTOM_TEMPLATE_EMPTY", "message": "上传模板没有可读内容"},
             )
+
+    # 报告 Agent 必须在一轮会话里读完整个文档，超出模型上下文预算的任务注定截断失败。
+    # 与其等几十分钟后报 REPORT_IR_NOT_SUBMITTED，不如在创建时就明确拒绝。
+    source_chunks, source_chars = await load_document_payload_stats(
+        db, document_id=int(document.id), document_version=int(document.version)
+    )
+    if custom_template is not None:
+        custom_chunks, custom_chars = await load_document_payload_stats(
+            db,
+            document_id=int(custom_template.id),
+            document_version=int(custom_template.version),
+        )
+    else:
+        custom_chunks = custom_chars = 0
+    try:
+        estimated_tokens = assert_document_fits_context(
+            content_chars=source_chars + custom_chars,
+            chunk_count=source_chunks + custom_chunks,
+        )
+    except ReportDocumentTooLargeError as exc:
+        raise HTTPException(
+            status_code=409,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    logger.info(
+        "报告任务上下文预算检查通过 run_estimate_tokens={} 分片数={}",
+        estimated_tokens,
+        source_chunks + custom_chunks,
+    )
 
     llm_config = await db.scalar(
         select(LLMModelConfigDB).where(LLMModelConfigDB.id == payload.llm_config_id)
@@ -360,6 +427,71 @@ async def get_report_run(
     return _run_dict(await _owned_run(db, run_id=run_id, user_id=user_id))
 
 
+@router.get("/report-runs")
+async def list_report_runs(
+    user_id: Annotated[int, Depends(get_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=200)] = 50,
+) -> list[dict[str, Any]]:
+    """当前用户的报告任务总览（跨文档），带文档名与可下载产物。"""
+    runs = (
+        await db.scalars(
+            select(ReportRun)
+            .where(ReportRun.user_id == user_id)
+            .order_by(ReportRun.created_at.desc())
+            .limit(limit)
+        )
+    ).all()
+    filename_query = select(Document.id, Document.filename).where(Document.user_id == user_id)
+    filenames = dict((await db.execute(filename_query)).all())
+    return await _runs_with_artifacts(db, list(runs), document_filenames=filenames)
+
+
+async def _runs_with_artifacts(
+    db: AsyncSession,
+    runs: list[ReportRun],
+    *,
+    document_filenames: dict[int, str],
+) -> list[dict[str, Any]]:
+    if not runs:
+        return []
+    runs_by_id = {str(run.id): run for run in runs}
+    artifact_rows = (
+        await db.scalars(
+            select(ReportArtifact)
+            .where(ReportArtifact.run_id.in_(list(runs_by_id)))
+            .order_by(ReportArtifact.id)
+        )
+    ).all()
+    artifacts_by_run: dict[str, list[dict[str, Any]]] = {}
+    for artifact in artifact_rows:
+        run = runs_by_id.get(artifact.run_id)
+        if run is None:
+            continue
+        artifacts_by_run.setdefault(artifact.run_id, []).append(
+            {
+                "id": artifact.id,
+                "artifact_type": artifact.artifact_type,
+                "content_type": artifact.content_type,
+                "content_hash": artifact.content_hash,
+                "size_bytes": artifact.size_bytes,
+                "filename": artifact_download_name(
+                    run=run,
+                    document_filename=document_filenames.get(int(run.document_id)),
+                    artifact_type=artifact.artifact_type,
+                ),
+            }
+        )
+    return [
+        {
+            **_run_dict(run),
+            "document_filename": document_filenames.get(int(run.document_id)),
+            "artifacts": artifacts_by_run.get(str(run.id), []),
+        }
+        for run in runs
+    ]
+
+
 @router.get("/documents/{document_id}/report-runs")
 async def list_document_report_runs(
     document_id: int,
@@ -404,6 +536,37 @@ async def cancel_report_run(
     await db.commit()
     await db.refresh(run)
     return _run_dict(run)
+
+
+@router.delete("/report-runs/{run_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_report_run(
+    run_id: str,
+    user_id: Annotated[int, Depends(get_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """删除一个报告任务，连同其产物、澄清问题与对话里的软引用。
+
+    进行中的任务不能直接删：worker 仍持有租约并会回写该行，请先取消。
+    """
+
+    run = await _owned_run(db, run_id=run_id, user_id=user_id)
+    if run.state in {"PENDING", "PROCESSING"}:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={"code": "REPORT_RUN_ACTIVE", "message": "任务正在进行，请先取消再删除"},
+        )
+
+    await purge_report_artifacts(db, run_id=run_id)
+    await db.execute(sa_delete(ReportQuestion).where(ReportQuestion.run_id == run_id))
+    # 对话回合只持有 report_run_id 这个软引用。不清掉的话，聊天里会留下一张
+    # 指向已删报告的空卡片，点开只会报错。
+    await db.execute(
+        update(AgentConversationTurn)
+        .where(AgentConversationTurn.report_run_id == run_id)
+        .values(report_run_id=None)
+    )
+    await db.execute(sa_delete(ReportRun).where(ReportRun.id == run_id))
+    await db.commit()
 
 
 @router.post("/report-runs/{run_id}/retry", status_code=status.HTTP_202_ACCEPTED)
@@ -467,6 +630,7 @@ async def list_report_questions(
         {
             "question_id": question.id,
             "field_id": question.field_id,
+            "field_label": fields.get(question.field_id, {}).get("label") or question.field_id,
             "field_type": fields.get(question.field_id, {}).get("type"),
             "field_unit": fields.get(question.field_id, {}).get("unit"),
             "field_validation": fields.get(question.field_id, {}).get("validation") or {},
@@ -476,7 +640,7 @@ async def list_report_questions(
             "required": question.required,
             "status": question.status,
             "answer": question.answer,
-            "answered_at": question.answered_at,
+            "answered_at": as_utc(question.answered_at),
         }
         for question in questions
     ]
@@ -576,6 +740,8 @@ async def get_report_ir(
             .order_by(ReportArtifact.id)
         )
     ).all()
+    document = await db.scalar(select(Document).where(Document.id == run.document_id))
+    document_filename = document.filename if document is not None else None
     return {
         "run": _run_dict(run),
         "report_ir": run.report_ir,
@@ -583,11 +749,60 @@ async def get_report_ir(
         "manifest": run.manifest,
         "artifacts": [
             {
+                "id": artifact.id,
                 "artifact_type": artifact.artifact_type,
                 "content_type": artifact.content_type,
                 "content_hash": artifact.content_hash,
                 "size_bytes": artifact.size_bytes,
+                "filename": artifact_download_name(
+                    run=run,
+                    document_filename=document_filename,
+                    artifact_type=artifact.artifact_type,
+                ),
             }
             for artifact in artifacts
         ],
     }
+
+
+@router.get("/report-runs/{run_id}/artifacts/{artifact_id}")
+async def download_report_artifact(
+    run_id: str,
+    artifact_id: int,
+    user_id: Annotated[int, Depends(get_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> StreamingResponse:
+    """下载已生成的报告产物（Markdown / DOCX）。"""
+    run = await _owned_run(db, run_id=run_id, user_id=user_id)
+    artifact = await db.scalar(
+        select(ReportArtifact).where(
+            ReportArtifact.id == artifact_id,
+            ReportArtifact.run_id == str(run.id),
+        )
+    )
+    if artifact is None:
+        raise HTTPException(status_code=404, detail="报告产物不存在")
+    document = await db.scalar(select(Document).where(Document.id == run.document_id))
+    try:
+        content = await read_report_artifact(artifact)
+    except ReportArtifactError as exc:
+        raise HTTPException(
+            status_code=502,
+            detail={"code": "REPORT_ARTIFACT_UNAVAILABLE", "message": str(exc)},
+        ) from exc
+    filename = artifact_download_name(
+        run=run,
+        document_filename=document.filename if document is not None else None,
+        artifact_type=artifact.artifact_type,
+    )
+    return StreamingResponse(
+        BytesIO(content),
+        media_type=artifact.content_type,
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=report.{artifact.artifact_type.lower()}; "
+                f"filename*=UTF-8''{quote(filename, safe='')}"
+            ),
+            "X-Content-Type-Options": "nosniff",
+        },
+    )

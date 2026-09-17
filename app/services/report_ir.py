@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -28,6 +29,21 @@ FIELD_STATUSES = {
     "NOT_APPLICABLE",
     "UNVERIFIED",
 }
+
+# 可增量修补的集合：草稿键 → (upsert 参数名, delete 参数名, 主键字段)。
+# 修补单位是「整个条目」而不是字段路径：校验错误本身按 evidence_id / field_id /
+# section_id 定位，按条目替换既贴合错误信息，也不需要模型理解路径语义。
+IR_PATCH_COLLECTIONS: dict[str, tuple[str, str, str]] = {
+    "evidence": ("upsert_evidence", "delete_evidence", "evidence_id"),
+    "field_ledger": ("upsert_field_ledger", "delete_field_ledger", "field_id"),
+    "sections": ("upsert_sections", "delete_sections", "section_id"),
+}
+# 整体替换的顶层键（体积小，或本就不适合按条目合并）。
+IR_PATCH_SCALAR_KEYS = ("calculations", "warnings", "limitations", "render_profile")
+
+
+class ReportIRPatchError(RuntimeError):
+    code = "REPORT_IR_PATCH_INVALID"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +80,83 @@ def _report_ir_schema_validator() -> Draft202012Validator:
         (root / "field-ledger.schema.json").read_text(encoding="utf-8")
     )
     return Draft202012Validator(report_schema)
+
+
+def report_ir_contract_schema() -> dict[str, Any]:
+    """返回校验实际使用的 ReportIR JSON Schema（evidence / field_ledger 已内联）。
+
+    交给报告 Agent，让它在构造 ReportIR 前就看到精确字段名与取值枚举，
+    避免按猜测的字段名（如 evidence 的 value/answer/content）反复被校验拒绝。
+    """
+    return copy.deepcopy(_report_ir_schema_validator().schema)
+
+
+def apply_report_ir_patch(
+    draft: dict[str, Any], patch: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """在已有草稿上应用增量补丁，返回 (新草稿, 变更摘要)。
+
+    修补语义：按主键 upsert / delete；未出现的集合保持原样；章节保序（新章节追加）。
+    补丁只承载发生变化的部分，避免模型为修一条证据而重发整份 ReportIR。
+    """
+    if not isinstance(draft, dict):
+        raise ReportIRPatchError("草稿不存在，请先整份落库候选 ReportIR")
+    updated = copy.deepcopy(draft)
+    summary: dict[str, Any] = {}
+
+    for key, (upsert_key, delete_key, id_field) in IR_PATCH_COLLECTIONS.items():
+        items = updated.get(key)
+        if not isinstance(items, list):
+            items = []
+        items = [item for item in items if isinstance(item, dict)]
+        positions = {str(item.get(id_field)): index for index, item in enumerate(items)}
+
+        added = replaced = 0
+        for item in patch.get(upsert_key) or []:
+            if not isinstance(item, dict):
+                raise ReportIRPatchError(f"{upsert_key} 的每一项都必须是对象")
+            item_id = str(item.get(id_field) or "").strip()
+            if not item_id:
+                raise ReportIRPatchError(f"{upsert_key} 的每一项都必须带 {id_field}")
+            if item_id in positions:
+                items[positions[item_id]] = item
+                replaced += 1
+            else:
+                positions[item_id] = len(items)
+                items.append(item)
+                added += 1
+
+        deleted_ids = {str(raw).strip() for raw in patch.get(delete_key) or []}
+        removed = sum(
+            1 for item in items if str(item.get(id_field)) in deleted_ids
+        )
+        if removed:
+            items = [item for item in items if str(item.get(id_field)) not in deleted_ids]
+
+        updated[key] = items
+        if added or replaced or removed:
+            summary[key] = {
+                "added": added,
+                "replaced": replaced,
+                "removed": removed,
+                "total": len(items),
+            }
+
+    for key in IR_PATCH_SCALAR_KEYS:
+        if patch.get(key) is not None:
+            updated[key] = patch[key]
+            summary[key] = "replaced"
+
+    meta_patch = patch.get("meta")
+    if isinstance(meta_patch, dict) and meta_patch:
+        meta = dict(updated.get("meta") or {})
+        meta.update(meta_patch)
+        updated["meta"] = meta
+        summary["meta"] = sorted(str(key) for key in meta_patch)
+
+    if not summary:
+        raise ReportIRPatchError("补丁为空：请至少提供一个待修补的集合或字段")
+    return updated, summary
 
 
 def _is_number(value: Any) -> bool:

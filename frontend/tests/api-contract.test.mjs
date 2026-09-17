@@ -17,6 +17,7 @@ import {
   getSystemStatus,
   listAgentConversations,
   listAgentConversationTurns,
+  deleteAgentConversation,
   listAllDocuments,
   listDocumentFolders,
   listDocumentReportRuns,
@@ -449,6 +450,20 @@ test("conversation history and template confirmation use durable agent routes", 
   );
   assert.equal(requests[2].init.method, "POST");
   assert.deepEqual(JSON.parse(requests[2].init.body), { report_type: "R3" });
+});
+
+test("删除整段对话走 DELETE 并接受 204 空响应", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push({ url, init });
+    return new Response(null, { status: 204 });
+  };
+
+  const result = await deleteAgentConversation("conversation-1");
+
+  assert.equal(requests[0].url, "/api/v1/agent/conversations/conversation-1");
+  assert.equal(requests[0].init.method, "DELETE");
+  assert.equal(result, null);
 });
 
 test("Pi Agent stream keeps an empty dataset list as the all-knowledge-base scope", async () => {

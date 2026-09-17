@@ -377,6 +377,10 @@ export function getReportRun(runId, { signal } = {}) {
   return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}`, { signal });
 }
 
+export function listReportRuns({ limit = 50, signal } = {}) {
+  return apiRequest(`/api/v1/report-runs?limit=${encodeURIComponent(limit)}`, { signal });
+}
+
 export function listDocumentReportRuns(documentId, { limit = 20, signal } = {}) {
   const path = appendQuery(
     `/api/v1/documents/${encodeURIComponent(documentId)}/report-runs`,
@@ -399,6 +403,13 @@ export function retryReportRun(runId, { signal } = {}) {
   });
 }
 
+export function deleteReportRun(runId, { signal } = {}) {
+  return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}`, {
+    method: "DELETE",
+    signal,
+  });
+}
+
 export function listReportQuestions(runId, { signal } = {}) {
   return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}/questions`, { signal });
 }
@@ -415,40 +426,14 @@ export function getGeneratedReport(runId, { signal } = {}) {
   return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}/report`, { signal });
 }
 
-export function analyzeDocument(documentId, { llmConfigId } = {}, { signal } = {}) {
-  return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}/analysis`, {
-    method: "POST",
-    body: {
-      ...(llmConfigId ? { llm_config_id: Number(llmConfigId) } : {}),
-    },
-    signal,
-  });
-}
-
-export function getDocumentAnalysis(documentId, { signal } = {}) {
-  return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}/analysis`, { signal });
-}
-
-export function getDocumentAnalysisStatus(documentId, { signal } = {}) {
-  return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}/analysis/status`, { signal });
-}
-
-export function listDocumentAnalysisReports({ signal } = {}) {
-  return apiRequest("/api/v1/analysis-reports", { signal });
-}
-
-export async function downloadDocumentAnalysisDocx(documentId, { signal } = {}) {
+export async function downloadReportArtifact(runId, artifactId, { signal } = {}) {
   let response;
   try {
     response = await fetch(
-      buildApiUrl(`/api/v1/documents/${encodeURIComponent(documentId)}/analysis/docx`),
-      {
-        method: "GET",
-        headers: createApiHeaders({
-          Accept: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        }),
-        signal,
-      },
+      buildApiUrl(
+        `/api/v1/report-runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      ),
+      { method: "GET", headers: createApiHeaders({}), signal },
     );
   } catch (error) {
     if (error?.name === "AbortError") throw error;
@@ -468,7 +453,7 @@ export async function downloadDocumentAnalysisDocx(documentId, { signal } = {}) 
 
   const disposition = response.headers.get("content-disposition") || "";
   const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-  let filename = "企业文档-分析报告.docx";
+  let filename = "报告.docx";
   if (encodedName) {
     try {
       filename = decodeURIComponent(encodedName);
@@ -609,6 +594,13 @@ export function listAgentConversationTurns(conversationId, { signal } = {}) {
     `/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/turns`,
     { signal },
   );
+}
+
+export function deleteAgentConversation(conversationId, { signal } = {}) {
+  return apiRequest(`/api/v1/agent/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "DELETE",
+    signal,
+  });
 }
 
 export function confirmAgentTemplateSelection(conversationId, turnId, reportType, { signal } = {}) {

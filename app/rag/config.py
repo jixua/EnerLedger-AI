@@ -262,20 +262,6 @@ class Settings(BaseSettings):
     CODEX_CLI_MAX_CONCURRENCY: int = Field(default=1, ge=1, le=8)
 
     # ==========================================
-    # 企业文档分析 (Enterprise Document Analysis)
-    # ==========================================
-    # 分析覆盖当前版本的全部主体分片；超过总预算明确拒绝，不静默截断。
-    DOCUMENT_ANALYSIS_BATCH_TOKEN_BUDGET: int = Field(default=12000, ge=2048, le=32768)
-    DOCUMENT_ANALYSIS_MAX_CHUNKS_PER_BATCH: int = Field(default=6, ge=1, le=50)
-    DOCUMENT_ANALYSIS_MAX_INPUT_TOKENS: int = Field(default=96000, ge=12000, le=262144)
-    DOCUMENT_ANALYSIS_EVIDENCE_MAX_OUTPUT_TOKENS: int = Field(default=4096, ge=512, le=8192)
-    DOCUMENT_ANALYSIS_EVIDENCE_REPAIR_ATTEMPTS: int = Field(default=1, ge=0, le=2)
-    DOCUMENT_ANALYSIS_EVIDENCE_SPLIT_MAX_DEPTH: int = Field(default=2, ge=0, le=4)
-    DOCUMENT_ANALYSIS_REPORT_MAX_OUTPUT_TOKENS: int = Field(default=12000, ge=1024, le=16384)
-    DOCUMENT_ANALYSIS_REPORT_REPAIR_ATTEMPTS: int = Field(default=1, ge=0, le=2)
-    DOCUMENT_ANALYSIS_MODEL_TIMEOUT_MS: int = Field(default=180000, ge=10000, le=600000)
-
-    # ==========================================
     # 召回后重排 (Post-Recall Rerank / LINK-130)
     # ==========================================
     # 重排模块输出的候选条数兜底默认值。调用方未显式传 top_n 时生效；
@@ -667,9 +653,31 @@ class Settings(BaseSettings):
     PI_SERVICE_URL: str = "http://127.0.0.1:8010"
     REPORT_AGENT_INTERNAL_TOKEN: str = ""
     REPORT_AGENT_RUN_TOKEN_SECRET: str = ""
-    REPORT_AGENT_RUN_TOKEN_TTL_SECONDS: int = Field(default=900, ge=60, le=3600)
-    REPORT_AGENT_RUN_TIMEOUT_SECONDS: float = Field(default=600, gt=0, le=3600)
+    REPORT_AGENT_RUN_TOKEN_TTL_SECONDS: int = Field(default=2700, ge=60, le=3600)
+    REPORT_AGENT_RUN_TIMEOUT_SECONDS: float = Field(default=1500, gt=0, le=3600)
     REPORT_AGENT_MAX_TOOL_CALLS: int = Field(default=80, ge=10, le=1000)
+    # 报告 Agent 需要在单次工具调用里产出完整 ReportIR（证据台账 + 字段台账 + 全文章节），
+    # 推理模型的思维链也计入输出预算：默认的 8192 会把输出截断在提交之前。
+    REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS: int = Field(default=32768, ge=1024, le=131072)
+    REPORT_AGENT_MODEL_CONTEXT_WINDOW: int = Field(default=128000, ge=8192, le=1048576)
+    # 报告 Agent 必须在一轮会话里读完全部分片，prompt 会随读取累积：
+    #   prompt 预算 = 上下文窗口 − 最大输出 − 预留（留给 Agent 自己回传的台账/IR 与校验轮次）
+    # 文档超出预算时在创建任务时就明确拒绝，而不是跑几十分钟后截断失败。
+    REPORT_AGENT_CONTEXT_RESERVE_TOKENS: int = Field(default=24000, ge=0, le=200000)
+    # 报告 Agent 是否允许模型输出思考（reasoning_content）。默认关闭：
+    # pi 会把上一轮的思考原样回传，prompt 随轮次持续增长且无法预估——实测一份
+    # 估算 4 万 token 的文档，开启思考后峰值 prompt 达到 12.4 万（窗口 12.8 万），
+    # 最后一轮没有输出空间而失败。开启时会额外扣减下面这份预留，只有小文档能通过。
+    REPORT_AGENT_MODEL_THINKING: bool = False
+    REPORT_AGENT_THINKING_RESERVE_TOKENS: int = Field(default=48000, ge=0, le=200000)
+    # 固定开销估算：模板定义 + Skill + ir_schema + 补充问答 + 系统提示。
+    REPORT_AGENT_PROMPT_OVERHEAD_TOKENS: int = Field(default=12000, ge=0, le=200000)
+    # 单页分片返回的字符上限：分片正文长度差异极大（实测单条最长 1.7 万字符），
+    # 只按条数分页会让一次返回达到几十万字符。
+    REPORT_AGENT_CHUNK_PAGE_MAX_CHARS: int = Field(default=24000, ge=1000, le=200000)
+    # 单个补充答案的长度上限：答案会随 get_run_clarifications 进入模型上下文，
+    # 不限制的话一个粘贴超大文本的答案就能把窗口挤掉。
+    REPORT_ANSWER_MAX_CHARS: int = Field(default=4000, ge=100, le=100000)
     REPORT_MODEL_ALLOWED_HOSTS: str = ""
     REPORT_MODEL_ALLOW_PRIVATE_ENDPOINTS: bool = False
     MINIO_ENDPOINT: str = "localhost:9000"
@@ -784,6 +792,24 @@ class Settings(BaseSettings):
         if self.REPORT_AGENT_RUN_TOKEN_TTL_SECONDS <= self.REPORT_AGENT_RUN_TIMEOUT_SECONDS:
             raise ValueError(
                 "REPORT_AGENT_RUN_TOKEN_TTL_SECONDS must exceed REPORT_AGENT_RUN_TIMEOUT_SECONDS"
+            )
+        if (
+            self.REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS + self.REPORT_AGENT_CONTEXT_RESERVE_TOKENS
+            >= self.REPORT_AGENT_MODEL_CONTEXT_WINDOW
+        ):
+            raise ValueError(
+                "REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS + REPORT_AGENT_CONTEXT_RESERVE_TOKENS "
+                "must be less than REPORT_AGENT_MODEL_CONTEXT_WINDOW"
+            )
+        if self.REPORT_AGENT_MODEL_THINKING and (
+            self.REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS
+            + self.REPORT_AGENT_CONTEXT_RESERVE_TOKENS
+            + self.REPORT_AGENT_THINKING_RESERVE_TOKENS
+            >= self.REPORT_AGENT_MODEL_CONTEXT_WINDOW
+        ):
+            raise ValueError(
+                "开启 REPORT_AGENT_MODEL_THINKING 时，最大输出 + 上下文预留 + 思考预留 "
+                "必须小于模型上下文窗口，否则没有文档能通过预算闸门"
             )
         try:
             retry_delays = [

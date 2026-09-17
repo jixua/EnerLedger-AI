@@ -116,6 +116,7 @@ export async function executeAgentRun({ config, runId, content, history, model, 
   const allHitsByEvidence = new Map();
   let finalText = "";
   let finalAssistantMessage;
+  let streamedAnswer = false;
 
   const trackEvidenceChunks = (chunks = []) => {
     const mergedChunks = [];
@@ -327,6 +328,13 @@ export async function executeAgentRun({ config, runId, content, history, model, 
   });
 
   const unsubscribe = session.subscribe((event) => {
+    if (event.type === "message_update" && event.message.role === "assistant") {
+      const update = event.assistantMessageEvent;
+      if (update?.type === "text_delta" && update.delta) {
+        streamedAnswer = true;
+        emit("answer_delta", { text: update.delta });
+      }
+    }
     if (event.type === "message_end" && event.message.role === "assistant") {
       finalAssistantMessage = event.message;
       if (["stop", "length"].includes(event.message.stopReason)) {
@@ -346,7 +354,7 @@ export async function executeAgentRun({ config, runId, content, history, model, 
     assertCompleted(finalAssistantMessage);
     if (!skillRead) throw new Error("WORKFLOW_SKILL_REQUIRED");
     if (!finalText.trim()) throw new Error("AGENT_EMPTY_RESPONSE");
-    emit("answer_delta", { text: finalText });
+    if (!streamedAnswer) emit("answer_delta", { text: finalText });
     const resultUsage = usage(session.getSessionStats());
     emit("answer_done", {
       request_id: runId,

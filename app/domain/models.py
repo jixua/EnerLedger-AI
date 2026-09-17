@@ -303,6 +303,9 @@ class ReportRun(Base):
     lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     report_ir: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # 候选 ReportIR 草稿：由 save_report_ir_draft 落库，validate/submit 直接引用它，
+    # 避免整份 IR 在每次校验/提交时重复占用模型上下文。
+    report_ir_draft: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     analysis_coverage: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     validation_report: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

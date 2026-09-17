@@ -77,8 +77,16 @@
         }
       }
     },
-    "warnings": {"type": "array", "items": {"type": "string"}},
-    "limitations": {"type": "array", "items": {"type": "string"}},
+    "warnings": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "读正文之前需要知道的口径与数据问题：数值口径差异、未纳入统计的项、来源不确定的参数。每条一句话；正文中已经说明过的内容不要在这里重复。"
+    },
+    "limitations": {
+      "type": "array",
+      "items": {"type": "string"},
+      "description": "报告的适用边界与免责：本报告的性质（草稿或辅助分析）、不能替代什么、以及遗留的不确定性。与 warnings 的区别是这里讲报告本身可信到什么程度，不涉及具体数值。"
+    },
     "render_profile": {"type": "string", "minLength": 1}
   }
 }

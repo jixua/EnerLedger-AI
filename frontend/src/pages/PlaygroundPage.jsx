@@ -8,7 +8,6 @@ import {
   Copy,
   Database,
   FileText,
-  LayoutTemplate,
   LoaderCircle,
   MessageSquareText,
   Paperclip,
@@ -16,6 +15,7 @@ import {
   Search,
   Square,
   Sparkles,
+  Trash2,
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -24,10 +24,12 @@ import { Link, useLocation } from "react-router-dom";
 
 import {
   confirmAgentTemplateSelection,
+  deleteAgentConversation,
   listAgentConversations,
   listAgentConversationTurns,
 } from "../lib/api";
 import { isDocumentRetrievalReady } from "../lib/parse-quality";
+import { ChatReportCard } from "../components/ChatReportCard";
 import {
   findHitByCitationIndex,
   linkifyRecallChunkMentions,
@@ -47,6 +49,20 @@ const STATUS_COPY = {
   empty: "未找到相关内容",
   stopped: "已停止",
   error: "生成失败",
+};
+
+/** 仍在流式推进的状态。这段时间不向辅助技术播报，避免逐 token 朗读。 */
+const STREAMING_STATUSES = new Set(["recalling", "generating"]);
+const isStreamingMessage = (message) => STREAMING_STATUSES.has(message.status);
+
+/** 回答正文里的 markdown 标题下沉一级：页面级 h1 是会话标题，正文不应再出现 h1。 */
+const MESSAGE_MARKDOWN_COMPONENTS = {
+  h1: (props) => <h2 {...props} />,
+  h2: (props) => <h3 {...props} />,
+  h3: (props) => <h4 {...props} />,
+  h4: (props) => <h5 {...props} />,
+  h5: (props) => <h6 {...props} />,
+  h6: (props) => <h6 {...props} />,
 };
 
 function normalizeEvent(eventOrName, maybePayload) {
@@ -116,24 +132,26 @@ export function PlaygroundPage() {
   const [conversationId, setConversationId] = useState(null);
   const [conversations, setConversations] = useState([]);
   const [historyLoading, setHistoryLoading] = useState(false);
+  const [pendingDeleteId, setPendingDeleteId] = useState(null);
+  const [deletingId, setDeletingId] = useState(null);
+  const [historyError, setHistoryError] = useState("");
   const [attachments, setAttachments] = useState([]);
-  const [uploadingRole, setUploadingRole] = useState(null);
+  const [uploading, setUploading] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");
   const [confirmationSelections, setConfirmationSelections] = useState({});
-  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
   const [sourceMessageId, setSourceMessageId] = useState(null);
   const [activeCitationIndex, setActiveCitationIndex] = useState(null);
   const [copiedMessageId, setCopiedMessageId] = useState(null);
   const [openSelector, setOpenSelector] = useState(null);
   const abortRef = useRef(null);
   const activeAssistantRef = useRef(null);
-  const messageEndRef = useRef(null);
+  const threadRef = useRef(null);
+  const stickToBottomRef = useRef(true);
   const controlsRef = useRef(null);
   const datasetTriggerRef = useRef(null);
   const modelTriggerRef = useRef(null);
   const sourceCardRefs = useRef(new Map());
   const sourceFileRef = useRef(null);
-  const templateFileRef = useRef(null);
 
   const retrievalReadyCounts = useMemo(() => {
     const counts = new Map();
@@ -176,6 +194,10 @@ export function PlaygroundPage() {
     () => chatModels.find((model) => String(model.id) === String(selectedModelId)) || null,
     [chatModels, selectedModelId],
   );
+  const activeConversationTitle = useMemo(
+    () => conversations.find((item) => item.conversation_id === conversationId)?.title || "对话",
+    [conversations, conversationId],
+  );
   const documentsById = useMemo(() => new Map(
     flattenDocuments(documents).map((document) => [
       Number(document.document_id ?? document.id),
@@ -192,11 +214,10 @@ export function PlaygroundPage() {
   const attachmentsFailed = resolvedAttachments.some(
     (attachment) => String(attachment.document?.status || "").toUpperCase() === "FAILED",
   );
-  const attachmentRolesValid = !resolvedAttachments.length
-    || (
-      resolvedAttachments.filter((attachment) => attachment.role === "SOURCE").length === 1
-      && resolvedAttachments.filter((attachment) => attachment.role === "TEMPLATE").length <= 1
-    );
+  // 用途由服务端判断，前端只保证份数不超过上限
+  const attachmentCountValid = resolvedAttachments.length <= 2;
+  // 只有两份文件时"哪份是模板"才有歧义，也才需要用户指明
+  const allowRoleToggle = resolvedAttachments.length === 2;
   const datasetTriggerLabel = !selectedDatasetIds.length
     ? `全部知识库${activeDatasets.length ? `（${activeDatasets.length}）` : ""}`
     : selectedDatasets.length === 1
@@ -204,16 +225,16 @@ export function PlaygroundPage() {
     : selectedDatasets.length
       ? `${selectedDatasets.length} 个数据集`
       : "选择数据集";
-  const isRunning = messages.some((message) => message.role === "assistant" && ["recalling", "generating"].includes(message.status));
+  const isRunning = messages.some((message) => message.role === "assistant" && isStreamingMessage(message));
   const hasRetrievalScope = activeDatasets.length > 0;
   const canSubmit = Boolean(
     question.trim()
     && hasRetrievalScope
     && (!needsExplicitModel || selectedModelId)
     && !isRunning
-    && !uploadingRole
+    && !uploading
     && attachmentsReady
-    && attachmentRolesValid
+    && attachmentCountValid
   );
   const sourceMessage = messages.find((message) => message.id === sourceMessageId);
   const sourceHits = sourceMessage?.hits ?? [];
@@ -232,6 +253,27 @@ export function PlaygroundPage() {
       setConversations(await listAgentConversations());
     } catch {
       setConversations([]);
+    }
+  }
+
+  async function handleDeleteConversation(id) {
+    setDeletingId(id);
+    setHistoryError("");
+    try {
+      await deleteAgentConversation(id);
+      setPendingDeleteId(null);
+      if (id === conversationId) {
+        // 删掉的正是当前打开的对话：清空视图，回到新对话状态。
+        activeAssistantRef.current = null;
+        setConversationId(null);
+        setMessages([]);
+        setAttachments([]);
+      }
+      await refreshConversations();
+    } catch (error) {
+      setHistoryError(error?.message || "删除对话失败");
+    } finally {
+      setDeletingId(null);
     }
   }
 
@@ -282,9 +324,9 @@ export function PlaygroundPage() {
           status: "OPEN",
           question: "当前材料可能对应多类报告，请确认要生成哪一种？",
           options: [
-            { value: "R2", label: "R2 · 组织温室气体排放清单报告", description: "适合 Scope 1/2/3 年度盘查与组织边界材料。" },
-            { value: "R3", label: "R3 · ESG/可持续发展报告", description: "适合同时包含治理、战略、风险与指标目标的材料。" },
-            { value: "R6", label: "R6 · SBTi 目标设定报告", description: "适合基准年清单、近期目标与净零路径材料。" },
+            { value: "R2", label: "组织温室气体排放清单报告", description: "适合 Scope 1/2/3 年度盘查与组织边界材料。" },
+            { value: "R3", label: "ESG/可持续发展报告", description: "适合同时包含治理、战略、风险与指标目标的材料。" },
+            { value: "R6", label: "SBTi 目标设定报告", description: "适合基准年清单、近期目标与净零路径材料。" },
           ],
         },
       },
@@ -313,7 +355,7 @@ export function PlaygroundPage() {
     function handleKeyDown(event) {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      const trigger = openSelector === "datasets" ? datasetTriggerRef.current : modelTriggerRef.current;
+      const trigger = selectorTriggerRef(openSelector);
       setOpenSelector(null);
       window.requestAnimationFrame(() => trigger?.focus());
     }
@@ -327,7 +369,16 @@ export function PlaygroundPage() {
   }, [openSelector]);
 
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
+    // 切换会话时恢复"粘底"跟随。
+    stickToBottomRef.current = true;
+  }, [conversationId]);
+
+  useEffect(() => {
+    // 流式输出期间仅在用户位于底部时跟随；用户上滑阅读时保持当前位置。
+    if (!stickToBottomRef.current) return;
+    const el = threadRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
   }, [messages]);
 
   useEffect(() => {
@@ -345,8 +396,14 @@ export function PlaygroundPage() {
       : [...current, normalized]);
   }
 
+  function selectorTriggerRef(selector) {
+    if (selector === "datasets") return datasetTriggerRef.current;
+    if (selector === "model") return modelTriggerRef.current;
+    return null;
+  }
+
   function closeSelectorAndRestoreFocus(selector = openSelector) {
-    const trigger = selector === "datasets" ? datasetTriggerRef.current : modelTriggerRef.current;
+    const trigger = selectorTriggerRef(selector);
     setOpenSelector(null);
     window.requestAnimationFrame(() => trigger?.focus());
   }
@@ -357,7 +414,9 @@ export function PlaygroundPage() {
   }
 
   async function openConversation(id) {
-    if (!id || isRunning) return;
+    if (!id) return;
+    // 生成中的后台流与当前视图解绑：其事件不再更新界面，完成后仍会持久化到该对话。
+    activeAssistantRef.current = null;
     setHistoryLoading(true);
     setAttachmentError("");
     try {
@@ -390,7 +449,7 @@ export function PlaygroundPage() {
     }
   }
 
-  async function uploadConversationFile(file, role) {
+  async function uploadConversationFile(file) {
     if (!file) return;
     const targetDatasetId = selectedDatasetIds.length === 1
       ? Number(selectedDatasetIds[0])
@@ -398,31 +457,37 @@ export function PlaygroundPage() {
     if (!targetDatasetId) {
       throw new Error("上传对话资料前，请只选择一个知识库。");
     }
-    if (role === "SOURCE" && attachments.some((item) => item.role === "SOURCE")) {
-      throw new Error("每轮只能添加一个源文件，请先移除现有源文件。");
+    // 上传时不问用途：哪份是来源文档、哪份是报告模板由服务端判断
+    if (attachments.length >= 2) {
+      throw new Error("一次最多上传两份文件，请先移除现有的。");
     }
-    if (role === "TEMPLATE" && attachments.some((item) => item.role === "TEMPLATE")) {
-      throw new Error("每轮只能添加一个报告模板，请先移除现有模板。");
-    }
-    setUploadingRole(role);
+    setUploading(true);
     try {
       const [result] = await uploadDocuments(targetDatasetId, [file], { stopOnError: true });
       const documentId = Number(result?.document_id ?? result?.id);
       if (!documentId) throw new Error("上传成功但未返回文档编号");
-      setAttachments((current) => [...current, { documentId, role, document: result }]);
+      setAttachments((current) => [...current, { documentId, document: result }]);
     } finally {
-      setUploadingRole(null);
-      setAttachmentMenuOpen(false);
+      setUploading(null);
     }
   }
 
-  async function handleFileSelection(event, role) {
+  /** 指明某份文件是报告模板；再点一次取消标记，回到自动判断。 */
+  function toggleTemplateRole(documentId) {
+    setAttachments((current) => current.map((item) => ({
+      ...item,
+      // 模板只能有一份：标记某一份会清掉其它份的标记
+      role: item.documentId === documentId && item.role !== "TEMPLATE" ? "TEMPLATE" : undefined,
+    })));
+  }
+
+  async function handleFileSelection(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
     setAttachmentError("");
     try {
-      await uploadConversationFile(file, role);
+      await uploadConversationFile(file);
     } catch (error) {
       setAttachmentError(error?.message || "文件上传失败");
     }
@@ -435,7 +500,7 @@ export function PlaygroundPage() {
       if (isDemo) {
         setMessages((current) => updateMessage(current, message.id, (item) => ({
           ...item,
-          content: `已按 ${reportType} 创建预览报告任务。`,
+          content: `已按「${message.interaction?.options?.find((item) => item.value === reportType)?.label || reportType}」创建预览报告任务。`,
           interaction: { ...item.interaction, status: "ANSWERED", selected: reportType },
           confirmationBusy: false,
         })));
@@ -518,6 +583,7 @@ export function PlaygroundPage() {
   async function submitQuestion(event) {
     event?.preventDefault();
     if (!canSubmit || typeof streamAgent !== "function") return;
+    stickToBottomRef.current = true;
 
     const prompt = question.trim();
     const idBase = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
@@ -612,23 +678,44 @@ export function PlaygroundPage() {
 
   const composer = (
     <form className="chat-composer" onSubmit={submitQuestion}>
-      <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={(event) => handleFileSelection(event, "SOURCE")} />
-      <input ref={templateFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={(event) => handleFileSelection(event, "TEMPLATE")} />
+      <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={handleFileSelection} />
       {resolvedAttachments.length ? (
+        <>
         <div className="composer-attachments" aria-label="本轮附件">
           {resolvedAttachments.map((attachment) => {
             const status = String(attachment.document?.status || "").toUpperCase();
             const ready = status === "READY";
             const failed = status === "FAILED";
+            const isTemplate = attachment.role === "TEMPLATE";
             return (
-              <span className={`composer-attachment${ready ? " is-ready" : failed ? " is-failed" : " is-pending"}`} key={`${attachment.role}-${attachment.documentId}`}>
-                {attachment.role === "TEMPLATE" ? <LayoutTemplate size={14} /> : <FileText size={14} />}
-                <span><strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong><small>{attachment.role === "TEMPLATE" ? "报告模板" : "源文件"} · {ready ? "可用" : failed ? "解析失败" : "解析中"}</small></span>
-                <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => !(item.role === attachment.role && item.documentId === attachment.documentId)))}><X size={13} /></button>
+              <span className={`composer-attachment${ready ? " is-ready" : failed ? " is-failed" : " is-pending"}${isTemplate ? " is-template" : ""}`} key={attachment.documentId}>
+                <FileText size={14} />
+                <span>
+                  <strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong>
+                  <small>
+                    {ready ? "可用" : failed ? "解析失败" : "解析中"}
+                    {/* 只有两份时才有"哪份是模板"的歧义；用户不点就交给服务端判断 */}
+                    {allowRoleToggle ? (
+                      <button
+                        type="button"
+                        className="composer-attachment__role"
+                        aria-pressed={isTemplate}
+                        title={isTemplate ? "取消模板标记，改为自动判断" : "把这份文件指定为报告模板"}
+                        onClick={() => toggleTemplateRole(attachment.documentId)}
+                      >
+                        {isTemplate ? "模板" : "设为模板"}
+                      </button>
+                    ) : null}
+                  </small>
+                </span>
+                <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => item.documentId !== attachment.documentId))}><X size={13} /></button>
               </span>
             );
           })}
         </div>
+        {/* 附件不再等于"发起生成"：问问题也行，所以提示要把两种用法都讲清楚 */}
+        <p className="composer-attachments-hint">可以直接就这些文件提问，也可以让系统据此生成报告。生成时模板是可选的，不指定则由系统判断哪份是报告主体材料、哪份提供版式。</p>
+        </>
       ) : null}
       <textarea
         value={question}
@@ -647,17 +734,17 @@ export function PlaygroundPage() {
       />
       <div className="chat-composer__toolbar">
         <div className="chat-composer__controls" ref={controlsRef}>
-          <div className={`composer-selector composer-selector--attachment${attachmentMenuOpen ? " is-open" : ""}`}>
-            <button type="button" className="composer-selector__trigger composer-attachment-trigger" aria-label="添加资料" aria-expanded={attachmentMenuOpen} onClick={() => setAttachmentMenuOpen((value) => !value)}>
-              {uploadingRole ? <LoaderCircle className="spin" size={15} /> : <Paperclip size={15} />}
-              <span>添加资料</span>
+          {/* 上传时不问用途：哪份是来源文档、哪份是报告模板由服务端判断 */}
+          <div className="composer-selector composer-selector--attachment">
+            <button
+              type="button"
+              className="composer-selector__trigger composer-attachment-trigger"
+              aria-label="上传文件"
+              onClick={() => sourceFileRef.current?.click()}
+            >
+              {uploading ? <LoaderCircle className="spin" size={15} /> : <Paperclip size={15} />}
+              <span>上传文件</span>
             </button>
-            {attachmentMenuOpen ? (
-              <div className="composer-selector__panel composer-selector__panel--attachment">
-                <button type="button" className="attachment-role-option" onClick={() => sourceFileRef.current?.click()}><FileText size={17} /><span><strong>上传源文件</strong><small>分析内容并自动匹配报告类型</small></span></button>
-                <button type="button" className="attachment-role-option" onClick={() => templateFileRef.current?.click()}><LayoutTemplate size={17} /><span><strong>上传报告模板</strong><small>作为章节、字段映射和版式参考</small></span></button>
-              </div>
-            ) : null}
           </div>
           <div className={`composer-selector composer-selector--datasets${openSelector === "datasets" ? " is-open" : ""}`}>
             <button
@@ -796,8 +883,6 @@ export function PlaygroundPage() {
         <p className="composer-warning composer-warning--action">开始对话前，请先<Link to="/datasets">创建数据集并上传文档</Link>。</p>
       ) : attachmentError ? (
         <p className="composer-warning" role="alert">{attachmentError}</p>
-      ) : resolvedAttachments.length && !attachmentRolesValid ? (
-        <p className="composer-warning">添加报告模板后还需要上传一个源文件。</p>
       ) : attachmentsFailed ? (
         <p className="composer-warning" role="alert">附件解析失败，请移除后重新上传。</p>
       ) : resolvedAttachments.length && !attachmentsReady ? (
@@ -811,18 +896,40 @@ export function PlaygroundPage() {
   return (
     <div className="conversation-workspace">
       <aside className="conversation-history" aria-label="历史对话">
-        <header><span>最近对话</span><button type="button" aria-label="新建对话" onClick={() => { setConversationId(null); setMessages([]); setAttachments([]); }}><Plus size={15} /></button></header>
+        <header><span>最近对话</span><button type="button" aria-label="新建对话" onClick={() => { activeAssistantRef.current = null; setConversationId(null); setMessages([]); setAttachments([]); }}><Plus size={15} /></button></header>
         <div className="conversation-history__list">
           {historyLoading ? <p>正在读取…</p> : conversations.length ? conversations.map((item) => (
-            <button type="button" className={item.conversation_id === conversationId ? "is-active" : ""} key={item.conversation_id} onClick={() => openConversation(item.conversation_id)}>
-              <MessageSquareText size={14} /><span><strong>{item.title}</strong><small>{item.turn_count} 轮对话</small></span>
-            </button>
+            <div className={`conversation-history__item${item.conversation_id === conversationId ? " is-active" : ""}`} key={item.conversation_id}>
+              <button type="button" className="conversation-history__open" onClick={() => openConversation(item.conversation_id)}>
+                <MessageSquareText size={14} /><span><strong>{item.title}</strong><small>{item.turn_count} 轮对话</small></span>
+              </button>
+              {pendingDeleteId === item.conversation_id ? (
+                <div className="conversation-history__confirm" role="group" aria-label="确认删除对话">
+                  <button type="button" className="is-danger" onClick={() => { void handleDeleteConversation(item.conversation_id); }} disabled={deletingId === item.conversation_id}>
+                    {deletingId === item.conversation_id ? <LoaderCircle className="spin" size={12} /> : "删除"}
+                  </button>
+                  <button type="button" onClick={() => setPendingDeleteId(null)} disabled={Boolean(deletingId)}>取消</button>
+                </div>
+              ) : (
+                <button
+                  type="button"
+                  className="conversation-history__delete"
+                  aria-label={`删除对话：${item.title}`}
+                  title={isRunning ? "生成中，暂不能删除" : "删除整段对话"}
+                  onClick={() => { setHistoryError(""); setPendingDeleteId(item.conversation_id); }}
+                  disabled={isRunning}
+                >
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
           )) : <p>还没有历史对话</p>}
+          {historyError ? <p className="conversation-history__error" role="alert">{historyError}</p> : null}
         </div>
       </aside>
       <div className={`conversation-page${messages.length ? " conversation-page--active" : ""}`}>
       {!messages.length ? (
-        <main className="conversation-empty">
+        <div className="conversation-empty">
           <div className="conversation-empty__intro">
             <h1>把碳知识库<br />变成会回答问题的专家</h1>
             <p>AI 检索政策、标准与核算资料，生成有依据的答案，并回溯原文片段和页码。</p>
@@ -833,35 +940,64 @@ export function PlaygroundPage() {
               <button type="button" key={suggestion} onClick={() => setQuestion(suggestion)}>{suggestion}</button>
             ))}
           </div>
-        </main>
+        </div>
       ) : (
-        <main className="conversation-thread">
+        <div
+          className="conversation-thread"
+          ref={threadRef}
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+          aria-label="对话消息"
+          onScroll={(event) => {
+            // 滞回判定：流式增长会垫高"距底距离"，阈间保持现状避免状态抖断。
+            const el = event.currentTarget;
+            const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+            if (distance <= 250) stickToBottomRef.current = true;
+            else if (distance >= 400) stickToBottomRef.current = false;
+          }}
+          onWheel={(event) => {
+            // 滚轮向上即视为用户离开底部，立即停止跟随。
+            if (event.deltaY < 0) stickToBottomRef.current = false;
+          }}
+        >
           <div className="message-column">
+            {/* 对话视图此前没有任何标题：补一个页面级 h1，供辅助技术定位与朗读上下文。 */}
+            <h1 className="sr-only">{activeConversationTitle}</h1>
             {messages.map((message) => message.role === "user" ? (
               <article className="chat-message chat-message--user" key={message.id}>
                 <div className="chat-message__avatar">U</div>
                 <div className="chat-message__body">
-                  {message.attachments?.length ? <div className="chat-message__attachments">{message.attachments.map((attachment) => <span key={`${attachment.role}-${attachment.document_id ?? attachment.documentId}`}><FileText size={13} />{attachment.filename || `文档 #${attachment.document_id ?? attachment.documentId}`}<small>{attachment.role === "TEMPLATE" ? "模板" : "源文件"}</small></span>)}</div> : null}
+                  {message.attachments?.length ? <div className="chat-message__attachments">{message.attachments.map((attachment) => <span key={`${attachment.role}-${attachment.document_id ?? attachment.documentId}`}><FileText size={13} />{attachment.filename || `文档 #${attachment.document_id ?? attachment.documentId}`}<small>{attachment.role === "TEMPLATE" ? "模板" : "来源文档"}</small></span>)}</div> : null}
                   <p>{message.content}</p>
+                  {message.content ? (
+                    <footer className="chat-message__actions">
+                      <button type="button" onClick={() => copyMessage(message)}>{copiedMessageId === message.id ? <Check size={14} /> : <Copy size={14} />}{copiedMessageId === message.id ? "已复制" : "复制"}</button>
+                    </footer>
+                  ) : null}
                 </div>
               </article>
             ) : (
-              <article className="chat-message chat-message--assistant" key={message.id}>
+              <article
+                className="chat-message chat-message--assistant"
+                key={message.id}
+                aria-busy={isStreamingMessage(message)}
+              >
                 <div className="chat-message__avatar"><Sparkles size={15} /></div>
                 <div className="chat-message__body">
-                  {message.status !== "done" ? <div className="chat-message__status">
-                    {["recalling", "generating"].includes(message.status) ? <LoaderCircle className="spin" size={14} /> : message.status === "error" ? <CircleAlert size={14} /> : <Check size={14} />}
+                  {message.status !== "done" ? <div className="chat-message__status" role="status">
+                    {isStreamingMessage(message) ? <LoaderCircle className="spin" size={14} /> : message.status === "error" ? <CircleAlert size={14} /> : <Check size={14} />}
                     <span>{STATUS_COPY[message.status] || "处理中"}</span>
                   </div> : null}
                   {message.content ? (
                     <div className="chat-markdown" onClickCapture={(event) => handleRecallChunkLinkClick(event, message)}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MESSAGE_MARKDOWN_COMPONENTS}>
                         {linkifyRecallChunkMentions(message.content, message.hits)}
                       </ReactMarkdown>
                     </div>
                   ) : null}
                   {!message.content && message.status === "empty" ? <p className="chat-message__empty">根据已选择的数据集，暂未找到可以支持回答的相关内容。</p> : null}
-                  {!message.content && ["recalling", "generating"].includes(message.status) ? (
+                  {!message.content && isStreamingMessage(message) ? (
                     <div className="typing-line"><span /><span /><span /></div>
                   ) : null}
                   {message.error ? <p className="chat-message__error">{message.error}</p> : null}
@@ -879,8 +1015,9 @@ export function PlaygroundPage() {
                     </section>
                   ) : null}
                   {message.interaction?.status === "ANSWERED" ? <p className="chat-message__notice">已确认 {message.interaction.selected}，报告任务已经创建。</p> : null}
+                  {message.reportRunId ? <ChatReportCard runId={message.reportRunId} /> : null}
                   {message.failedSources?.length ? <p className="chat-message__warning">部分检索服务暂时不可用，本次回答可能不完整。</p> : null}
-                  {!["recalling", "generating"].includes(message.status) ? (
+                  {!isStreamingMessage(message) ? (
                     <footer className="chat-message__actions">
                       {message.hits?.length ? <button type="button" onClick={() => openSourceDrawer(message)}><Search size={14} />查看 {message.hits.length} 个召回片段</button> : null}
                       {message.content ? <button type="button" onClick={() => copyMessage(message)}>{copiedMessageId === message.id ? <Check size={14} /> : <Copy size={14} />}{copiedMessageId === message.id ? "已复制" : "复制"}</button> : null}
@@ -889,10 +1026,9 @@ export function PlaygroundPage() {
                 </div>
               </article>
             ))}
-            <div ref={messageEndRef} />
           </div>
           <div className="conversation-composer-dock">{composer}</div>
-        </main>
+        </div>
       )}
 
       {sourceMessage ? (

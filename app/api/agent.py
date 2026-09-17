@@ -38,15 +38,33 @@ from app.rag.core.llm.runtime_repository import RuntimeConfigRepository
 from app.rag.core.llm.user_model_resolver import aresolve_model
 from app.rag.core.pipeline.chunk_content import fetch_chunk_sources
 from app.rag.core.pipeline.recall.generation import assemble_context
+from app.rag.core.prompts import (
+    REPORT_CLARIFICATION_FALLBACK,
+    REPORT_CLARIFICATION_MAX_OUTPUT_TOKENS,
+    REPORT_CLARIFICATION_SYSTEM_PROMPT,
+    REPORT_CLARIFICATION_TIMEOUT_SECONDS,
+    build_report_clarification_user_prompt,
+    clean_report_clarification,
+)
 from app.rag.database import get_db, get_db_context
 from app.rag.models.chunk_record import ChunkRecordDB
 from app.services.agent_conversations import finish_turn, start_turn
 from app.services.agent_runs import agent_run_registry
+from app.services.agent_turn_intent import (
+    REPORT_INTENT,
+    TurnIntent,
+    decide_turn_intent,
+)
 from app.services.document_queue import DOCUMENT_STATUS_READY
 from app.services.pi_agent_client import (
     PiAgentUnavailableError,
     pi_agent_readiness,
     stream_pi_agent,
+)
+from app.services.report_attachment_roles import (
+    AttachmentRoleError,
+    decide_attachment_roles,
+    resolve_declared_roles,
 )
 from app.services.report_template_classifier import Classification, classify_document
 
@@ -60,14 +78,59 @@ def _sse_error(code: str, message: str) -> str:
 
 
 def _sse_event(name: str, payload: dict) -> str:
-    return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
+    # payload 可能携带原始 datetime（如报告对象字段），统一降级为字符串保证事件可序列化。
+    return f"event: {name}\ndata: {json.dumps(payload, ensure_ascii=False, default=str)}\n\n"
+
+
+async def _report_clarification_reply(
+    *,
+    db: AsyncSession,
+    user_id: int,
+    config_id: int,
+    filename: str,
+    candidates: list[dict],
+) -> str:
+    """报告类型不明确时，用本轮对话模型生成确认说明；任何失败回落固定文案。"""
+
+    try:
+        resolved = await aresolve_model(
+            user_id=user_id, config_id=config_id, capability="CHAT", db=db
+        )
+    except LLMConfigResolutionError:
+        return REPORT_CLARIFICATION_FALLBACK
+    try:
+        result = await asyncio.wait_for(
+            resolved.provider.generate(
+                prompt=build_report_clarification_user_prompt(
+                    filename=filename, candidates=candidates
+                ),
+                system_prompt=REPORT_CLARIFICATION_SYSTEM_PROMPT,
+                temperature=0.2,
+                max_tokens=REPORT_CLARIFICATION_MAX_OUTPUT_TOKENS,
+            ),
+            timeout=REPORT_CLARIFICATION_TIMEOUT_SECONDS,
+        )
+        return clean_report_clarification(result.content) or REPORT_CLARIFICATION_FALLBACK
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 确认说明为增强项，失败回落固定文案
+        logger.warning(
+            "[agent] report clarification generation failed (degraded): "
+            "error_type=%s error_message=%s",
+            type(exc).__name__,
+            str(exc)[:200],
+        )
+        return REPORT_CLARIFICATION_FALLBACK
+    finally:
+        await aclose_dataset_execution_contexts([], extra_models=[resolved])
 
 
 class AgentAttachment(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     document_id: int = Field(gt=0)
-    role: Literal["SOURCE", "TEMPLATE"]
+    # 可省略：不声明时由模型判断各文件用途（见 report_attachment_roles）。
+    role: Literal["SOURCE", "TEMPLATE"] | None = None
 
 
 class AgentHistoryMessage(BaseModel):
@@ -868,6 +931,10 @@ async def agent_stream(
         attachment_ids = [item.document_id for item in body.attachments]
         if len(set(attachment_ids)) != len(attachment_ids):
             raise HTTPException(status_code=422, detail="附件不能重复")
+        if len(attachment_ids) > 2:
+            raise HTTPException(
+                status_code=422, detail="一次最多两份文件：一份来源文档与一份报告模板"
+            )
         owned = (
             await db.scalars(
                 select(Document).where(
@@ -890,18 +957,80 @@ async def agent_stream(
                         "message": f"{document.filename} 尚未解析完成，请稍后再发送",
                     },
                 )
-            (source_documents if item.role == "SOURCE" else template_documents).append(document)
-            attachment_snapshots.append(
-                {
-                    "document_id": int(document.id),
-                    "document_version": int(document.version),
-                    "dataset_id": int(document.dataset_id),
-                    "filename": document.filename,
-                    "role": item.role,
-                }
+
+        # 用户显式指定的用途优先，未指定的按规则补全；一个都没指定时才交给模型判断。
+        declared = {item.document_id: item.role for item in body.attachments if item.role}
+        if declared:
+            try:
+                subject_id, template_id = resolve_declared_roles(
+                    attachment_ids=attachment_ids, declared=declared
+                )
+            except AttachmentRoleError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+            decided_by = "caller"
+        else:
+            decision = await decide_attachment_roles(
+                db=db,
+                user_id=user_id,
+                config_id=config_id,
+                documents=[by_id[document_id] for document_id in attachment_ids],
             )
-        if len(source_documents) != 1 or len(template_documents) > 1:
-            raise HTTPException(status_code=422, detail="报告对话需要一个源文件和最多一个模板文件")
+            subject_id, template_id, decided_by = (
+                decision.subject_id,
+                decision.template_id,
+                decision.decided_by,
+            )
+
+        source_documents = [by_id[subject_id]]
+        template_documents = [by_id[template_id]] if template_id else []
+        attachment_snapshots = [
+            {
+                "document_id": document_id,
+                "document_version": int(by_id[document_id].version),
+                "dataset_id": int(by_id[document_id].dataset_id),
+                "filename": by_id[document_id].filename,
+                "role": "TEMPLATE" if document_id == template_id else "SOURCE",
+            }
+            for document_id in attachment_ids
+        ]
+        logger.info(
+            "[agent] report attachment roles resolved decided_by=%s subject_id=%s template_id=%s",
+            decided_by,
+            subject_id,
+            template_id,
+        )
+
+    # 附件曾经等同于「发起报告生成」：只要判定出主体材料就无条件走报告分类，
+    # 于是「这两份材料分别是什么」也会被要求先选报告类型。这里先判一次意图，
+    # 只有确实要报告才进报告链路，提问落到下面的问答链路。
+    attached_documents = [*source_documents, *template_documents]
+    turn_intent = (
+        await decide_turn_intent(
+            db=db,
+            user_id=user_id,
+            config_id=config_id,
+            query=body.query,
+            filenames=[document.filename for document in attached_documents],
+        )
+        if source_documents
+        else TurnIntent(intent=REPORT_INTENT, decided_by="none")
+    )
+    wants_report = bool(source_documents) and turn_intent.intent == REPORT_INTENT
+    if source_documents:
+        logger.info(
+            "[agent] turn intent resolved intent=%s decided_by=%s attachments=%s",
+            turn_intent.intent,
+            turn_intent.decided_by,
+            [int(document.id) for document in attached_documents],
+        )
+
+    # 带附件提问时把检索范围收到这份材料：用户上传它就是为了问它，散到整个知识库
+    # 反而更可能答不到这份文件上。
+    scoped_doc_ids = (
+        [int(document.id) for document in attached_documents]
+        if source_documents and not wants_report
+        else list(body.doc_ids or [])
+    )
 
     conversation, turn, persisted_history = await start_turn(
         db,
@@ -909,12 +1038,12 @@ async def agent_stream(
         conversation_id=body.conversation_id,
         user_content=body.query,
         dataset_ids=dataset_ids,
-        document_ids=list(body.doc_ids or []),
+        document_ids=scoped_doc_ids,
         llm_config_id=config_id,
         attachments=attachment_snapshots,
     )
 
-    if source_documents:
+    if wants_report:
         try:
             classification = await classify_document(db, document=source_documents[0])
             if template_documents:
@@ -957,6 +1086,15 @@ async def agent_stream(
                 classification = template_classification
         if classification.state == "CONFIDENT":
             report_type = str(classification.selected_report_type)
+            # 对话里只说报告类型名称，不暴露 R1–R7 这类内部编号。
+            report_type_name = next(
+                (
+                    candidate["name"]
+                    for candidate in classification.candidates
+                    if candidate["report_type"] == report_type
+                ),
+                report_type,
+            )
             try:
                 report = await create_report(
                     document_id=int(source_documents[0].id),
@@ -983,7 +1121,7 @@ async def agent_stream(
                 )
                 raise
             answer = (
-                f"已识别为 {report_type}，并创建报告任务 {report['run_id'][:8]}。"
+                f"已识别为「{report_type_name}」，并创建报告任务 {report['run_id'][:8]}。"
                 + ("生成时会参考你上传的模板版式与章节表达。" if template_documents else "")
             )
             await finish_turn(
@@ -1007,7 +1145,7 @@ async def agent_stream(
         options = [
             {
                 "value": candidate["report_type"],
-                "label": f"{candidate['report_type']} · {candidate['name']}",
+                "label": candidate["name"],
                 "description": (
                     "命中：" + "、".join(candidate["matched_terms"][:4])
                     if candidate["matched_terms"]
@@ -1028,7 +1166,13 @@ async def agent_stream(
             "user_instructions": body.query[:2000],
             "classification": classification.to_dict(),
         }
-        answer = "我还不能可靠判断报告类型，请从下面的候选中选择一项后继续。"
+        answer = await _report_clarification_reply(
+            db=db,
+            user_id=user_id,
+            config_id=config_id,
+            filename=source_documents[0].filename,
+            candidates=list(classification.candidates),
+        )
         await finish_turn(
             db, turn=turn, content=answer, status="NEEDS_INPUT", interaction=interaction
         )
@@ -1050,7 +1194,7 @@ async def agent_stream(
             run_id=run_id,
             user_id=user_id,
             dataset_ids=dataset_ids,
-            doc_ids=body.doc_ids,
+            doc_ids=scoped_doc_ids or None,
             scope_mode="selected" if body.dataset_ids else "all_accessible",
         )
     except Exception as exc:
@@ -1064,9 +1208,18 @@ async def agent_stream(
             error_message="Agent 运行初始化失败",
         )
         raise
+    # 问答 Agent 拿不到本轮的附件清单：检索已被收窄到这些文件，但它无从知道自己
+    # 被收窄了，只能看见知识库范围，于是"这份文件"指哪一份它就猜不到。pi-service
+    # 的请求体只认 runId/content/history/model，所以把附件交代并进这一轮的问题里。
+    # 落库的仍是用户原话（start_turn 用的是 body.query），会话记录不受影响。
+    question = body.query
+    if source_documents and not wants_report:
+        names = "、".join(document.filename for document in attached_documents)
+        question = f"{question}\n\n（本轮上传的文件：{names}；本轮检索范围已限定在这些文件内。）"
+
     payload = {
         "runId": run_id,
-        "content": body.query,
+        "content": question,
         "history": persisted_history,
         "model": _model_payload(runtime_config),
     }
