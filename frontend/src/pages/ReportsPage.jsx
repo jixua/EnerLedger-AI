@@ -10,7 +10,6 @@ import {
 } from "lucide-react";
 import { Link } from "react-router-dom";
 
-import { ReportArtifactButtons } from "../components/ReportArtifactButtons";
 import { listReportRuns, listReportTemplates } from "../lib/api";
 import { useApp } from "../state/AppContext";
 import {
@@ -224,11 +223,6 @@ export function ReportsPage() {
                           <Link className="button button--tiny button--primary" to={reportRunPath(run.run_id)}>
                             查看报告
                           </Link>
-                          <ReportArtifactButtons
-                            runId={run.run_id}
-                            artifacts={run.artifacts}
-                            className="report-artifacts--inline"
-                          />
                         </div>
                       </td>
                     </tr>

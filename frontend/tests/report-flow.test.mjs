@@ -41,8 +41,10 @@ test("列表与对话卡片都指向报告详情页", async () => {
   assert.match(reportRun, /return `\/reports\/\$\{encodeURIComponent\(runId\)\}`/);
 });
 
-test("产物下载收敛到共享组件，不再各自复制 blob 下载", async () => {
-  for (const source of [reportsPage, detailPage, chatCard]) {
+test("产物下载收敛到共享组件，且只在报告语境里出现", async () => {
+  // 列表只做索引；下载归详情页，对话卡片保留一处就近入口
+  assert.doesNotMatch(reportsPage, /ReportArtifactButtons|URL\.createObjectURL/);
+  for (const source of [detailPage, chatCard]) {
     assert.match(source, /from "(\.\/|\.\.\/components\/)ReportArtifactButtons"/);
     assert.doesNotMatch(source, /URL\.createObjectURL/, "下载实现只应存在于 ReportArtifactButtons");
   }

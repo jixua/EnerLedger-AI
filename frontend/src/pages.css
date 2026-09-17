@@ -310,9 +310,10 @@
 .task-row-actions { flex-wrap: nowrap; white-space: nowrap; }
 .task-table th:last-child, .task-table td:last-child { min-width: 142px; }
 .report-index-toolbar { min-height: 66px; display: flex; align-items: center; justify-content: space-between; gap: 16px; padding: 12px 15px; border-bottom: 1px solid var(--hairline); }
+/* 报告中心列表：只做索引，产物下载统一在详情页 */
 .report-index-table { min-width: 1040px; }
 .report-index-table th:last-child, .report-index-table td:last-child { width: 1%; text-align: right; }
-.report-index-table td:last-child .report-run-actions { justify-content: flex-end; margin-top: 0; flex-wrap: nowrap; }
+.report-index-table td:last-child .report-run-actions { justify-content: flex-end; margin-top: 0; }
 .report-index-table td:last-child .button { min-height: 32px; white-space: nowrap; }
 .report-title-cell { min-width: 260px; }
 .report-reference-link { min-width: 0; max-width: 250px; display: inline-flex; align-items: center; gap: 7px; color: var(--body); text-decoration: none; }
@@ -454,8 +455,6 @@
 .report-artifacts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
 .report-artifacts .form-error { display: inline-flex; align-items: center; gap: 5px; margin: 0; color: var(--danger); font-size: 11px; }
 .report-artifacts__hint { margin: 0; color: var(--muted); font-size: 11px; line-height: 1.6; }
-.report-artifacts--inline { display: inline-flex; gap: 6px; }
-.report-artifacts--inline .button { min-height: 28px; padding-inline: 10px; font-size: 10px; white-space: nowrap; }
 
 /* 报告正文：块渲染（语义对齐后端 _render_block） */
 .report-document { max-width: 920px; margin: 0 auto; color: var(--ink); }
