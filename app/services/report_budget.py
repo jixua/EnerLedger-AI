@@ -54,7 +54,8 @@ class ReportDocumentTooLargeError(RuntimeError):
         super().__init__(
             f"该文档约需 {max(estimated_tokens // 1000, 1)}k tokens，超过当前模型的单轮处理预算 "
             f"{max(budget_tokens // 1000, 1)}k（上下文 {budget.window_tokens // 1000}k "
-            f"− 输出 {budget.max_output_tokens // 1000}k − 预留 {budget.reserve_tokens // 1000}k）。"
+            f"− 输出 {budget.max_output_tokens // 1000}k "
+            f"− 预留 {budget.reserve_tokens // 1000}k）。"
             "请拆分文档，或改用上下文更大的模型。"
         )
 

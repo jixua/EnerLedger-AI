@@ -21,8 +21,8 @@ from app.services.report_agent_tokens import (
     ReportAgentTokenError,
     verify_report_agent_token,
 )
-from app.services.report_calculations import ReportCalculationError, execute_registered_formula
 from app.services.report_budget import STRUCTURE_HINT_CHARS_PER_CHUNK
+from app.services.report_calculations import ReportCalculationError, execute_registered_formula
 from app.services.report_ir import (
     ReportIRPatchError,
     apply_report_ir_patch,

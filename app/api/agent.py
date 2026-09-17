@@ -56,15 +56,15 @@ from app.services.agent_turn_intent import (
     decide_turn_intent,
 )
 from app.services.document_queue import DOCUMENT_STATUS_READY
-from app.services.report_attachment_roles import (
-    AttachmentRoleError,
-    decide_attachment_roles,
-    resolve_declared_roles,
-)
 from app.services.pi_agent_client import (
     PiAgentUnavailableError,
     pi_agent_readiness,
     stream_pi_agent,
+)
+from app.services.report_attachment_roles import (
+    AttachmentRoleError,
+    decide_attachment_roles,
+    resolve_declared_roles,
 )
 from app.services.report_template_classifier import Classification, classify_document
 
@@ -115,7 +115,8 @@ async def _report_clarification_reply(
         raise
     except Exception as exc:  # noqa: BLE001 - 确认说明为增强项，失败回落固定文案
         logger.warning(
-            "[agent] report clarification generation failed (degraded): error_type=%s error_message=%s",
+            "[agent] report clarification generation failed (degraded): "
+            "error_type=%s error_message=%s",
             type(exc).__name__,
             str(exc)[:200],
         )

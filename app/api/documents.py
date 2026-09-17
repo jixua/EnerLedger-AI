@@ -774,7 +774,10 @@ async def upload_and_queue_document(
                 status_code=409,
                 detail={
                     "code": "DUPLICATE_DOCUMENT_FILENAME",
-                    "message": f"当前知识库已存在同名文档「{filename}」，请修改文件名或先删除原文档",
+                    "message": (
+                        f"当前知识库已存在同名文档「{filename}」，"
+                        "请修改文件名或先删除原文档"
+                    ),
                 },
             ) from exc
 

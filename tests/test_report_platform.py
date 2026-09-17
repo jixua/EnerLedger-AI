@@ -634,7 +634,9 @@ def test_report_ir_patch_updates_only_touched_items() -> None:
             ],
             "delete_evidence": ["E-1"],
             "upsert_field_ledger": [{"field_id": "f2", "status": "FOUND"}],
-            "upsert_sections": [{"section_id": "s1", "title": "摘要", "blocks": [{"type": "text"}]}],
+            "upsert_sections": [
+                {"section_id": "s1", "title": "摘要", "blocks": [{"type": "text"}]}
+            ],
             "limitations": ["草稿"],
         },
     )

@@ -20,7 +20,7 @@ from typing import Any
 
 from docx import Document as WordDocument
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Cm, Pt
+from docx.shared import Cm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -59,7 +59,8 @@ def render_report_markdown(
     不使用引用块（``>``）语法：Word 转换只识别标题/表格/列表/段落，
     提示类内容用「【提示】」前缀表达，两种产物都成立。
     """
-    lines: list[str] = [f"# {run.report_type} 报告 · {template.definition.get('name') or run.template_id}"]
+    title = template.definition.get("name") or run.template_id
+    lines: list[str] = [f"# {run.report_type} 报告 · {title}"]
     lines.append("")
     for section in report_ir.get("sections") or []:
         lines.append(f"## {section.get('title')}")
@@ -72,7 +73,12 @@ def render_report_markdown(
 
     ledger = report_ir.get("field_ledger") or []
     if ledger:
-        lines += ["## 附表一：字段台账", "", "| 字段 | 状态 | 值 | 单位 | 证据 |", "| --- | --- | --- | --- | --- |"]
+        lines += [
+            "## 附表一：字段台账",
+            "",
+            "| 字段 | 状态 | 值 | 单位 | 证据 |",
+            "| --- | --- | --- | --- | --- |",
+        ]
         lines += [
             "| {field} | {status} | {value} | {unit} | {evidence} |".format(
                 field=item.get("field_id"),
@@ -87,7 +93,12 @@ def render_report_markdown(
 
     evidence = report_ir.get("evidence") or []
     if evidence:
-        lines += ["## 附表二：证据台账", "", "| 证据 | 来源 | 位置 | 摘录 |", "| --- | --- | --- | --- |"]
+        lines += [
+            "## 附表二：证据台账",
+            "",
+            "| 证据 | 来源 | 位置 | 摘录 |",
+            "| --- | --- | --- | --- |",
+        ]
         lines += [
             "| {evidence_id} | {source_type} | {location} | {excerpt} |".format(
                 evidence_id=item.get("evidence_id"),
@@ -149,13 +160,17 @@ def _render_block(block: dict[str, Any]) -> str:
         items = data.get("items") or []
         if items:
             lines += ["| 指标 | 值 |", "| --- | --- |"]
-            lines += [f"| {_cell(item.get('label'))} | {_cell(item.get('value'))} |" for item in items]
+            lines += [
+                f"| {_cell(item.get('label'))} | {_cell(item.get('value'))} |" for item in items
+            ]
     elif block_type in ("bar_chart", "donut_chart"):
         series = data.get("series") or []
         if series:
             unit = data.get("unit") or ""
             lines += [f"| 分项 | 数值（{unit}） |", "| --- | --- |"]
-            lines += [f"| {_cell(item.get('label'))} | {_cell(item.get('value'))} |" for item in series]
+            lines += [
+                f"| {_cell(item.get('label'))} | {_cell(item.get('value'))} |" for item in series
+            ]
     elif block_type == "table":
         rows = data.get("rows") or []
         columns = data.get("columns")
@@ -165,7 +180,8 @@ def _render_block(block: dict[str, Any]) -> str:
                 lines += ["| " + " | ".join(_cell(name) for name in columns) + " |"]
                 lines += ["|" + " --- |" * len(columns)]
                 lines += [
-                    "| " + " | ".join(_cell(row.get(name)) for name in columns) + " |" for row in rows
+                    "| " + " | ".join(_cell(row.get(name)) for name in columns) + " |"
+                    for row in rows
                 ]
             else:
                 if columns:
@@ -285,7 +301,9 @@ def artifact_object_key(*, run: ReportRun, artifact_type: str, digest: str) -> s
     )
 
 
-def artifact_download_name(*, run: ReportRun, document_filename: str | None, artifact_type: str) -> str:
+def artifact_download_name(
+    *, run: ReportRun, document_filename: str | None, artifact_type: str
+) -> str:
     stem = re.split(r"[\\/]", str(document_filename or ""))[-1]
     stem = re.sub(r"\.[^.]+$", "", stem).strip() or f"报告-{run.id[:8]}"
     stem = re.sub(r'[\\/:*?"<>|]+', "_", stem)[:60]

@@ -30,16 +30,16 @@ from app.rag.database import get_db
 from app.rag.models.db_models import LLMModelConfigDB
 from app.rag.observability.logging import logger
 from app.services.document_queue import DOCUMENT_STATUS_READY
-from app.services.report_budget import (
-    ReportDocumentTooLargeError,
-    assert_document_fits_context,
-    load_document_payload_stats,
-)
 from app.services.report_artifacts import (
     ReportArtifactError,
     artifact_download_name,
     purge_report_artifacts,
     read_report_artifact,
+)
+from app.services.report_budget import (
+    ReportDocumentTooLargeError,
+    assert_document_fits_context,
+    load_document_payload_stats,
 )
 from app.services.report_dispatch import ReportRunDispatcher, mark_report_dispatch_pending
 from app.services.report_ir import validate_report_field_value
@@ -442,10 +442,8 @@ async def list_report_runs(
             .limit(limit)
         )
     ).all()
-    filenames = dict(
-        (await db.execute(select(Document.id, Document.filename).where(Document.user_id == user_id)))
-        .all()
-    )
+    filename_query = select(Document.id, Document.filename).where(Document.user_id == user_id)
+    filenames = dict((await db.execute(filename_query)).all())
     return await _runs_with_artifacts(db, list(runs), document_filenames=filenames)
 
 
