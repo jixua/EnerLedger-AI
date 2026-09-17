@@ -713,7 +713,8 @@ export function PlaygroundPage() {
             );
           })}
         </div>
-        <p className="composer-attachments-hint">上传模板是可选的。不指定时由系统判断哪份是报告主体材料、哪份是提供版式的模板。</p>
+        {/* 附件不再等于"发起生成"：问问题也行，所以提示要把两种用法都讲清楚 */}
+        <p className="composer-attachments-hint">可以直接就这些文件提问，也可以让系统据此生成报告。生成时模板是可选的，不指定则由系统判断哪份是报告主体材料、哪份提供版式。</p>
         </>
       ) : null}
       <textarea

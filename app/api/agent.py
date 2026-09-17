@@ -50,6 +50,11 @@ from app.rag.database import get_db, get_db_context
 from app.rag.models.chunk_record import ChunkRecordDB
 from app.services.agent_conversations import finish_turn, start_turn
 from app.services.agent_runs import agent_run_registry
+from app.services.agent_turn_intent import (
+    REPORT_INTENT,
+    TurnIntent,
+    decide_turn_intent,
+)
 from app.services.document_queue import DOCUMENT_STATUS_READY
 from app.services.report_attachment_roles import (
     AttachmentRoleError,
@@ -994,18 +999,50 @@ async def agent_stream(
             template_id,
         )
 
+    # 附件曾经等同于「发起报告生成」：只要判定出主体材料就无条件走报告分类，
+    # 于是「这两份材料分别是什么」也会被要求先选报告类型。这里先判一次意图，
+    # 只有确实要报告才进报告链路，提问落到下面的问答链路。
+    attached_documents = [*source_documents, *template_documents]
+    turn_intent = (
+        await decide_turn_intent(
+            db=db,
+            user_id=user_id,
+            config_id=config_id,
+            query=body.query,
+            filenames=[document.filename for document in attached_documents],
+        )
+        if source_documents
+        else TurnIntent(intent=REPORT_INTENT, decided_by="none")
+    )
+    wants_report = bool(source_documents) and turn_intent.intent == REPORT_INTENT
+    if source_documents:
+        logger.info(
+            "[agent] turn intent resolved intent=%s decided_by=%s attachments=%s",
+            turn_intent.intent,
+            turn_intent.decided_by,
+            [int(document.id) for document in attached_documents],
+        )
+
+    # 带附件提问时把检索范围收到这份材料：用户上传它就是为了问它，散到整个知识库
+    # 反而更可能答不到这份文件上。
+    scoped_doc_ids = (
+        [int(document.id) for document in attached_documents]
+        if source_documents and not wants_report
+        else list(body.doc_ids or [])
+    )
+
     conversation, turn, persisted_history = await start_turn(
         db,
         user_id=actor_user_id,
         conversation_id=body.conversation_id,
         user_content=body.query,
         dataset_ids=dataset_ids,
-        document_ids=list(body.doc_ids or []),
+        document_ids=scoped_doc_ids,
         llm_config_id=config_id,
         attachments=attachment_snapshots,
     )
 
-    if source_documents:
+    if wants_report:
         try:
             classification = await classify_document(db, document=source_documents[0])
             if template_documents:
@@ -1156,7 +1193,7 @@ async def agent_stream(
             run_id=run_id,
             user_id=user_id,
             dataset_ids=dataset_ids,
-            doc_ids=body.doc_ids,
+            doc_ids=scoped_doc_ids or None,
             scope_mode="selected" if body.dataset_ids else "all_accessible",
         )
     except Exception as exc:
@@ -1170,9 +1207,18 @@ async def agent_stream(
             error_message="Agent 运行初始化失败",
         )
         raise
+    # 问答 Agent 拿不到本轮的附件清单：检索已被收窄到这些文件，但它无从知道自己
+    # 被收窄了，只能看见知识库范围，于是"这份文件"指哪一份它就猜不到。pi-service
+    # 的请求体只认 runId/content/history/model，所以把附件交代并进这一轮的问题里。
+    # 落库的仍是用户原话（start_turn 用的是 body.query），会话记录不受影响。
+    question = body.query
+    if source_documents and not wants_report:
+        names = "、".join(document.filename for document in attached_documents)
+        question = f"{question}\n\n（本轮上传的文件：{names}；本轮检索范围已限定在这些文件内。）"
+
     payload = {
         "runId": run_id,
-        "content": body.query,
+        "content": question,
         "history": persisted_history,
         "model": _model_payload(runtime_config),
     }

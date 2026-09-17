@@ -1,5 +1,13 @@
 """Prompt templates used by core LLM-assisted workflows."""
 
+from .agent_turn_intent import (
+    TURN_INTENT_MAX_OUTPUT_TOKENS,
+    TURN_INTENT_QUERY_CHARS,
+    TURN_INTENT_SYSTEM_PROMPT,
+    TURN_INTENT_TIMEOUT_SECONDS,
+    build_turn_intent_user_prompt,
+    parse_turn_intent_reply,
+)
 from .conversation_title import (
     CONVERSATION_TITLE_SYSTEM_PROMPT,
     CONVERSATION_TITLE_USER_PROMPT_TEMPLATE,
@@ -60,4 +68,10 @@ __all__ = [
     "parse_attachment_role_reply",
     "build_report_clarification_user_prompt",
     "clean_report_clarification",
+    "TURN_INTENT_MAX_OUTPUT_TOKENS",
+    "TURN_INTENT_QUERY_CHARS",
+    "TURN_INTENT_SYSTEM_PROMPT",
+    "TURN_INTENT_TIMEOUT_SECONDS",
+    "build_turn_intent_user_prompt",
+    "parse_turn_intent_reply",
 ]
