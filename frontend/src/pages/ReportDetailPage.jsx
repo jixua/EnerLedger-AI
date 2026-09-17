@@ -192,7 +192,7 @@ export function ReportDetailPage() {
           </div>
         </div>
         <div className="document-detail-header__actions">
-          <Link className="button button--secondary" to="/reports">报告中心</Link>
+          {/* 返回箭头已经回报告中心，这里不再放一个同目标的按钮 */}
           {sourcePath ? <Link className="button button--secondary" to={sourcePath}><FileText size={15} />源文档</Link> : null}
           {run.state === "FAILED" ? (
             <button type="button" className="button button--primary" onClick={() => { void handleRetry(); }} disabled={busy}>
@@ -208,11 +208,12 @@ export function ReportDetailPage() {
       </header>
 
       <section className="document-detail-meta" aria-label="报告任务信息">
-        <span><strong>模板</strong>{template ? `${template.name} v${template.template_version}` : run.template_id}</span>
+        {/* 标题本身就是模板名称，这里只留版本；空值不再用破折号占位 */}
+        <span><strong>模板版本</strong>v{run.template_version}</span>
         <span><strong>文档版本</strong>v{run.document_version}</span>
-        <span><strong>报告年度</strong>{run.reporting_year ?? "—"}</span>
+        {run.reporting_year ? <span><strong>报告年度</strong>{run.reporting_year}</span> : null}
         <span><strong>创建时间</strong>{formatReportTime(run.created_at)}</span>
-        <span><strong>完成时间</strong>{formatReportTime(run.finished_at)}</span>
+        {run.finished_at ? <span><strong>完成时间</strong>{formatReportTime(run.finished_at)}</span> : null}
         <span><strong>任务号</strong><code>{String(run.run_id).slice(0, 8)}</code></span>
       </section>
 
@@ -272,6 +273,14 @@ export function ReportDetailPage() {
             />
           </section>
 
+          <section className="panel panel--flush report-detail__body">
+            {reportIr ? <ReportIrView reportIr={reportIr} /> : (
+              <div className="empty-state empty-state--loading"><Loader2 className="spin" size={20} /><p>正在渲染报告…</p></div>
+            )}
+          </section>
+
+          {/* 待确认与限制是读完之后再看的附录：放在正文之前会把正文挤出首屏
+              （桌面 900px 视口下正文原本从 844px 才开始）。 */}
           {pendingFields.length || reportIr?.limitations?.length || reportIr?.warnings?.length ? (
             <section className="panel report-detail__gaps">
               <h2>待确认与限制</h2>
@@ -307,12 +316,6 @@ export function ReportDetailPage() {
               ) : null}
             </section>
           ) : null}
-
-          <section className="panel panel--flush report-detail__body">
-            {reportIr ? <ReportIrView reportIr={reportIr} /> : (
-              <div className="empty-state empty-state--loading"><Loader2 className="spin" size={20} /><p>正在渲染报告…</p></div>
-            )}
-          </section>
 
           {ledger.length ? (
             <details className="panel report-detail__ledger">

@@ -445,6 +445,8 @@
 /* 报告详情页 */
 .report-detail__header .document-detail-header__identity .eyebrow { margin: 0 0 4px; }
 .report-detail__header .document-detail-title-line { align-items: center; gap: 12px; }
+/* 状态与 34px 的标题同处一行，默认的 10px 徽标在这里读不清 */
+.report-detail__header .report-state { padding: 4px 10px; font-size: 12px; }
 .report-detail__pending { display: flex; align-items: flex-start; gap: 14px; color: var(--primary); }
 .report-detail__pending h2 { margin: 0 0 6px; color: var(--ink); font-size: 17px; }
 .report-detail__pending p { margin: 0 0 10px; color: var(--muted); font-size: 12px; line-height: 1.7; }
