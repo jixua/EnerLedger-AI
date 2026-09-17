@@ -131,23 +131,6 @@ Master 合并或 Jenkins 开始运行都不等于已部署；只有上述验收�
 
 Jenkins 生产构建使用 `/opt/tolink/jenkins-cache/enerledger-nltk/nltk-data-v1.tar.gz` 中的 `punkt`、`punkt_tab`、`stopwords` 和 `wordnet`。流水线先校验文件权限与固定 SHA-256，再解压到受 Git 忽略的 `.build-cache/nltk_data` 并以 `NLTK_ASSETS_MODE=cache` 构建，因此生产构建不访问 NLTK 或 GitHub 下载站点。普通本地构建仍可默认从 NLTK 官方静态站点下载四个固定资源；不使用 jsDelivr、GitHub Raw 或 GitHub 代理。当前链路不需要的 `omw-1.4` 不进入镜像。
 
-### 源码检出慢或停滞
-
-构建机到 GitHub 只有约 18 KB/s，还会整段停滞（实测 `ls-remote` 1 秒返回，但 14 MiB 的浅克隆传到一半就没有流量）。直接克隆 `depth=100` 反复失败，症状各不相同：被 10 分钟的 checkout 超时杀掉、TCP 连接 300 秒超时、传到 71% 停住。因此流水线**不从 GitHub 克隆**，而是从构建机上的本地镜像克隆：
-
-- 镜像位置 `/var/jenkins_home/mirror/EnerLedger-AI.git`（Jenkins 持久卷内，不受工作区 `deleteDir()` 影响），由 `git clone --bare --depth=100 --single-branch --branch master` 建立。
-- 每次构建先执行 `Refresh source mirror`：`git -C <镜像> fetch --depth=100 origin master`，只拉新增提交，`timeout 600` 兜底。**刷新失败即终止构建**，不会拿镜像里的旧代码去部署。
-- 随后 `Checkout master` 从 `file://` 克隆本地镜像，秒级完成。
-
-镜像丢了或损坏时，重新建一份即可（在构建机上）：
-
-```bash
-docker exec jenkins git clone --bare --depth=100 --single-branch --branch master \
-  https://github.com/jixua/EnerLedger-AI.git /var/jenkins_home/mirror/EnerLedger-AI.git
-```
-
-注意镜像文件属主必须是 `root:root`（Jenkins 以 root 运行，属主不符会触发 git 的 `dubious ownership` 而拒绝操作）；从 macOS 打包传输时要排除 `._*` 元数据文件，否则 git 会报 `index file ... is too small`。
-
 ### SSH 输送中断
 
 Jenkins 使用 `ServerAliveInterval=30` 和 `ServerAliveCountMax=10`。重新运行生产 job 会重新执行传输，不会覆盖 `.env` 或删除数据卷。
