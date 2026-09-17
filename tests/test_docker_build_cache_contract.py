@@ -104,7 +104,7 @@ def test_production_jenkins_uses_verified_local_nltk_bundle() -> None:
 
     assert (
         "env.NLTK_BUNDLE = "
-        "'/opt/enerledger-jenkins/cache/enerledger-nltk/nltk-data-v1.tar.gz'"
+        "'/opt/tolink/jenkins-cache/enerledger-nltk/nltk-data-v1.tar.gz'"
     ) in jenkinsfile
     assert "ARG NLTK_ASSETS_MODE=download" in dockerfile
     assert "COPY .build-cache/nltk_data/ /tmp/nltk-seed/" in dockerfile
