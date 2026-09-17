@@ -27,6 +27,15 @@ const navigation = [
   { to: "/models", label: "模型配置", icon: Bot },
 ];
 
+/**
+ * 全局导航默认收起成 76px 图标栏。
+ *
+ * 展开态（256px）与「最近对话」列（218px）行高相同、宽度相近，两列并排会被读成
+ * 两个同类列表；导航是背景信息，收窄后内容区也能拿回 180px。用户展开后的选择会
+ * 被记住。移动端不受影响：≤1080px 时 `sidebar--collapsed` 本就是 320px 抽屉样式。
+ */
+const SIDEBAR_COLLAPSED_KEY = "enerledger-sidebar-collapsed";
+
 function Sidebar({ admin, collapsed, mobileOpen, onCollapse, onMobileClose }) {
   const navigate = useNavigate();
   const isCompact = collapsed && !mobileOpen;
@@ -96,7 +105,9 @@ function getBreadcrumb(pathname) {
 }
 
 export function AppShell() {
-  const [collapsed, setCollapsed] = useState(false);
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem(SIDEBAR_COLLAPSED_KEY) !== "0",
+  );
   const [mobileOpen, setMobileOpen] = useState(false);
   const location = useLocation();
   const navigate = useNavigate();
@@ -115,9 +126,15 @@ export function AppShell() {
     viewportRef.current?.scrollTo({ top: 0, left: 0 });
   }, [location.pathname]);
 
+  function handleCollapse() {
+    const next = !collapsed;
+    localStorage.setItem(SIDEBAR_COLLAPSED_KEY, next ? "1" : "0");
+    setCollapsed(next);
+  }
+
   return (
     <div className="app-frame">
-      <Sidebar admin={admin} collapsed={collapsed} mobileOpen={mobileOpen} onCollapse={() => setCollapsed((value) => !value)} onMobileClose={() => setMobileOpen(false)} />
+      <Sidebar admin={admin} collapsed={collapsed} mobileOpen={mobileOpen} onCollapse={handleCollapse} onMobileClose={() => setMobileOpen(false)} />
       <section className="workspace-panel">
         <header className="topbar">
           <div className="topbar__path">

@@ -615,7 +615,7 @@
 }
 
 /* 对话主界面 */
-.conversation-workspace { width: 100%; height: 100%; min-height: 0; display: grid; grid-template-columns: 218px minmax(0, 1fr); }
+.conversation-workspace { width: 100%; height: 100%; min-height: 0; display: grid; grid-template-columns: 240px minmax(0, 1fr); }
 .conversation-history { min-height: 0; display: flex; flex-direction: column; border-right: 1px solid var(--hairline); background: color-mix(in srgb, var(--surface-soft) 68%, var(--surface)); }
 .conversation-history > header { height: 48px; display: flex; align-items: center; justify-content: space-between; padding: 0 11px 0 15px; border-bottom: 1px solid var(--hairline); color: var(--ink); font-size: 11px; font-weight: 650; }
 .conversation-history > header button { width: 29px; height: 29px; display: grid; place-items: center; border: 0; border-radius: 8px; background: transparent; color: var(--muted); }
@@ -624,12 +624,13 @@
 .conversation-history__item { min-width: 0; display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; border-radius: 8px; }
 .conversation-history__item:hover { background: var(--surface); }
 .conversation-history__item.is-active { background: var(--primary-soft); }
-.conversation-history__open { min-width: 0; display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 8px; padding: 9px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); text-align: left; }
+.conversation-history__open { min-width: 0; display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 9px; padding: 10px 9px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); text-align: left; }
 .conversation-history__item:hover .conversation-history__open { color: var(--ink); }
 .conversation-history__item.is-active .conversation-history__open { color: var(--primary); }
-.conversation-history__open > span { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
-.conversation-history__list strong { overflow: hidden; color: inherit; font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
-.conversation-history__list small { color: var(--muted-soft); font-size: 8px; }
+.conversation-history__open > span { min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+/* 对话标题是内容主体，此前 10px 比导航标签（13px）还小，层级是反的。 */
+.conversation-history__list strong { overflow: hidden; color: inherit; font-size: 12px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.conversation-history__list small { color: var(--muted-soft); font-size: 10px; }
 .conversation-history__delete { width: 24px; height: 24px; margin-right: 5px; flex: 0 0 auto; display: grid; place-items: center; border: 0; border-radius: 6px; background: transparent; color: var(--muted-soft); }
 .conversation-history__delete:hover:not(:disabled) { background: var(--danger-soft); color: var(--danger); }
 .conversation-history__delete:disabled { opacity: .45; cursor: not-allowed; }
@@ -638,7 +639,7 @@
 .conversation-history__confirm button.is-danger { border-color: transparent; background: var(--danger); color: #fff; }
 .conversation-history__confirm button:disabled { opacity: .6; cursor: not-allowed; }
 .conversation-history__error { margin: 6px 9px; color: var(--danger); font-size: 9px; line-height: 1.5; }
-.conversation-history__list > p { margin: 14px 9px; color: var(--muted); font-size: 9px; line-height: 1.6; }
+.conversation-history__list > p { margin: 14px 9px; color: var(--muted); font-size: 11px; line-height: 1.6; }
 .conversation-page {
   width: 100%;
   height: 100%;
