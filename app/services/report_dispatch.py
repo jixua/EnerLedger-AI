@@ -35,8 +35,9 @@ class MessagePublisher(Protocol):
 class ReportDispatchClaim:
     run_id: str
     user_id: int
-    document_id: int
-    document_version: int
+    # 直传材料来源没有文档可指，这两项为空。
+    document_id: int | None
+    document_version: int | None
     lease_token: str
 
 
@@ -140,8 +141,10 @@ class ReportRunDispatcher:
         return ReportDispatchClaim(
             run_id=str(run.id),
             user_id=int(run.user_id),
-            document_id=int(run.document_id),
-            document_version=int(run.document_version),
+            document_id=int(run.document_id) if run.document_id is not None else None,
+            document_version=(
+                int(run.document_version) if run.document_version is not None else None
+            ),
             lease_token=token,
         )
 
@@ -150,8 +153,10 @@ class ReportRunDispatcher:
             ReportGenerationMessage.build(
                 run_id=str(run.id),
                 user_id=int(run.user_id),
-                document_id=int(run.document_id),
-                document_version=int(run.document_version),
+                document_id=int(run.document_id) if run.document_id is not None else None,
+                document_version=(
+                    int(run.document_version) if run.document_version is not None else None
+                ),
             )
         )
 

@@ -13,6 +13,7 @@ from app.services.report_attachment_roles import (
     AttachmentRoleError,
     AttachmentRoles,
     decide_attachment_roles,
+    decide_material_roles,
     resolve_declared_roles,
 )
 
@@ -101,8 +102,10 @@ async def test_single_attachment_skips_the_model(monkeypatch) -> None:
 async def test_model_decision_is_used_when_parseable(monkeypatch) -> None:
     class _Provider:
         async def generate(self, **_kwargs: Any) -> Any:
+            # 提示词用序号指代文件（序号同时适用于知识库文档与直传材料），
+            # 所以模型回复的是位置而不是内部 id。
             return SimpleNamespace(
-                content='{"subject_document_id": 7, "template_document_id": 8}'
+                content='{"subject_document_id": 1, "template_document_id": 2}'
             )
 
     async def _resolve(**_kwargs: Any) -> Any:
@@ -204,3 +207,32 @@ def test_the_only_file_cannot_be_the_template() -> None:
     # 没有主体材料就没有可写入的事实来源
     with pytest.raises(AttachmentRoleError):
         resolve_declared_roles(attachment_ids=[7], declared={7: "TEMPLATE"})
+
+
+@pytest.mark.asyncio
+async def test_a_lone_report_shaped_material_is_read_as_a_template() -> None:
+    """只上传一份成型的报告：它是版式模板，不是待写入的原始资料。"""
+    report_like = (
+        "# 产品碳足迹评价报告\n\n## 第一章 报告说明\n"
+        "本报告依据企业提供的生命周期清单核算产品碳足迹。\n"
+    )
+
+    roles = await decide_material_roles(
+        db=None, user_id=1, config_id=1, materials=[("m-1", "既有报告.md", report_like)]
+    )
+
+    assert roles.template_key == "m-1"
+    assert roles.subject_key is None
+
+
+@pytest.mark.asyncio
+async def test_a_lone_plain_material_is_read_as_the_source() -> None:
+    """只上传一份普通台账：它是待写入报告的来源材料，没有模板。"""
+    plain = "本月用电 1280 度，用水 36 吨，办公耗材支出 4200 元。\n"
+
+    roles = await decide_material_roles(
+        db=None, user_id=1, config_id=1, materials=[("m-1", "台账.md", plain)]
+    )
+
+    assert roles.subject_key == "m-1"
+    assert roles.template_key is None

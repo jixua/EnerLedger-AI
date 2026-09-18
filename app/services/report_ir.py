@@ -261,6 +261,9 @@ def build_fixture_report_ir(
 ) -> dict[str, Any]:
     """Build a non-LLM fixture IR used to verify orchestration and resume behavior."""
 
+    # 直传材料没有文档可指，这两个值就是空——IR 的 meta 允许为空，校验时也按空比对。
+    document_id = int(run.document_id) if run.document_id is not None else None
+    document_version = int(run.document_version) if run.document_version is not None else None
     answered_by_field = {
         question.field_id: question
         for question in answered_questions
@@ -291,8 +294,8 @@ def build_fixture_report_ir(
             {
                 "evidence_id": evidence_id,
                 "source_type": "USER_INPUT",
-                "document_id": int(run.document_id),
-                "document_version": int(run.document_version),
+                "document_id": document_id,
+                "document_version": document_version,
                 "chunk_id": None,
                 "page": None,
                 "reference_uri": None,
@@ -321,8 +324,9 @@ def build_fixture_report_ir(
             "report_type": run.report_type,
             "template_id": run.template_id,
             "template_version": run.template_version,
-            "document_id": int(run.document_id),
-            "document_version": int(run.document_version),
+            "document_id": document_id,
+            "document_version": document_version,
+            "source_filename": run.inline_source_filename,
             "language": run.language,
         },
         "evidence": evidence,
@@ -362,8 +366,11 @@ def validate_report_ir(
         "report_type": run.report_type,
         "template_id": run.template_id,
         "template_version": run.template_version,
-        "document_id": int(run.document_id),
-        "document_version": int(run.document_version),
+        # 直传材料期望值就是空；agent 若凭空编一个 document_id，会被这里拦下。
+        "document_id": int(run.document_id) if run.document_id is not None else None,
+        "document_version": (
+            int(run.document_version) if run.document_version is not None else None
+        ),
     }
     for key, expected in frozen_meta.items():
         if meta.get(key) != expected:
@@ -388,6 +395,12 @@ def validate_report_ir(
         errors.append("evidence_id 不能重复")
     evidence_id_set = set(evidence_ids)
     evidence_by_id = {str(item.get("evidence_id")): item for item in evidence_items}
+    # 直传材料来源没有文档可指，冻结值就是空；证据里的 document_id 也按空比对，
+    # 凭空编一个数字会被下面的检查拦下。
+    frozen_document_id = int(run.document_id) if run.document_id is not None else None
+    frozen_document_version = (
+        int(run.document_version) if run.document_version is not None else None
+    )
     if evidence_context is not None:
         for item in evidence_items:
             evidence_id = str(item.get("evidence_id"))
@@ -397,8 +410,8 @@ def validate_report_ir(
                 chunk = evidence_context.document_chunks.get(chunk_id)
                 if (
                     chunk is None
-                    or item.get("document_id") != int(run.document_id)
-                    or item.get("document_version") != int(run.document_version)
+                    or item.get("document_id") != frozen_document_id
+                    or item.get("document_version") != frozen_document_version
                     or item.get("content_hash") != chunk.get("content_hash")
                 ):
                     errors.append(f"证据 {evidence_id} 不是冻结文档分片的真实引用")

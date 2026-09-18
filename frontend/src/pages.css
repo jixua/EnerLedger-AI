@@ -402,6 +402,18 @@
 .report-template-summary strong { color: var(--ink); font-size: 12px; }
 .report-template-summary span, .report-template-summary small, .report-template-summary p { margin: 0; color: var(--muted); font-size: 10px; line-height: 1.6; }
 .report-dialog-loading { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 11px; }
+/* 输出格式：勾选项横排。选中态用主色描边加淡底，避免只靠复选框那 12px 的方块
+   传达「这一项会被下载」。 */
+.report-format-field { grid-column: 1 / -1; }
+.report-format-choices { display: flex; flex-wrap: wrap; gap: 8px; }
+.report-format-choice { display: flex; align-items: flex-start; gap: 9px; padding: 10px 12px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface); cursor: pointer; transition: border-color 150ms ease, background 150ms ease; }
+.report-format-choice:hover { border-color: var(--hairline-strong); }
+.report-format-choice.is-on { border-color: var(--primary-mid); background: var(--primary-soft); }
+.report-format-choice input { margin: 2px 0 0; accent-color: var(--primary); }
+.report-format-choice > span { display: grid; gap: 2px; }
+.report-format-choice strong { color: var(--ink); font-size: 12px; }
+.report-format-choice small { color: var(--muted); font-size: 10px; line-height: 1.5; }
+.report-format-hint { color: var(--muted-soft); font-size: 10px; }
 .report-run-workbench { min-height: 300px; display: grid; grid-template-columns: auto minmax(0, 1fr); align-content: center; gap: 16px; padding: 32px 28px; overflow: auto; }
 .report-run-workbench__icon { width: 46px; height: 46px; display: grid; place-items: center; border-radius: 13px; background: var(--surface-soft); color: var(--action); }
 .report-run-workbench__icon--failed, .report-run-workbench__icon--stale_document { color: var(--danger); }
@@ -564,6 +576,10 @@
 .report-legend--polarity { display: flex; gap: 16px; margin-bottom: 10px; }
 .report-legend--polarity li { display: flex; grid-template-columns: none; }
 .report-figure__note { margin: 0 0 10px; color: var(--muted); font-size: 13px; line-height: 1.6; }
+/* 图表与表格的标题：块自带的 text，导出的 HTML 与 Word 在同一位置也会出现它 */
+.report-figure__caption { margin: 0 0 10px; color: var(--ink); font-size: 13.5px; font-weight: 600; }
+/* 指标卡自身已有下边距，套上 figure 后不要再叠一层，否则块与块之间被撑开 */
+.report-figure--tight { margin-bottom: 0; }
 
 .report-share { display: flex; gap: 2px; height: 22px; margin-bottom: 12px; }
 .report-share__segment { height: 100%; }
@@ -748,9 +764,26 @@
   transition: border-color 150ms ease, box-shadow 150ms ease;
 }
 .chat-composer:focus-within { border-color: color-mix(in srgb, var(--action) 48%, var(--hairline)); box-shadow: 0 13px 38px rgba(36, 54, 50, 0.09), 0 0 0 3px rgba(63, 111, 168, 0.13); }
-.chat-composer textarea { min-height: 64px; max-height: 190px; padding: 3px 5px 10px; border: 0; background: transparent; box-shadow: none; resize: none; font-size: 14px; line-height: 1.65; }
+/* 输入框与它上面那层着色覆盖层必须逐字对齐，盒模型、字体、换行规则写在同一条里：
+   分头写的话，改了一处忘了另一处，两层文字就会错行。 */
+.chat-composer textarea,
+.composer-highlight { padding: 3px 5px 10px; font-size: 14px; line-height: 1.65; white-space: pre-wrap; overflow-wrap: break-word; }
+.chat-composer textarea { min-height: 64px; max-height: 190px; border: 0; background: transparent; box-shadow: none; resize: none; }
 .chat-composer textarea:focus,
 .chat-composer textarea:focus-visible { outline: none; border-color: transparent; box-shadow: none; }
+/* @ 引用在输入框里换个颜色：textarea 不能只给一段文字上色，所以文字透明、只留光标，
+   由下面这层重画一遍同样的文字。 */
+.composer-input { position: relative; display: flex; }
+.composer-input textarea { position: relative; z-index: 1; width: 100%; color: transparent; caret-color: var(--ink); }
+.composer-input textarea::placeholder { color: var(--muted); }
+.composer-input textarea::selection { background: color-mix(in srgb, var(--primary) 20%, transparent); }
+.composer-highlight { position: absolute; inset: 0; z-index: 0; overflow: hidden; pointer-events: none; color: var(--ink); }
+/* 只改颜色和底色：加内边距、加粗都会改变字宽，覆盖层的字就会与输入框的字错开 */
+.composer-highlight__mention { border-radius: 4px; background: var(--primary-soft); color: var(--primary-active); }
+/* 组字期间把颜色交还给输入框：中文输入法的组字预览由浏览器画在光标处，文字一透明
+   就看不清自己正在打什么。 */
+.composer-input.is-composing textarea { color: var(--ink); }
+.composer-input.is-composing .composer-highlight { visibility: hidden; }
 .composer-attachments { display: flex; flex-wrap: wrap; gap: 7px; padding: 0 2px 10px; }
 .composer-attachment { max-width: 330px; min-width: 0; display: grid; grid-template-columns: 18px minmax(0, 1fr) 22px; align-items: center; gap: 7px; padding: 7px 7px 7px 9px; border: 1px solid var(--hairline); border-radius: 10px; background: var(--surface-soft); color: var(--muted); }
 .composer-attachment.is-ready { border-color: color-mix(in srgb, var(--primary) 22%, var(--hairline)); color: var(--primary); }
@@ -759,6 +792,23 @@
 .composer-attachment small { color: var(--muted); font-size: 8px; }
 .composer-attachment button { width: 22px; height: 22px; display: grid; place-items: center; padding: 0; border: 0; border-radius: 6px; background: transparent; color: var(--muted); }
 .composer-attachment button:hover { background: var(--surface); color: var(--danger); }
+/* @ 引用：候选面板浮在输入框上方，与数据集选择面板用同一套视觉语言 */
+.composer-mentions { position: absolute; left: 13px; right: 13px; bottom: 100%; z-index: 20; max-height: min(360px, 46vh); overflow-y: auto; display: grid; gap: 2px; margin-bottom: 8px; padding: 8px; border: 1px solid var(--hairline-strong); border-radius: 12px; background: var(--surface); box-shadow: 0 16px 36px rgba(36, 54, 50, .14); }
+.composer-mentions__more { margin: 0; padding: 6px 6px 2px; color: var(--muted); font-size: 9px; }
+.composer-mentions__lead { margin: 0 0 4px; padding: 0 6px; color: var(--muted); font-size: 9px; }
+.composer-mentions__option { display: grid; grid-template-columns: 18px minmax(0, 1fr); align-items: center; gap: 8px; padding: 7px 8px; border: 0; border-radius: 8px; background: transparent; color: var(--muted); text-align: left; }
+.composer-mentions__option > span { min-width: 0; display: flex; flex-direction: column; gap: 2px; }
+.composer-mentions__option strong { overflow: hidden; color: var(--ink); font-size: 11px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.composer-mentions__option small { color: var(--muted); font-size: 9px; }
+.composer-mentions__option.is-active { background: var(--surface-soft); color: var(--primary); }
+.composer-mentions__empty { margin: 0; padding: 8px 5px 10px; color: var(--muted); font-size: 10px; }
+/* 已引用：提示条 + 两个快捷入口（生成报告 / 解释这份文档） */
+.composer-mention-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 7px 5px 3px; border-top: 1px solid var(--hairline); }
+.composer-mention-bar__label { min-width: 0; display: inline-flex; align-items: center; gap: 5px; overflow: hidden; color: var(--primary); font-size: 10px; font-weight: 600; text-overflow: ellipsis; white-space: nowrap; }
+.composer-mention-bar button { min-height: 26px; padding: 0 10px; border: 1px solid var(--hairline-strong); border-radius: 999px; background: var(--surface); color: var(--ink); font-size: 10px; font-weight: 600; }
+.composer-mention-bar button:hover { background: var(--surface-soft); }
+.composer-mention-bar__drop { width: 26px; display: grid; place-items: center; padding: 0; color: var(--muted); }
+.composer-mention-bar__drop:hover { color: var(--danger); }
 .chat-composer__toolbar { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
 .chat-composer__controls { position: relative; min-width: 0; display: flex; align-items: center; gap: 8px; }
 .composer-selector { min-width: 0; }

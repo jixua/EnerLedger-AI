@@ -68,8 +68,23 @@ export function reportSourceDocumentPath(run) {
 export function reportArtifactFormat(artifactType) {
   if (artifactType === "DOCX") return "Word";
   if (artifactType === "MARKDOWN") return "Markdown";
+  if (artifactType === "HTML") return "HTML";
   return artifactType;
 }
+
+/**
+ * 创建报告时可勾选的下载格式。
+ *
+ * 只有落盘产物才在这里：在线预览（ONLINE）是报告页本身，不是一个可选项，
+ * 所以不放进勾选列表。取值必须与后端 ReportCreateRequest.output_formats 对齐。
+ */
+export const REPORT_DOWNLOAD_FORMATS = [
+  { value: "DOCX", label: "Word", hint: "适合批注、盖章与归档" },
+  { value: "HTML", label: "HTML", hint: "单文件网页，保留图表原样" },
+  { value: "MARKDOWN", label: "Markdown", hint: "纯文本，便于二次编辑" },
+];
+
+export const DEFAULT_REPORT_DOWNLOAD_FORMATS = ["DOCX", "HTML"];
 
 /** 产物下载按钮的文案：同一份报告在列表、详情页、对话卡片里措辞一致。 */
 export function reportArtifactLabel(artifactType) {

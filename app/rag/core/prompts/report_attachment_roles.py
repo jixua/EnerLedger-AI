@@ -16,7 +16,8 @@ ATTACHMENT_ROLE_SYSTEM_PROMPT = (
     "报告主体材料是待写入报告的原始资料，含具体数据、清单、活动数据或待评对象的事实；"
     "版式模板是一份成型的报告或声明样例，提供章节结构、标题体系与表达形式。"
     "只输出 JSON，不要任何解释或代码块标记，格式为："
-    '{"subject_document_id": <主体材料的文件编号>, "template_document_id": <模板的文件编号或 null>}。'
+    '{"subject_document_id": <主体材料的文件编号>, '
+    '"template_document_id": <模板的文件编号或 null>}。'
     "无法确定模板时 template_document_id 用 null；只能使用给出的文件编号，不要编造。"
 )
 
@@ -30,9 +31,13 @@ ATTACHMENT_ROLE_EXCERPT_CHARS = 1200
 
 
 def build_attachment_role_user_prompt(*, attachments: list[dict]) -> str:
+    """按**序号**（从 1 开始）指代文件，而不是把内部 id 交给模型。
+
+    序号同时适用于知识库文档和对话直传的材料——后者根本没有数字 id。
+    """
     lines = ["本次上传的文件：", ""]
-    for item in attachments:
-        lines.append(f"文件编号 {int(item['document_id'])}：{item.get('filename') or '未命名'}")
+    for position, item in enumerate(attachments, start=1):
+        lines.append(f"文件编号 {position}：{item.get('filename') or '未命名'}")
         excerpt = " ".join(str(item.get("excerpt") or "").split())[:ATTACHMENT_ROLE_EXCERPT_CHARS]
         lines.append(f"正文节选：{excerpt or '（无正文）'}")
         lines.append("")
@@ -43,9 +48,10 @@ def build_attachment_role_user_prompt(*, attachments: list[dict]) -> str:
 def parse_attachment_role_reply(
     text: str, *, allowed_ids: set[int]
 ) -> tuple[int | None, int | None]:
-    """从模型回复里取（主体材料编号，模板编号）。
+    """从模型回复里取（主体材料序号，模板序号）。
 
-    只认给出的编号；解析不出或编号越界都按"未判定"返回 (None, None)，交调用方回落。
+    ``allowed_ids`` 是本次给出的文件序号集合。只认这些序号；解析不出或越界都按
+    "未判定"返回 (None, None)，交调用方回落。
     """
 
     cleaned = (text or "").strip()

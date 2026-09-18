@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+from dataclasses import dataclass
 from io import BytesIO
 from typing import Annotated, Any, Literal
 from urllib.parse import quote
@@ -21,6 +22,7 @@ from app.domain.models import (
     AgentConversationTurn,
     Document,
     ReportArtifact,
+    ReportMaterial,
     ReportQuestion,
     ReportRun,
 )
@@ -29,6 +31,8 @@ from app.rag.config import settings
 from app.rag.database import get_db
 from app.rag.models.db_models import LLMModelConfigDB
 from app.rag.observability.logging import logger
+from app.rag.services.storage.base import BaseObjectStorage
+from app.rag.services.storage.factory import StorageFactory
 from app.services.document_queue import DOCUMENT_STATUS_READY
 from app.services.report_artifacts import (
     ReportArtifactError,
@@ -42,7 +46,18 @@ from app.services.report_budget import (
     load_document_payload_stats,
 )
 from app.services.report_dispatch import ReportRunDispatcher, mark_report_dispatch_pending
+from app.services.report_inline_source import (
+    SOURCE_KIND_DOCUMENT,
+    SOURCE_KIND_INLINE,
+    canonical_hash,
+    inline_source_object_key,
+    manifest_items,
+    payload_chunks,
+    serialize_inline_source,
+    write_inline_source,
+)
 from app.services.report_ir import validate_report_field_value
+from app.services.report_material import read_material_text
 from app.services.report_model_policy import (
     ReportModelEndpointError,
     validate_report_model_endpoint,
@@ -68,10 +83,14 @@ class ReportCreateRequest(BaseModel):
     language: Literal["zh-CN"] = "zh-CN"
     reporting_year: int | None = Field(default=None, ge=1900, le=2200)
     user_instructions: str | None = Field(default=None, max_length=2000)
-    output_formats: list[Literal["ONLINE", "MARKDOWN", "DOCX"]] = Field(
-        default_factory=lambda: ["ONLINE", "DOCX"]
+    output_formats: list[Literal["ONLINE", "MARKDOWN", "DOCX", "HTML"]] = Field(
+        default_factory=lambda: ["ONLINE", "DOCX", "HTML"]
     )
     custom_template_document_id: int | None = Field(default=None, gt=0)
+    # 对话直传的材料 id。与路径上的 document_id 二选一；两者都给或都没给都会被拒。
+    material_id: str | None = Field(default=None, min_length=1, max_length=36)
+    # 对话直传的版式模板 id。与 custom_template_document_id 二选一。
+    template_material_id: str | None = Field(default=None, min_length=1, max_length=36)
 
     @field_validator("user_instructions")
     @classmethod
@@ -116,7 +135,7 @@ class ReportAnswersRequest(BaseModel):
 
 def _input_hash(
     *,
-    document: Document,
+    source: _ReportSource,
     template_snapshot: dict[str, Any],
     model_snapshot: dict[str, Any],
     document_manifest: dict[str, Any],
@@ -124,10 +143,11 @@ def _input_hash(
     payload: ReportCreateRequest,
 ) -> str:
     frozen = {
-        "document_id": int(document.id),
-        "document_version": int(document.version),
-        "parsed_bucket": document.parsed_bucket,
-        "parsed_object_key": document.parsed_object_key,
+        "source_kind": source.kind,
+        "document_id": source.document_id,
+        "document_version": source.document_version,
+        "parsed_bucket": source.bucket,
+        "parsed_object_key": source.object_key,
         "template_asset_hash": template_snapshot["asset_hash"],
         "model_snapshot": model_snapshot,
         "document_manifest": document_manifest,
@@ -194,13 +214,33 @@ async def list_report_templates(
         ) from exc
 
 
-@router.post("/documents/{document_id}/reports", status_code=status.HTTP_202_ACCEPTED)
-async def create_report(
-    document_id: int,
-    payload: ReportCreateRequest,
-    user_id: Annotated[int, Depends(get_user_id)],
-    db: Annotated[AsyncSession, Depends(get_db)],
-) -> dict[str, Any]:
+@dataclass(frozen=True, slots=True)
+class _ReportSource:
+    """创建任务时解析出的来源。两种来源在这里归一，下游不必再分叉。
+
+    ``bucket`` / ``object_key`` 对文档来源是解析产物，对直传材料是冻结下来的分片
+    JSON——语义都是「来源正文放在哪」。
+    """
+
+    kind: str
+    dataset_id: int | None
+    document_id: int | None
+    document_version: int | None
+    bucket: str
+    object_key: str
+    filename: str | None
+    chunks: int
+    chars: int
+    document: Document | None = None
+    material: ReportMaterial | None = None
+
+
+async def _ready_document(db: AsyncSession, *, document_id: int | None, user_id: int) -> Document:
+    if document_id is None:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": "REPORT_SOURCE_REQUIRED", "message": "缺少报告来源"},
+        )
     document = await db.scalar(
         select(Document).where(Document.id == document_id, Document.user_id == user_id)
     )
@@ -218,6 +258,134 @@ async def create_report(
                 "message": "文档当前版本尚未完成解析，不能生成报告",
             },
         )
+    return document
+
+
+async def _claimed_material(
+    db: AsyncSession, *, material_id: str, user_id: int
+) -> ReportMaterial:
+    """按 id 取回暂存材料。
+
+    刻意**不**因为材料已经用过就拒绝：材料与模板都挂在对话上，一份材料可能被同一段
+    对话里的多次生成反复引用，这是预期用法。真正决定它还能不能用的是保留期。
+    """
+    material = await db.scalar(
+        select(ReportMaterial)
+        .where(ReportMaterial.id == material_id, ReportMaterial.user_id == user_id)
+        .with_for_update()
+    )
+    if material is None:
+        raise HTTPException(status_code=404, detail="上传的材料不存在或已被清理")
+    return material
+
+
+async def _inline_template_manifest(
+    storage: BaseObjectStorage,
+    *,
+    material: ReportMaterial,
+    text: str,
+    run_id: str,
+) -> dict[str, Any]:
+    """把对话直传的版式模板冻结到本次任务上，返回写进 ``custom_template_manifest`` 的描述。
+
+    与来源正文用同一套切分与清单：模板同样要能被 agent 按游标读完并给出覆盖记录，
+    否则「照这份模板写」这件事无法证明。文档模板与内联模板在同一个字段里用
+    ``source_kind`` 区分，读取方按它分派。
+    """
+    payload = serialize_inline_source(filename=material.filename, text=text)
+    bucket = settings.MINIO_PRIVATE_BUCKET
+    object_key = inline_source_object_key(
+        user_id=int(material.user_id),
+        run_id=run_id,
+        digest=material.content_hash,
+        kind="template",
+    )
+    await write_inline_source(storage, bucket=bucket, object_key=object_key, payload=payload)
+    items = manifest_items(payload_chunks(payload))
+    return {
+        "source_kind": SOURCE_KIND_INLINE,
+        "filename": material.filename,
+        "bucket": bucket,
+        "object_key": object_key,
+        "chunk_manifest_sha256": canonical_hash(items),
+        "chunk_count": len(items),
+    }
+
+
+async def _document_source(db: AsyncSession, *, document: Document) -> _ReportSource:
+    chunks, chars = await load_document_payload_stats(
+        db, document_id=int(document.id), document_version=int(document.version)
+    )
+    return _ReportSource(
+        kind=SOURCE_KIND_DOCUMENT,
+        dataset_id=int(document.dataset_id),
+        document_id=int(document.id),
+        document_version=int(document.version),
+        bucket=document.parsed_bucket,
+        object_key=document.parsed_object_key,
+        filename=document.filename,
+        chunks=chunks,
+        chars=chars,
+        document=document,
+    )
+
+
+async def _material_source(
+    storage: BaseObjectStorage,
+    *,
+    material: ReportMaterial,
+    text: str,
+    run_id: str,
+) -> _ReportSource:
+    """把提取出的文本切分并冻结成这次任务专用的来源，然后删掉暂存对象。
+
+    冻结而不是引暂存对象：报告任务要对「当时读到的正文」负责，暂存对象是可以被
+    清理的，两者生命周期不同。
+    """
+    payload = serialize_inline_source(filename=material.filename, text=text)
+    object_key = inline_source_object_key(
+        user_id=int(material.user_id), run_id=run_id, digest=material.content_hash
+    )
+    await write_inline_source(
+        storage,
+        bucket=settings.MINIO_PRIVATE_BUCKET,
+        object_key=object_key,
+        payload=payload,
+    )
+    return _ReportSource(
+        kind=SOURCE_KIND_INLINE,
+        dataset_id=None,
+        document_id=None,
+        document_version=None,
+        bucket=settings.MINIO_PRIVATE_BUCKET,
+        object_key=object_key,
+        filename=material.filename,
+        chunks=int(payload["chunk_count"]),
+        chars=int(payload["char_count"]),
+        material=material,
+    )
+
+
+@router.post("/documents/{document_id}/reports", status_code=status.HTTP_202_ACCEPTED)
+async def create_report(
+    document_id: int | None,
+    payload: ReportCreateRequest,
+    user_id: Annotated[int, Depends(get_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict[str, Any]:
+    """创建报告任务。
+
+    来源二选一：路径上的 ``document_id``（知识库文档），或 ``payload.material_id``
+    （对话里直传、未入库的材料）。两者都给定或都没给都会被拒。
+    """
+    if payload.material_id is not None and document_id is not None:
+        raise HTTPException(
+            status_code=422,
+            detail={
+                "code": "REPORT_SOURCE_CONFLICT",
+                "message": "文档来源与直传材料只能二选一",
+            },
+        )
 
     try:
         template = report_template_registry.get(payload.report_type)
@@ -227,9 +395,68 @@ async def create_report(
             detail={"code": exc.code, "message": str(exc)},
         ) from exc
 
+    run_id = str(uuid4())
+    object_storage = StorageFactory.get_storage()
+    document: Document | None = None
+    source_material: ReportMaterial | None = None
+    if payload.material_id is not None:
+        source_material = await _claimed_material(
+            db, material_id=payload.material_id, user_id=user_id
+        )
+        material_text = (
+            await read_material_text(object_storage, material=source_material)
+        ).decode("utf-8")
+        source = await _material_source(
+            object_storage, material=source_material, text=material_text, run_id=run_id
+        )
+    else:
+        document = await _ready_document(db, document_id=document_id, user_id=user_id)
+        source = await _document_source(db, document=document)
+
     custom_template = None
     custom_template_manifest = None
-    if payload.custom_template_document_id is not None:
+    template_material: ReportMaterial | None = None
+    template_chunks = template_chars = 0
+    if payload.template_material_id is not None:
+        if payload.custom_template_document_id is not None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "CUSTOM_TEMPLATE_CONFLICT",
+                    "message": "版式模板二选一：知识库文档或对话直传的材料",
+                },
+            )
+        template_material = await _claimed_material(
+            db, material_id=payload.template_material_id, user_id=user_id
+        )
+        if source_material is not None and template_material.id == source_material.id:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "CUSTOM_TEMPLATE_EQUALS_SOURCE",
+                    "message": "来源材料和版式模板不能是同一份文件",
+                },
+            )
+        template_text = (
+            await read_material_text(object_storage, material=template_material)
+        ).decode("utf-8")
+        custom_template_manifest = await _inline_template_manifest(
+            object_storage, material=template_material, text=template_text, run_id=run_id
+        )
+        template_chunks = int(custom_template_manifest["chunk_count"])
+        template_chars = len(template_text)
+    elif payload.custom_template_document_id is not None:
+        if document is None:
+            raise HTTPException(
+                status_code=422,
+                detail={
+                    "code": "CUSTOM_TEMPLATE_REQUIRES_DOCUMENT",
+                    "message": (
+                        "知识库模板只能配知识库来源；来源是直传材料时请改用 "
+                        "template_material_id"
+                    ),
+                },
+            )
         if int(payload.custom_template_document_id) == int(document.id):
             raise HTTPException(
                 status_code=422,
@@ -258,32 +485,34 @@ async def create_report(
                     "message": "上传的报告模板尚未完成解析，不能创建报告",
                 },
             )
-        custom_template_manifest = await load_document_chunk_manifest(
+        document_template_manifest = await load_document_chunk_manifest(
             db, document=custom_template
         )
-        if not custom_template_manifest.items:
+        if not document_template_manifest.items:
             raise HTTPException(
                 status_code=409,
                 detail={"code": "CUSTOM_TEMPLATE_EMPTY", "message": "上传模板没有可读内容"},
             )
-
-    # 报告 Agent 必须在一轮会话里读完整个文档，超出模型上下文预算的任务注定截断失败。
-    # 与其等几十分钟后报 REPORT_IR_NOT_SUBMITTED，不如在创建时就明确拒绝。
-    source_chunks, source_chars = await load_document_payload_stats(
-        db, document_id=int(document.id), document_version=int(document.version)
-    )
-    if custom_template is not None:
-        custom_chunks, custom_chars = await load_document_payload_stats(
+        custom_template_manifest = {
+            "source_kind": SOURCE_KIND_DOCUMENT,
+            "document_id": int(custom_template.id),
+            "document_version": int(custom_template.version),
+            "filename": custom_template.filename,
+            "chunk_manifest_sha256": document_template_manifest.content_hash,
+            "chunk_count": len(document_template_manifest.items),
+        }
+        template_chunks, template_chars = await load_document_payload_stats(
             db,
             document_id=int(custom_template.id),
             document_version=int(custom_template.version),
         )
-    else:
-        custom_chunks = custom_chars = 0
+
+    # 报告 Agent 必须在一轮会话里读完整个来源，超出模型上下文预算的任务注定截断失败。
+    # 与其等几十分钟后报 REPORT_IR_NOT_SUBMITTED，不如在创建时就明确拒绝。
     try:
         estimated_tokens = assert_document_fits_context(
-            content_chars=source_chars + custom_chars,
-            chunk_count=source_chunks + custom_chunks,
+            content_chars=source.chars + template_chars,
+            chunk_count=source.chunks + template_chunks,
         )
     except ReportDocumentTooLargeError as exc:
         raise HTTPException(
@@ -293,7 +522,7 @@ async def create_report(
     logger.info(
         "报告任务上下文预算检查通过 run_estimate_tokens={} 分片数={}",
         estimated_tokens,
-        source_chunks + custom_chunks,
+        source.chunks + template_chunks,
     )
 
     llm_config = await db.scalar(
@@ -348,13 +577,17 @@ async def create_report(
         "supports_tool_calling": bool(llm_config.supports_tool_calling),
     }
     run = ReportRun(
-        id=str(uuid4()),
+        id=run_id,
         user_id=user_id,
-        dataset_id=document.dataset_id,
-        document_id=document.id,
-        document_version=document.version,
-        parsed_bucket=document.parsed_bucket,
-        parsed_object_key=document.parsed_object_key,
+        source_kind=source.kind,
+        dataset_id=source.dataset_id,
+        document_id=source.document_id,
+        document_version=source.document_version,
+        inline_source_filename=(
+            source.filename if source.kind == SOURCE_KIND_INLINE else None
+        ),
+        parsed_bucket=source.bucket,
+        parsed_object_key=source.object_key,
         report_type=template.report_type,
         template_id=template.template_id,
         template_version=template.version,
@@ -363,17 +596,7 @@ async def create_report(
         document_manifest={},
         custom_template_document_id=custom_template.id if custom_template else None,
         custom_template_document_version=custom_template.version if custom_template else None,
-        custom_template_manifest=(
-            {
-                "document_id": int(custom_template.id),
-                "document_version": int(custom_template.version),
-                "filename": custom_template.filename,
-                "chunk_manifest_sha256": custom_template_manifest.content_hash,
-                "chunk_count": len(custom_template_manifest.items),
-            }
-            if custom_template and custom_template_manifest
-            else None
-        ),
+        custom_template_manifest=custom_template_manifest,
         mode="GENERATE",
         language=payload.language,
         reporting_year=payload.reporting_year,
@@ -396,20 +619,29 @@ async def create_report(
             },
         )
     run.document_manifest = {
-        "parsed_bucket": document.parsed_bucket,
-        "parsed_object_key": document.parsed_object_key,
-        "document_version": int(document.version),
+        "source_kind": source.kind,
+        "parsed_bucket": source.bucket,
+        "parsed_object_key": source.object_key,
+        "document_version": source.document_version,
+        "source_filename": source.filename,
         "chunk_manifest_sha256": chunk_manifest.content_hash,
         "chunk_count": len(chunk_manifest.items),
+        # 直传材料用它做预算校验；文档来源的规模每次从 document_chunk 现算。
+        "char_count": source.chars,
     }
     run.input_hash = _input_hash(
-        document=document,
+        source=source,
         template_snapshot=template_snapshot,
         model_snapshot=model_snapshot,
         document_manifest=run.document_manifest,
         custom_template_manifest=run.custom_template_manifest,
         payload=payload,
     )
+    if source.material is not None:
+        source.material.consumed_at = now
+    if template_material is not None:
+        # 记下首次被使用的时间，便于诊断；不影响后续复用（材料挂在对话上，可反复引用）。
+        template_material.consumed_at = template_material.consumed_at or now
     mark_report_dispatch_pending(run, now=now)
     db.add(run)
     await db.commit()
@@ -477,7 +709,7 @@ async def _runs_with_artifacts(
                 "size_bytes": artifact.size_bytes,
                 "filename": artifact_download_name(
                     run=run,
-                    document_filename=document_filenames.get(int(run.document_id)),
+                    document_filename=_source_filename(run, document_filenames),
                     artifact_type=artifact.artifact_type,
                 ),
             }
@@ -485,11 +717,32 @@ async def _runs_with_artifacts(
     return [
         {
             **_run_dict(run),
-            "document_filename": document_filenames.get(int(run.document_id)),
+            "document_filename": _source_filename(run, document_filenames),
             "artifacts": artifacts_by_run.get(str(run.id), []),
         }
         for run in runs
     ]
+
+
+def _source_filename(run: ReportRun, document_filenames: dict[int, str]) -> str | None:
+    """列表里的「来源」列：文档来源取文档名，直传材料取上传时的原文件名。"""
+    if run.source_kind == SOURCE_KIND_INLINE:
+        return run.inline_source_filename
+    if run.document_id is None:
+        return None
+    return document_filenames.get(int(run.document_id))
+
+
+async def _resolve_source_filename(db: AsyncSession, run: ReportRun) -> str | None:
+    """单个任务的来源名。列表接口有现成的文件名映射，单条查询就直接查库。"""
+    if run.source_kind == SOURCE_KIND_INLINE:
+        return run.inline_source_filename
+    if run.document_id is None:
+        return None
+    document = await db.scalar(
+        select(Document).where(Document.id == run.document_id, Document.user_id == run.user_id)
+    )
+    return document.filename if document is not None else None
 
 
 @router.get("/documents/{document_id}/report-runs")
@@ -578,23 +831,25 @@ async def retry_report_run(
     run = await _owned_run(db, run_id=run_id, user_id=user_id, for_update=True)
     if run.state != "FAILED":
         raise HTTPException(status_code=409, detail="只有失败任务可以手动重试")
-    document = await db.scalar(
-        select(Document).where(Document.id == run.document_id, Document.user_id == user_id)
-    )
-    if (
-        document is None
-        or document.status != DOCUMENT_STATUS_READY
-        or int(document.version) != int(run.document_version)
-        or document.parsed_bucket != run.parsed_bucket
-        or document.parsed_object_key != run.parsed_object_key
-    ):
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "code": "REPORT_DOCUMENT_VERSION_CHANGED",
-                "message": "源文档版本已经变化，请创建新的报告任务",
-            },
+    # 直传材料的正文是创建任务时冻结的快照，外部改不到，也就没有「文档版本已变化」可判。
+    if run.source_kind != SOURCE_KIND_INLINE:
+        document = await db.scalar(
+            select(Document).where(Document.id == run.document_id, Document.user_id == user_id)
         )
+        if (
+            document is None
+            or document.status != DOCUMENT_STATUS_READY
+            or int(document.version) != int(run.document_version)
+            or document.parsed_bucket != run.parsed_bucket
+            or document.parsed_object_key != run.parsed_object_key
+        ):
+            raise HTTPException(
+                status_code=409,
+                detail={
+                    "code": "REPORT_DOCUMENT_VERSION_CHANGED",
+                    "message": "源文档版本已经变化，请创建新的报告任务",
+                },
+            )
     now = utc_now()
     run.state = "PENDING"
     run.stage = "MANUAL_RETRY"
@@ -740,8 +995,7 @@ async def get_report_ir(
             .order_by(ReportArtifact.id)
         )
     ).all()
-    document = await db.scalar(select(Document).where(Document.id == run.document_id))
-    document_filename = document.filename if document is not None else None
+    document_filename = await _resolve_source_filename(db, run)
     return {
         "run": _run_dict(run),
         "report_ir": run.report_ir,
@@ -772,7 +1026,7 @@ async def download_report_artifact(
     user_id: Annotated[int, Depends(get_user_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> StreamingResponse:
-    """下载已生成的报告产物（Markdown / DOCX）。"""
+    """下载已生成的报告产物（Markdown / DOCX / HTML）。"""
     run = await _owned_run(db, run_id=run_id, user_id=user_id)
     artifact = await db.scalar(
         select(ReportArtifact).where(
@@ -782,7 +1036,6 @@ async def download_report_artifact(
     )
     if artifact is None:
         raise HTTPException(status_code=404, detail="报告产物不存在")
-    document = await db.scalar(select(Document).where(Document.id == run.document_id))
     try:
         content = await read_report_artifact(artifact)
     except ReportArtifactError as exc:
@@ -792,7 +1045,7 @@ async def download_report_artifact(
         ) from exc
     filename = artifact_download_name(
         run=run,
-        document_filename=document.filename if document is not None else None,
+        document_filename=await _resolve_source_filename(db, run),
         artifact_type=artifact.artifact_type,
     )
     return StreamingResponse(

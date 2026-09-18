@@ -1,4 +1,13 @@
-"""Authoritative source manifests used to validate report evidence and coverage."""
+"""Authoritative source manifests used to validate report evidence and coverage.
+
+来源有两种形态，覆盖校验与证据校验对它们一视同仁：
+
+- ``DOCUMENT``：已入库解析的文档，分片在 ``document_chunk`` 表里。
+- ``INLINE``：对话直传的材料，不进知识库；分片冻结在这次任务的对象存储上，
+  由 ``report_inline_source`` 负责切分与读取。
+
+两条通路产出的是同一个 ``ReportChunkManifest``，所以下游一行都不用分叉。
+"""
 
 from __future__ import annotations
 
@@ -12,6 +21,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.domain.models import Document, ReportQuestion, ReportRun
 from app.rag.models.chunk_record import ChunkRecordDB
+from app.rag.services.storage.base import BaseObjectStorage
+from app.rag.services.storage.factory import StorageFactory
+from app.services.report_inline_source import (
+    SOURCE_KIND_INLINE,
+    manifest_items,
+    payload_chunks,
+    read_inline_source,
+)
 from app.services.report_ir import ReportEvidenceContext
 
 
@@ -30,31 +47,88 @@ def _canonical_hash(value: Any) -> str:
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
+async def _inline_manifest(
+    *, bucket: str, object_key: str, storage: BaseObjectStorage | None = None
+) -> ReportChunkManifest:
+    payload = await read_inline_source(
+        storage or StorageFactory.get_storage(), bucket=bucket, object_key=object_key
+    )
+    items = manifest_items(payload_chunks(payload))
+    return ReportChunkManifest(items=items, content_hash=_canonical_hash(items))
+
+
+async def load_inline_chunk_manifest(
+    run: ReportRun, *, storage: BaseObjectStorage | None = None
+) -> ReportChunkManifest:
+    """读回冻结的内联来源正文，重建清单。
+
+    清单哈希现算，与创建任务时写进 ``document_manifest`` 的值比对由调用方负责——
+    这里只保证「读回来的这批分片」是一致的。
+    """
+    return await _inline_manifest(
+        bucket=run.parsed_bucket, object_key=run.parsed_object_key, storage=storage
+    )
+
+
+async def load_inline_template_manifest(
+    run: ReportRun, *, storage: BaseObjectStorage | None = None
+) -> ReportChunkManifest:
+    """读回冻结的内联版式模板，重建清单。位置记在 ``custom_template_manifest`` 里。"""
+    manifest = run.custom_template_manifest or {}
+    return await _inline_manifest(
+        bucket=str(manifest.get("bucket") or run.parsed_bucket),
+        object_key=str(manifest.get("object_key") or ""),
+        storage=storage,
+    )
+
+
 async def load_report_source_context(
     db: AsyncSession,
     *,
     run: ReportRun,
+    storage: BaseObjectStorage | None = None,
 ) -> tuple[ReportEvidenceContext, ReportChunkManifest]:
-    chunks = (
-        await db.scalars(
-            select(ChunkRecordDB)
-            .where(
-                ChunkRecordDB.doc_id == run.document_id,
-                ChunkRecordDB.document_version == run.document_version,
-                ChunkRecordDB.user_id == run.user_id,
-                ChunkRecordDB.set_id == run.dataset_id,
+    if run.source_kind == SOURCE_KIND_INLINE:
+        inline_chunks = payload_chunks(
+            await read_inline_source(
+                storage or StorageFactory.get_storage(),
+                bucket=run.parsed_bucket,
+                object_key=run.parsed_object_key,
             )
-            .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
         )
-    ).all()
-    manifest_items = tuple(
-        {
-            "chunk_id": str(chunk.chunk_id),
-            "chunk_index": int(chunk.chunk_index),
-            "content_hash": str(chunk.content_hash),
+        evidence_chunks = {
+            chunk.chunk_id: {"content_hash": chunk.content_hash, "content": chunk.content}
+            for chunk in inline_chunks
         }
-        for chunk in chunks
-    )
+        manifest_entries = manifest_items(inline_chunks)
+    else:
+        rows = (
+            await db.scalars(
+                select(ChunkRecordDB)
+                .where(
+                    ChunkRecordDB.doc_id == run.document_id,
+                    ChunkRecordDB.document_version == run.document_version,
+                    ChunkRecordDB.user_id == run.user_id,
+                    ChunkRecordDB.set_id == run.dataset_id,
+                )
+                .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
+            )
+        ).all()
+        evidence_chunks = {
+            str(chunk.chunk_id): {
+                "content_hash": str(chunk.content_hash),
+                "content": chunk.content,
+            }
+            for chunk in rows
+        }
+        manifest_entries = tuple(
+            {
+                "chunk_id": str(chunk.chunk_id),
+                "chunk_index": int(chunk.chunk_index),
+                "content_hash": str(chunk.content_hash),
+            }
+            for chunk in rows
+        )
     questions = (
         await db.scalars(
             select(ReportQuestion)
@@ -70,18 +144,12 @@ async def load_report_source_context(
         for question in questions
     }
     evidence_context = ReportEvidenceContext(
-        document_chunks={
-            str(chunk.chunk_id): {
-                "content_hash": str(chunk.content_hash),
-                "content": chunk.content,
-            }
-            for chunk in chunks
-        },
+        document_chunks=evidence_chunks,
         user_answer_hashes=answer_hashes,
     )
     return evidence_context, ReportChunkManifest(
-        items=manifest_items,
-        content_hash=_canonical_hash(manifest_items),
+        items=manifest_entries,
+        content_hash=_canonical_hash(manifest_entries),
     )
 
 

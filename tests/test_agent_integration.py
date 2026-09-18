@@ -44,6 +44,32 @@ def test_agent_stream_body_keeps_legacy_history_bounded_to_ten_messages() -> Non
         agent_module.AgentStreamBody(query="你好", history=history)
 
 
+def test_agent_stream_body_accepts_two_uploads_plus_one_document_reference() -> None:
+    """@ 引用的知识库文档与两次上传可以同轮并存：它不注入正文，不占正文预算。"""
+    body = agent_module.AgentStreamBody(
+        query="用 @伊顿碳足迹报告.docx 生成报告",
+        attachments=[
+            {"filename": "材料.docx", "material_id": "m-1"},
+            {"filename": "模板.docx", "material_id": "m-2"},
+            {"filename": "伊顿碳足迹报告.docx", "document_id": 7, "role": "SOURCE"},
+        ],
+    )
+
+    assert [item.document_id for item in body.attachments] == [None, None, 7]
+    assert body.attachments[2].role == "SOURCE"
+
+    with pytest.raises(ValidationError):
+        agent_module.AgentStreamBody(
+            query="超出上限",
+            attachments=[
+                {"filename": "a.docx", "material_id": "m-1"},
+                {"filename": "b.docx", "material_id": "m-2"},
+                {"filename": "c.docx", "material_id": "m-3"},
+                {"filename": "d.docx", "material_id": "m-4"},
+            ],
+        )
+
+
 def test_agent_chat_model_requires_one_shared_binding_without_explicit_selection() -> None:
     shared = {
         1: SimpleNamespace(chat_config_id=9),

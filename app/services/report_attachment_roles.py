@@ -28,7 +28,7 @@ from app.rag.core.prompts import (
 )
 from app.rag.models.chunk_record import ChunkRecordDB
 from app.rag.observability.logging import logger
-from app.services.report_template_classifier import classify_document
+from app.services.report_template_classifier import classify_document, classify_text
 
 _EXCERPT_CHUNKS = 12
 
@@ -139,6 +139,91 @@ async def _fallback_by_report_likeness(
     )
 
 
+@dataclass(frozen=True, slots=True)
+class AttachmentCandidate:
+    """参与角色判定的一份文件。``key`` 由调用方定义，用来指回真实对象。"""
+
+    key: str
+    filename: str
+    excerpt: str
+
+
+@dataclass(frozen=True, slots=True)
+class MaterialRoles:
+    """直传材料的角色判定结果。键是材料 id，不是数字。
+
+    ``subject_key`` 为空表示「没有可用于生成报告的来源材料」——例如用户只上传了
+    一份版式模板。这时由调用方决定是追问还是等待下一轮。
+    """
+
+    subject_key: str | None = None
+    template_key: str | None = None
+    decided_by: str = "fallback"
+
+
+async def _decide_by_model(
+    *, db: AsyncSession, user_id: int, config_id: int, candidates: list[AttachmentCandidate]
+) -> tuple[str | None, str | None]:
+    """让模型判断哪份是主体材料、哪份是版式模板，返回 (主体 key, 模板 key)。
+
+    模型不可用、超时或产出不可解析时返回 (None, None)，交调用方回落规则判定。
+    提示词里用**序号**指代文件，所以这里把序号映射回 key。
+    """
+
+    prompt_attachments = [
+        {"filename": candidate.filename, "excerpt": candidate.excerpt}
+        for candidate in candidates
+    ]
+    resolved = None
+    try:
+        resolved = await aresolve_model(
+            user_id=user_id, config_id=config_id, capability="CHAT", db=db
+        )
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 用途判定是增强项，取不到模型不阻塞生成
+        logger.bind(
+            event="attachment_role_model_resolution_failed",
+            outcome="degraded",
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:200],
+        ).warning("[agent] attachment role model resolution failed")
+    if resolved is None:
+        return None, None
+
+    def pick(position: int | None) -> str | None:
+        if position is None or not 1 <= position <= len(candidates):
+            return None
+        return candidates[position - 1].key
+
+    try:
+        result = await asyncio.wait_for(
+            resolved.provider.generate(
+                prompt=build_attachment_role_user_prompt(attachments=prompt_attachments),
+                system_prompt=ATTACHMENT_ROLE_SYSTEM_PROMPT,
+                temperature=0.0,
+                max_tokens=ATTACHMENT_ROLE_MAX_OUTPUT_TOKENS,
+            ),
+            timeout=ATTACHMENT_ROLE_TIMEOUT_SECONDS,
+        )
+        subject_position, template_position = parse_attachment_role_reply(
+            result.content, allowed_ids=set(range(1, len(candidates) + 1))
+        )
+        return pick(subject_position), pick(template_position)
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - 判定失败回落规则，不阻塞生成
+        logger.bind(
+            event="attachment_role_decision_failed",
+            outcome="degraded",
+            error_type=type(exc).__name__,
+            error_message=str(exc)[:200],
+        ).warning("[agent] attachment role decision failed")
+        return None, None
+    finally:
+        await aclose_dataset_execution_contexts([], extra_models=[resolved])
+
+
 async def decide_attachment_roles(
     *,
     db: AsyncSession,
@@ -154,7 +239,7 @@ async def decide_attachment_roles(
     if len(ordered) == 1:
         return AttachmentRoles(subject_id=int(ordered[0].id), decided_by="single")
 
-    attachments: list[dict] = []
+    candidates: list[AttachmentCandidate] = []
     for document in ordered:
         try:
             excerpt = await _document_excerpt(db, document)
@@ -165,57 +250,81 @@ async def decide_attachment_roles(
                 error_type=type(exc).__name__,
             ).warning("[agent] attachment role excerpt failed")
             excerpt = ""
-        attachments.append(
-            {
-                "document_id": int(document.id),
-                "filename": document.filename,
-                "excerpt": excerpt,
-            }
+        candidates.append(
+            AttachmentCandidate(
+                key=str(int(document.id)), filename=document.filename, excerpt=excerpt
+            )
         )
 
-    resolved = None
-    try:
-        resolved = await aresolve_model(
-            user_id=user_id, config_id=config_id, capability="CHAT", db=db
+    subject_key, template_key = await _decide_by_model(
+        db=db, user_id=user_id, config_id=config_id, candidates=candidates
+    )
+    if subject_key is not None:
+        return AttachmentRoles(
+            subject_id=int(subject_key),
+            template_id=int(template_key) if template_key else None,
+            decided_by="model",
         )
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:  # noqa: BLE001 - 用途判定是增强项，取不到模型不阻塞生成
-        logger.bind(
-            event="attachment_role_model_resolution_failed",
-            outcome="degraded",
-            error_type=type(exc).__name__,
-            error_message=str(exc)[:200],
-        ).warning("[agent] attachment role model resolution failed")
-    if resolved is not None:
-        try:
-            result = await asyncio.wait_for(
-                resolved.provider.generate(
-                    prompt=build_attachment_role_user_prompt(attachments=attachments),
-                    system_prompt=ATTACHMENT_ROLE_SYSTEM_PROMPT,
-                    temperature=0.0,
-                    max_tokens=ATTACHMENT_ROLE_MAX_OUTPUT_TOKENS,
-                ),
-                timeout=ATTACHMENT_ROLE_TIMEOUT_SECONDS,
-            )
-            subject_id, template_id = parse_attachment_role_reply(
-                result.content, allowed_ids={item["document_id"] for item in attachments}
-            )
-            if subject_id is not None:
-                return AttachmentRoles(
-                    subject_id=subject_id, template_id=template_id, decided_by="model"
-                )
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - 判定失败回落规则，不阻塞生成
-            logger.bind(
-                event="attachment_role_decision_failed",
-                outcome="degraded",
-                error_type=type(exc).__name__,
-                error_message=str(exc)[:200],
-            ).warning("[agent] attachment role decision failed")
-        finally:
-            if resolved is not None:
-                await aclose_dataset_execution_contexts([], extra_models=[resolved])
 
     return await _fallback_by_report_likeness(db=db, documents=ordered)
+
+
+async def decide_material_roles(
+    *,
+    db: AsyncSession,
+    user_id: int,
+    config_id: int,
+    materials: list[tuple[str, str, str]],
+) -> MaterialRoles:
+    """判定对话直传的材料里哪份是主体材料、哪份是版式模板。
+
+    ``materials`` 是 ``(key, filename, text)`` 的有序列表（按上传顺序）。判定不了时
+    回落规则：报告特征更明显的那份当模板，另一份当主体材料；都看不出特征就按上传
+    顺序——先传的是主体材料。
+    """
+
+    if not materials:
+        raise ValueError("decide_material_roles 需要至少一份文件")
+    if len(materials) == 1:
+        # 只有一份时也要分：它可能是待写入报告的原始资料，也可能是提供版式的既有
+        # 报告样例。判据是内容像不像一份成型的报告——这一步不叫模型，规则足够稳。
+        key, filename, text = materials[0]
+        if _top_score(text[:40000], filename) > 0:
+            return MaterialRoles(template_key=key, decided_by="likeness")
+        return MaterialRoles(subject_key=key, decided_by="single")
+
+    candidates = [
+        AttachmentCandidate(key=key, filename=filename, excerpt=text[:40000])
+        for key, filename, text in materials
+    ]
+    subject_key, template_key = await _decide_by_model(
+        db=db, user_id=user_id, config_id=config_id, candidates=candidates
+    )
+    if subject_key is not None:
+        return MaterialRoles(
+            subject_key=subject_key, template_key=template_key, decided_by="model"
+        )
+
+    scores = [_top_score(candidate.excerpt, candidate.filename) for candidate in candidates]
+    top = max(scores)
+    winners = [index for index, score in enumerate(scores) if score == top]
+    if top <= 0 or len(winners) != 1:
+        return MaterialRoles(
+            subject_key=candidates[0].key,
+            template_key=candidates[1].key,
+            decided_by="fallback",
+        )
+    template_index = winners[0]
+    subject_index = next(index for index in range(len(candidates)) if index != template_index)
+    return MaterialRoles(
+        subject_key=candidates[subject_index].key,
+        template_key=candidates[template_index].key,
+        decided_by="fallback",
+    )
+
+
+def _top_score(text: str, filename: str) -> float:
+    """文件「像一份报告」的程度：取报告类型分类的最高得分。"""
+    classification = classify_text(text, filename=filename)
+    scores = [float(candidate.get("score") or 0.0) for candidate in classification.candidates]
+    return max(scores) if scores else 0.0

@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.reports import ReportCreateRequest, create_report
 from app.domain.auth import get_actor_user_id, get_shared_owner_user_id
-from app.domain.models import Dataset, Document
+from app.domain.models import AgentConversationTurn, Dataset, Document, ReportMaterial
 from app.rag.application.recall_pipeline_provider import (
     aresolve_recall_execution,
     build_recall_request_from_config,
@@ -52,6 +52,7 @@ from app.rag.core.prompts import (
 )
 from app.rag.database import get_db, get_db_context
 from app.rag.models.chunk_record import ChunkRecordDB
+from app.rag.services.storage.factory import StorageFactory
 from app.services.agent_attachment_text import (
     DIRECT_ATTACHMENT_SUPPORTED_TYPES,
     TOO_LARGE_MESSAGE,
@@ -75,9 +76,15 @@ from app.services.pi_agent_client import (
 from app.services.report_attachment_roles import (
     AttachmentRoleError,
     decide_attachment_roles,
+    decide_material_roles,
     resolve_declared_roles,
 )
-from app.services.report_template_classifier import Classification, classify_document
+from app.services.report_material import read_material_text, store_material
+from app.services.report_template_classifier import (
+    Classification,
+    classify_document,
+    classify_text,
+)
 
 router = APIRouter(tags=["Pi Agent"])
 logger = logging.getLogger(__name__)
@@ -140,7 +147,7 @@ class AgentAttachment(BaseModel):
     """对话附件，两种形态二选一。
 
     - 知识库形态：``document_id``（已入库解析的文档，走报告/召回链路）
-    - 直传形态：``filename`` + ``content``（小文件就地提取的文本，直接作为上下文）
+    - 直传形态：``material_id``（已暂存在服务端的材料，可作问答上下文，也可作报告来源）
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -149,21 +156,21 @@ class AgentAttachment(BaseModel):
     # 可省略：不声明时由模型判断各文件用途（见 report_attachment_roles）。
     role: Literal["SOURCE", "TEMPLATE"] | None = None
     filename: str | None = Field(default=None, min_length=1, max_length=512)
-    content: str | None = Field(
-        default=None, min_length=1, max_length=settings.AGENT_DIRECT_ATTACHMENT_MAX_CHARS
-    )
+    # 直传形态：文件已经由 POST /api/v1/agent/materials 暂存在服务端，这里只带 id。
+    # 正文不走「回传浏览器再发回来」——报告材料动辄十几万字符，那会把请求体撑爆。
+    material_id: str | None = Field(default=None, min_length=1, max_length=36)
 
     @model_validator(mode="after")
     def validate_kind(self) -> AgentAttachment:
         has_document = self.document_id is not None
-        has_inline = self.filename is not None and self.content is not None
-        if has_document == has_inline:
-            raise ValueError("附件二选一：document_id，或 filename 与 content 同时提供")
+        has_material = self.material_id is not None
+        if has_document == has_material:
+            raise ValueError("附件二选一：document_id，或 material_id")
         return self
 
     @property
     def is_direct(self) -> bool:
-        return self.content is not None
+        return self.material_id is not None
 
 
 class AgentHistoryMessage(BaseModel):
@@ -182,7 +189,9 @@ class AgentStreamBody(BaseModel):
     llm_config_id: int | None = Field(default=None, gt=0)
     history: list[AgentHistoryMessage] = Field(default_factory=list, max_length=10)
     conversation_id: str | None = Field(default=None, max_length=36)
-    attachments: list[AgentAttachment] = Field(default_factory=list, max_length=2)
+    # 上限按「两份上传 + 一份 @ 引用」算：@ 的知识库文档不注入正文（走检索与
+    # 章节读取），多这一份不会撑大上下文；上传的材料才是两份就到顶。
+    attachments: list[AgentAttachment] = Field(default_factory=list, max_length=3)
 
     @field_validator("query")
     @classmethod
@@ -429,6 +438,97 @@ async def _agent_document_tree(db: AsyncSession, context, doc_id: int) -> dict:
         "headings": serialize(root["children_by_title"]),
         "root_chunk_ids": list(dict.fromkeys(root["direct_chunk_ids"])),
     }
+
+
+async def _load_material_texts(
+    db: AsyncSession, *, items: list[AgentAttachment], user_id: int
+) -> list[tuple[AgentAttachment, ReportMaterial, str]]:
+    """按 material_id 取回暂存材料的正文。
+
+    归属不对、已被消费、内容与登记对不上，都在这里拒绝——创建报告要用它当来源，
+    到那一步才发现拿不出正文就太晚了。
+    """
+    if not items:
+        return []
+    material_ids = [str(item.material_id) for item in items]
+    if len(set(material_ids)) != len(material_ids):
+        raise HTTPException(status_code=422, detail="附件不能重复")
+    rows = (
+        await db.scalars(
+            select(ReportMaterial).where(
+                ReportMaterial.id.in_(material_ids),
+                ReportMaterial.user_id == user_id,
+            )
+        )
+    ).all()
+    by_id = {material.id: material for material in rows}
+    if set(by_id) != set(material_ids):
+        raise HTTPException(status_code=404, detail="上传的材料不存在或已被清理")
+
+    storage = StorageFactory.get_storage()
+    resolved: list[tuple[AgentAttachment, ReportMaterial, str]] = []
+    for item in items:
+        material = by_id[str(item.material_id)]
+        # 刻意不因为「已经生成过报告」就拒绝：材料挂在对话上，同一份可以反复引用。
+        try:
+            text = (await read_material_text(storage, material=material)).decode("utf-8")
+        except (ValueError, OSError) as exc:
+            raise HTTPException(
+                status_code=422,
+                detail={"code": "MATERIAL_UNREADABLE", "message": str(exc)},
+            ) from exc
+        resolved.append((item, material, text))
+    return resolved
+
+
+async def _carried_material_ids(
+    db: AsyncSession, *, conversation_id: str | None, user_id: int
+) -> set[str]:
+    """上一轮已经带过的材料 id。
+
+    材料与模板挂在对话上、每轮重发，但正文不能每轮都重新灌进 prompt：一份材料上限
+    六万字符，几轮下来就把问答上下文吃光了，回答质量反而下降。这里只用来区分
+    「本轮新加的」和「之前就有的」。
+    """
+    if not conversation_id:
+        return set()
+    rows = await db.scalars(
+        select(AgentConversationTurn.attachments)
+        .where(
+            AgentConversationTurn.conversation_id == conversation_id,
+            AgentConversationTurn.user_id == user_id,
+        )
+        .order_by(AgentConversationTurn.turn_index.desc())
+        .limit(1)
+    )
+    previous = rows.first() or []
+    return {
+        str(item.get("material_id"))
+        for item in previous
+        if isinstance(item, dict) and item.get("material_id")
+    }
+
+
+def _material_by_key(
+    materials: list[tuple[AgentAttachment, ReportMaterial, str]], key: str | None
+) -> ReportMaterial | None:
+    if not key:
+        return None
+    for _item, material, _text in materials:
+        if material.id == key:
+            return material
+    return None
+
+
+def _material_text(
+    materials: list[tuple[AgentAttachment, ReportMaterial, str]], material: ReportMaterial | None
+) -> str:
+    if material is None:
+        return ""
+    for _item, candidate, text in materials:
+        if candidate.id == material.id:
+            return text
+    return ""
 
 
 async def _owned_datasets(
@@ -959,14 +1059,16 @@ async def internal_agent_read_section(
     }
 
 
-@router.post("/api/v1/agent/attachments")
-async def upload_agent_attachment(
+@router.post("/api/v1/agent/materials")
+async def upload_agent_material(
     file: UploadFile = File(...),
     user_id: int = Depends(get_shared_owner_user_id),
+    db: AsyncSession = Depends(get_db),
 ) -> dict:
-    """对话直传附件：就地提取文本，不进知识库链路。
+    """对话直传附件的暂存：就地提取文本放服务端，不进知识库链路。
 
-    超过大小/页数/字符任一阈值即返回 413，提示用户先导入知识库。
+    返回 ``material_id``，之后对话里只传这个 id。超过大小/页数/字符任一阈值即返回
+    413，提示用户先导入知识库——报告要在一轮里读完全文，装不下就不该装作能跑。
     """
     if not settings.AGENT_ENABLED:
         raise HTTPException(status_code=503, detail={"code": "AGENT_DISABLED"})
@@ -1006,11 +1108,20 @@ async def upload_agent_attachment(
                 detail={"code": "ATTACHMENT_UNREADABLE", "message": str(exc)},
             ) from exc
 
+    material = await store_material(
+        StorageFactory.get_storage(),
+        user_id=user_id,
+        filename=filename,
+        text=content,
+        page_count=page_count,
+    )
+    db.add(material)
+    await db.commit()
     return {
-        "filename": filename,
-        "content": content,
-        "page_count": page_count,
-        "char_count": len(content),
+        "material_id": material.id,
+        "filename": material.filename,
+        "char_count": material.char_count,
+        "page_count": material.page_count,
     }
 
 
@@ -1050,9 +1161,38 @@ async def agent_stream(
     source_documents: list[Document] = []
     template_documents: list[Document] = []
     attachment_snapshots: list[dict] = []
-    # 直传附件只作本轮上下文：不参与角色判定与报告链路，也无需归属校验。
-    direct_attachments = [item for item in body.attachments if item.is_direct]
     kb_attachments = [item for item in body.attachments if not item.is_direct]
+    material_attachments = [item for item in body.attachments if item.is_direct]
+    # 直传材料已暂存在服务端，正文在这里读回来。报告要用它，问答也要用它。
+    materials = await _load_material_texts(
+        db, items=material_attachments, user_id=user_id
+    )
+    # 材料与模板挂在对话上、每轮重发；区分「本轮新加的」和「之前就有的」，只把新增的
+    # 正文交代给问答模型（start_turn 之前查，否则查到的是本轮自己）。
+    carried_material_ids = await _carried_material_ids(
+        db, conversation_id=body.conversation_id, user_id=user_id
+    )
+    # 材料同样要判角色：哪份是待写入报告的来源，哪份是照它排版的模板。只上传一份
+    # 成型的报告时，这一步会把它认成模板而不是来源。
+    material_roles = (
+        await decide_material_roles(
+            db=db,
+            user_id=user_id,
+            config_id=config_id,
+            materials=[
+                (material.id, material.filename, text)
+                for _item, material, text in materials
+            ],
+        )
+        if materials
+        else None
+    )
+    source_material = _material_by_key(
+        materials, material_roles.subject_key if material_roles else None
+    )
+    template_material = _material_by_key(
+        materials, material_roles.template_key if material_roles else None
+    )
     attachment_ids = [int(item.document_id) for item in kb_attachments]
     if len(set(attachment_ids)) != len(attachment_ids):
         raise HTTPException(status_code=422, detail="附件不能重复")
@@ -1122,43 +1262,52 @@ async def agent_stream(
             template_id,
         )
 
-    # 直传附件只留文件名与标记，不落全文，避免撑大会话记录。
+    # 直传附件只留文件名与标记，不落全文，避免撑大会话记录。角色按判定结果写，
+    # 界面上才分得清哪份是来源、哪份是版式模板。
     attachment_snapshots.extend(
-        {"filename": item.filename, "role": "SOURCE", "direct": True}
-        for item in direct_attachments
+        {
+            "filename": material.filename,
+            "role": (
+                "TEMPLATE"
+                if template_material is not None and material.id == template_material.id
+                else "SOURCE"
+            ),
+            "direct": True,
+        }
+        for _item, material, _text in materials
     )
 
-    # 附件曾经等同于「发起报告生成」：只要判定出主体材料就无条件走报告分类，
+    # 带附件曾经等同于「发起报告生成」：只要判定出主体材料就无条件走报告分类，
     # 于是「这两份材料分别是什么」也会被要求先选报告类型。这里先判一次意图，
     # 只有确实要报告才进报告链路，提问落到下面的问答链路。
     attached_documents = [*source_documents, *template_documents]
+    has_source = bool(source_documents) or bool(materials)
     turn_intent = (
         await decide_turn_intent(
             db=db,
             user_id=user_id,
             config_id=config_id,
             query=body.query,
-            filenames=[document.filename for document in attached_documents],
+            filenames=[
+                *(document.filename for document in attached_documents),
+                *(material.filename for _item, material, _text in materials),
+            ],
         )
-        if source_documents
+        if has_source
         else TurnIntent(intent=REPORT_INTENT, decided_by="none")
     )
-    # 直传附件一律走问答链路：报告生成依赖入库文档的切块与分类，直传文本不具备。
-    wants_report = (
-        bool(source_documents)
-        and not direct_attachments
-        and turn_intent.intent == REPORT_INTENT
-    )
-    if source_documents:
+    wants_report = has_source and turn_intent.intent == REPORT_INTENT
+    if has_source:
         logger.info(
-            "[agent] turn intent resolved intent=%s decided_by=%s attachments=%s",
+            "[agent] turn intent resolved intent=%s decided_by=%s attachments=%s materials=%s",
             turn_intent.intent,
             turn_intent.decided_by,
             [int(document.id) for document in attached_documents],
+            [material.id for _item, material, _text in materials],
         )
 
     # 带附件提问时把检索范围收到这份材料：用户上传它就是为了问它，散到整个知识库
-    # 反而更可能答不到这份文件上。
+    # 反而更可能答不到这份文件上。直传材料不在知识库里，没有范围可收。
     scoped_doc_ids = (
         [int(document.id) for document in attached_documents]
         if source_documents and not wants_report
@@ -1177,11 +1326,77 @@ async def agent_stream(
     )
 
     if wants_report:
+        # 来源只能是一份。判出多份时不能默默只取一份——用户以为都算数，拿到手的报告
+        # 却只覆盖了其中一份，这种错法事后很难发现。宁可当场说清楚。
+        source_count = len(source_documents) + (1 if source_material else 0)
+        if source_count > 1:
+            message = (
+                f"生成报告时一次只能确定一份来源材料，本轮带了 {source_count} 份。"
+                "请只保留要生成报告的那一份后重新发送。"
+            )
+            await finish_turn(
+                db,
+                turn=turn,
+                content=message,
+                status="FAILED",
+                error_code="REPORT_SOURCE_AMBIGUOUS",
+                error_message="一次只能确定一份报告来源材料",
+            )
+
+            async def ambiguous_stream() -> AsyncGenerator[str, None]:
+                yield _sse_event(
+                    "conversation_started",
+                    {"conversation_id": conversation.id, "turn_id": turn.id},
+                )
+                yield _sse_event("answer_delta", {"text": message})
+                yield _sse_event("answer_done", {"answer": message, "request_id": turn.id})
+
+            return StreamingResponse(ambiguous_stream(), media_type="text/event-stream")
+
+        # 只上传了模板、没有来源材料：这不是错误，是缺一半信息，说清楚缺什么。
+        if source_count == 0:
+            template_name = (
+                template_material.filename
+                if template_material is not None
+                else (template_documents[0].filename if template_documents else "上传的文件")
+            )
+            message = (
+                f"这份《{template_name}》看起来是版式模板，不是要写进报告的原始资料。"
+                "请再上传一份待分析的材料，我就按这份模板的章节与格式生成报告。"
+            )
+            await finish_turn(
+                db,
+                turn=turn,
+                content=message,
+                status="NEEDS_INPUT",
+                error_code="REPORT_SOURCE_MISSING",
+                error_message="只提供了版式模板，缺少来源材料",
+            )
+
+            async def missing_source_stream() -> AsyncGenerator[str, None]:
+                yield _sse_event(
+                    "conversation_started",
+                    {"conversation_id": conversation.id, "turn_id": turn.id},
+                )
+                yield _sse_event("answer_delta", {"text": message})
+                yield _sse_event("answer_done", {"answer": message, "request_id": turn.id})
+
+            return StreamingResponse(
+                missing_source_stream(), media_type="text/event-stream"
+            )
+
+        source_material_text = _material_text(materials, source_material)
         try:
-            classification = await classify_document(db, document=source_documents[0])
-            if template_documents:
-                template_classification = await classify_document(
-                    db, document=template_documents[0]
+            if source_documents:
+                classification = await classify_document(db, document=source_documents[0])
+                if template_documents:
+                    template_classification = await classify_document(
+                        db, document=template_documents[0]
+                    )
+            else:
+                # 直传材料不在知识库里，没有分片可读，直接按提取出的正文分类。
+                classification = classify_text(
+                    source_material_text, filename=source_material.filename
                 )
         except Exception as exc:
             logger.exception("Report template classification failed", exc_info=exc)
@@ -1230,12 +1445,19 @@ async def agent_stream(
             )
             try:
                 report = await create_report(
-                    document_id=int(source_documents[0].id),
+                    # 来源二选一：知识库文档优先；没有文档时才用直传材料。
+                    document_id=(
+                        int(source_documents[0].id) if source_documents else None
+                    ),
                     payload=ReportCreateRequest(
                         report_type=report_type,
                         llm_config_id=config_id,
                         custom_template_document_id=(
                             int(template_documents[0].id) if template_documents else None
+                        ),
+                        material_id=(source_material.id if source_material else None),
+                        template_material_id=(
+                            template_material.id if template_material else None
                         ),
                         user_instructions=body.query[:2000],
                     ),
@@ -1253,9 +1475,20 @@ async def agent_stream(
                     error_message="报告任务创建失败",
                 )
                 raise
+            # 模板可能来自知识库文档，也可能是对话里直传的那份；两者都要在回复里点到，
+            # 否则用户上传了模板却看不到「有没有用上」。
+            template_name = (
+                template_documents[0].filename
+                if template_documents
+                else (template_material.filename if template_material else None)
+            )
             answer = (
-                f"已识别为「{report_type_name}」，并创建报告任务 {report['run_id'][:8]}。"
-                + ("生成时会参考你上传的模板版式与章节表达。" if template_documents else "")
+                f"已按「{report_type_name}」创建报告任务，任务编号 {report['run_id'][:8]}。"
+                + (
+                    f"生成时会参考模板《{template_name}》的章节与版式。"
+                    if template_name
+                    else ""
+                )
             )
             await finish_turn(
                 db, turn=turn, content=answer, report_run_id=report["run_id"]
@@ -1287,14 +1520,23 @@ async def agent_stream(
             }
             for candidate in classification.candidates
         ]
+        # 来源与模板都可能是知识库文档或对话直传的材料，卡片要把两边的引用都带上，
+        # 用户选定类型后才好按原样重建任务。
+        source_filename = (
+            source_documents[0].filename
+            if source_documents
+            else (source_material.filename if source_material else "上传的文件")
+        )
         interaction = {
             "type": "TEMPLATE_SELECTION",
             "status": "OPEN",
             "title": "选择报告类型",
             "question": "当前材料可能对应多类报告，请确认要生成哪一种？",
             "options": options,
-            "source_document_id": int(source_documents[0].id),
+            "source_document_id": int(source_documents[0].id) if source_documents else None,
             "template_document_id": int(template_documents[0].id) if template_documents else None,
+            "source_material_id": source_material.id if source_material else None,
+            "template_material_id": template_material.id if template_material else None,
             "llm_config_id": config_id,
             "user_instructions": body.query[:2000],
             "classification": classification.to_dict(),
@@ -1303,7 +1545,7 @@ async def agent_stream(
             db=db,
             user_id=user_id,
             config_id=config_id,
-            filename=source_documents[0].filename,
+            filename=source_filename,
             candidates=list(classification.candidates),
         )
         await finish_turn(
@@ -1348,13 +1590,21 @@ async def agent_stream(
     question = body.query
     if source_documents and not wants_report:
         names = "、".join(document.filename for document in attached_documents)
-        question = f"{question}\n\n（本轮上传的文件：{names}；本轮检索范围已限定在这些文件内。）"
+        # 「引用」而不说「上传」：@ 出来的知识库文档并没有上传动作，但它和上传的材料
+        # 一样限定了这一轮的检索范围，模型需要知道「这份文件」指的是哪一份。
+        question = f"{question}\n\n（本轮引用的文件：{names}；本轮检索范围已限定在这些文件内。）"
     # 直传附件没有入库，检索拿不到，只能把提取出的文本原样交代给模型；问题放在末尾，
-    # 避免被长正文淹没。
-    if direct_attachments:
+    # 避免被长正文淹没。只交代本轮新增的那些——挂在对话上的历史附件若每轮重灌，
+    # 几轮就把上下文吃光了。
+    new_materials = [
+        (item, material, text)
+        for item, material, text in materials
+        if material.id not in carried_material_ids
+    ]
+    if new_materials:
         blocks = "\n".join(
-            f'<uploaded_file name="{item.filename}">\n{item.content}\n</uploaded_file>'
-            for item in direct_attachments
+            f'<uploaded_file name="{material.filename}">\n{text}\n</uploaded_file>'
+            for _item, material, text in new_materials
         )
         question = f"以下是用户本轮上传的文件内容：\n{blocks}\n\n用户的问题：{question}"
 

@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { AlertCircle, CheckCircle2, FileOutput, Loader2, RefreshCw } from "lucide-react";
+import { AlertCircle, CheckCircle2, FileOutput, FileText, Loader2, RefreshCw } from "lucide-react";
 import { Link } from "react-router-dom";
 
 import { ReportArtifactButtons } from "./ReportArtifactButtons";
@@ -107,7 +107,6 @@ export function ChatReportCard({ runId }) {
   const active = isActiveReportRun(run.state);
   const sourcePath = reportSourceDocumentPath(run);
   const reportPath = reportRunPath(run.run_id);
-  const sectionCount = detail?.report_ir?.sections?.length || 0;
 
   return (
     <div className="chat-report-card">
@@ -123,23 +122,25 @@ export function ChatReportCard({ runId }) {
       </div>
 
       {run.state === "SUCCEEDED" ? (
-        <>
-          <p className="chat-report-card__meta">
-            {sectionCount ? `${sectionCount} 个章节 · ` : ""}
-            <Link to={reportPath}>打开报告</Link>
-          </p>
+        // 「打开报告」和两个下载按钮并排，用同一套按钮样式——它原来是一行 10px 的小字链接，
+        // 跟旁边的下载按钮差一截，看着不像同一组操作。
+        <div className="chat-report-card__actions">
+          <Link className="button button--secondary" to={reportPath}>
+            <FileText size={15} />
+            打开报告
+          </Link>
           <ReportArtifactButtons
             runId={run.run_id}
             artifacts={detail?.artifacts}
             emptyHint="该任务创建时未选择可下载格式，可在报告页查看正文。"
           />
-        </>
+        </div>
       ) : null}
 
       {run.state === "NEEDS_INPUT" && questions.length ? (
         <>
           <p className="chat-report-card__meta">
-            报告里有 <Link to={reportPath}>{questions.length} 项信息</Link> 需要你确认后才能继续。
+            报告里有 <Link className="chat-report-card__link" to={reportPath}>{questions.length} 项信息</Link> 需要你确认后才能继续。
           </p>
           <ReportQuestionsForm
             questions={questions}
@@ -166,7 +167,7 @@ export function ChatReportCard({ runId }) {
       {active ? (
         <p className="chat-report-card__meta">
           <FileOutput size={13} />
-          任务在后台运行，可以离开本页；<Link to={reportPath}>打开报告页</Link>
+          任务在后台运行，可以离开本页；<Link className="chat-report-card__link" to={reportPath}>打开报告页</Link>
         </p>
       ) : null}
 
