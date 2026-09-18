@@ -13,30 +13,22 @@ import {
   Paperclip,
   Plus,
   Search,
-  Square,
   Sparkles,
+  Square,
   Trash2,
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Link, useLocation } from "react-router-dom";
+import { Link } from "react-router-dom";
 
-import {
-  confirmAgentTemplateSelection,
-  deleteAgentConversation,
-  listAgentConversations,
-  listAgentConversationTurns,
-  uploadAgentAttachment,
-} from "../lib/api";
-import { isDocumentRetrievalReady } from "../lib/parse-quality";
+import { isStreamingMessage, useChatSession } from "../state/ChatSessionContext";
 import { ChatReportCard } from "../components/ChatReportCard";
 import {
   findHitByCitationIndex,
   linkifyRecallChunkMentions,
   recallChunkNumberFromHref,
 } from "../lib/recall-evidence";
-import { useApp } from "../state/AppContext";
 
 const SUGGESTED_QUESTIONS = [
   "企业天然气燃烧排放如何核算？",
@@ -52,10 +44,6 @@ const STATUS_COPY = {
   error: "生成失败",
 };
 
-/** 仍在流式推进的状态。这段时间不向辅助技术播报，避免逐 token 朗读。 */
-const STREAMING_STATUSES = new Set(["recalling", "generating"]);
-const isStreamingMessage = (message) => STREAMING_STATUSES.has(message.status);
-
 /** 回答正文里的 markdown 标题下沉一级：页面级 h1 是会话标题，正文不应再出现 h1。 */
 const MESSAGE_MARKDOWN_COMPONENTS = {
   h1: (props) => <h2 {...props} />,
@@ -65,14 +53,6 @@ const MESSAGE_MARKDOWN_COMPONENTS = {
   h5: (props) => <h6 {...props} />,
   h6: (props) => <h6 {...props} />,
 };
-
-function normalizeEvent(eventOrName, maybePayload) {
-  if (typeof eventOrName === "string") return { event: eventOrName, data: maybePayload ?? {} };
-  return {
-    event: eventOrName?.event ?? eventOrName?.type ?? "message",
-    data: eventOrName?.data ?? eventOrName?.payload ?? eventOrName ?? {},
-  };
-}
 
 function scoreText(value) {
   const numeric = Number(value);
@@ -94,19 +74,6 @@ function pageText(hit) {
   return page !== undefined && page !== null ? `第 ${page} 页` : "页码未记录";
 }
 
-function updateMessage(messages, messageId, updater) {
-  return messages.map((message) => message.id === messageId ? updater(message) : message);
-}
-
-function mergeRecallHits(current, incoming) {
-  const merged = new Map();
-  for (const hit of [...(current || []), ...(incoming || [])]) {
-    const key = hit.evidence_id || hit.chunk_id || `${hit.dataset_id}:${hit.doc_id}:${hit.result_rank}`;
-    merged.set(key, hit);
-  }
-  return [...merged.values()];
-}
-
 function modelLabel(model) {
   return model?.display_name || model?.model_name || `模型 #${model?.id}`;
 }
@@ -118,43 +85,61 @@ function modelDescription(model) {
   return parts.join(" · ") || "用于生成对话回复";
 }
 
-function flattenDocuments(documents) {
-  if (Array.isArray(documents)) return documents;
-  return Object.values(documents || {}).flatMap((items) => Array.isArray(items) ? items : []);
-}
-
-/** 预览模式不连后端：文本类文件本地读，其余给一段占位文本。 */
-async function mockAgentAttachment(file) {
-  const textLike = /\.(md|markdown|txt|html|htm)$/i.test(file.name || "");
-  const content = textLike
-    ? (await file.text()).slice(0, 60000)
-    : `（预览模式）已读取文件《${file.name}》的正文内容。`;
-  return { filename: file.name, content, page_count: null, char_count: content.length };
-}
-
+/**
+ * 对话页只负责呈现。
+ *
+ * 会话状态、正在跑的 SSE 流、附件草稿都在 ChatSessionProvider 里 —— 切到别的页面时
+ * 这个组件会被卸载，状态若留在这里就跟着没了。这里只保留纯视图状态（弹层、
+ * 引用抽屉、复制反馈）和 DOM ref。
+ */
 export function PlaygroundPage() {
-  const location = useLocation();
-  const { datasets = [], models = [], documents = {}, streamAgent, isDemo } = useApp();
-  const [selectedDatasetIds, setSelectedDatasetIds] = useState([]);
-  const [selectedModelId, setSelectedModelId] = useState("");
-  const [question, setQuestion] = useState("");
-  const [messages, setMessages] = useState([]);
-  const [conversationId, setConversationId] = useState(null);
-  const [conversations, setConversations] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [pendingDeleteId, setPendingDeleteId] = useState(null);
-  const [deletingId, setDeletingId] = useState(null);
-  const [historyError, setHistoryError] = useState("");
-  const [attachments, setAttachments] = useState([]);
-  const [uploading, setUploading] = useState(false);
-  const [attachmentError, setAttachmentError] = useState("");
-  const [confirmationSelections, setConfirmationSelections] = useState({});
+  const {
+    messages,
+    conversationId,
+    conversations,
+    historyLoading,
+    historyError,
+    pendingDeleteId,
+    deletingId,
+    setPendingDeleteId,
+    clearHistoryError,
+    openConversation,
+    startNewConversation,
+    deleteConversation,
+    confirmTemplate,
+    confirmationSelections,
+    setConfirmationSelections,
+    submitQuestion,
+    stopGeneration,
+    isActiveStreaming,
+    isConversationStreaming,
+    question,
+    setQuestion,
+    attachments,
+    uploading,
+    attachmentError,
+    setAttachmentError,
+    uploadConversationFile,
+    removeAttachment,
+    selectedDatasetIds,
+    toggleDataset,
+    clearDatasetSelection,
+    selectedModelId,
+    selectModel,
+    selectedModel,
+    chatModels,
+    showModelSelector,
+    needsExplicitModel,
+    activeDatasets,
+    retrievalReadyCounts,
+    datasetTriggerLabel,
+    canSubmit,
+  } = useChatSession();
+
+  const [openSelector, setOpenSelector] = useState(null);
   const [sourceMessageId, setSourceMessageId] = useState(null);
   const [activeCitationIndex, setActiveCitationIndex] = useState(null);
   const [copiedMessageId, setCopiedMessageId] = useState(null);
-  const [openSelector, setOpenSelector] = useState(null);
-  const abortRef = useRef(null);
-  const activeAssistantRef = useRef(null);
   const threadRef = useRef(null);
   const stickToBottomRef = useRef(true);
   const controlsRef = useRef(null);
@@ -163,70 +148,9 @@ export function PlaygroundPage() {
   const sourceCardRefs = useRef(new Map());
   const sourceFileRef = useRef(null);
 
-  const retrievalReadyCounts = useMemo(() => {
-    const counts = new Map();
-    flattenDocuments(documents).forEach((document) => {
-      if (!isDocumentRetrievalReady(document)) return;
-      const datasetId = Number(document.dataset_id ?? document.datasetId);
-      if (!Number.isFinite(datasetId)) return;
-      counts.set(datasetId, (counts.get(datasetId) || 0) + 1);
-    });
-    return counts;
-  }, [documents]);
-  const activeDatasets = useMemo(
-    () => datasets.filter((dataset) => (
-      String(dataset.status || "ACTIVE").toUpperCase() !== "DELETED"
-      && (
-        retrievalReadyCounts.has(Number(dataset.id))
-        || Number(dataset.retrieval_ready_document_count || 0) > 0
-      )
-    )),
-    [datasets, retrievalReadyCounts],
-  );
-  const chatModels = useMemo(
-    () => models.filter((model) => model.capability === "CHAT" && model.is_active !== false),
-    [models],
-  );
-  const selectedDatasets = useMemo(
-    () => activeDatasets.filter((dataset) => selectedDatasetIds.includes(String(dataset.id))),
-    [activeDatasets, selectedDatasetIds],
-  );
-  const effectiveDatasets = selectedDatasetIds.length ? selectedDatasets : activeDatasets;
-  const boundChatIds = useMemo(
-    () => new Set(effectiveDatasets.map((dataset) => dataset.chat_config_id).filter(Boolean).map(String)),
-    [effectiveDatasets],
-  );
-  // 没有可用知识库时后端无从推断模型配置，必须由用户显式选一个。
-  const needsExplicitModel = !effectiveDatasets.length
-    || effectiveDatasets.length > 1
-    || effectiveDatasets.some((dataset) => !dataset.chat_config_id)
-    || boundChatIds.size > 1;
-  const showModelSelector = needsExplicitModel && chatModels.length > 1;
-  const selectedModel = useMemo(
-    () => chatModels.find((model) => String(model.id) === String(selectedModelId)) || null,
-    [chatModels, selectedModelId],
-  );
   const activeConversationTitle = useMemo(
     () => conversations.find((item) => item.conversation_id === conversationId)?.title || "对话",
     [conversations, conversationId],
-  );
-  // 附件是小文件直传形态：上传时已提取好文本，无需轮询解析状态，随即可用。
-  const attachmentCountValid = attachments.length <= 2;
-  const datasetTriggerLabel = !selectedDatasetIds.length
-    ? `全部知识库${activeDatasets.length ? `（${activeDatasets.length}）` : ""}`
-    : selectedDatasets.length === 1
-    ? selectedDatasets[0].name
-    : selectedDatasets.length
-      ? `${selectedDatasets.length} 个数据集`
-      : "选择数据集";
-  const isRunning = messages.some((message) => message.role === "assistant" && isStreamingMessage(message));
-  // 不强制知识库：零知识库时也能上传小文件或直接提问。
-  const canSubmit = Boolean(
-    question.trim()
-    && (!needsExplicitModel || selectedModelId)
-    && !isRunning
-    && !uploading
-    && attachmentCountValid
   );
   const sourceMessage = messages.find((message) => message.id === sourceMessageId);
   const sourceHits = sourceMessage?.hits ?? [];
@@ -235,94 +159,23 @@ export function PlaygroundPage() {
   ).length;
 
   useEffect(() => {
-    setSelectedDatasetIds((current) => current.filter(
-      (id) => activeDatasets.some((dataset) => String(dataset.id) === id),
-    ));
-  }, [activeDatasets]);
-
-  async function refreshConversations() {
-    try {
-      setConversations(await listAgentConversations());
-    } catch {
-      setConversations([]);
-    }
-  }
-
-  async function handleDeleteConversation(id) {
-    setDeletingId(id);
-    setHistoryError("");
-    try {
-      await deleteAgentConversation(id);
-      setPendingDeleteId(null);
-      if (id === conversationId) {
-        // 删掉的正是当前打开的对话：清空视图，回到新对话状态。
-        activeAssistantRef.current = null;
-        setConversationId(null);
-        setMessages([]);
-        setAttachments([]);
-      }
-      await refreshConversations();
-    } catch (error) {
-      setHistoryError(error?.message || "删除对话失败");
-    } finally {
-      setDeletingId(null);
-    }
-  }
+    // 切换会话时恢复"粘底"跟随。
+    stickToBottomRef.current = true;
+  }, [conversationId]);
 
   useEffect(() => {
-    refreshConversations();
+    // 挂载时直接吸到底：切回来时这段可能已经生成了一屏，等下一个 delta 才吸会闪一下。
+    const el = threadRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, []);
 
   useEffect(() => {
-    if (!new URLSearchParams(location.search).has("new")) return;
-    abortRef.current?.abort();
-    activeAssistantRef.current = null;
-    setMessages([]);
-    setConversationId(null);
-    setAttachments([]);
-    setQuestion("");
-    setSourceMessageId(null);
-    setActiveCitationIndex(null);
-    setOpenSelector(null);
-  }, [location.search]);
-
-  useEffect(() => {
-    if (!isDemo || new URLSearchParams(location.search).get("preview") !== "confirmation") return;
-    setConversationId("preview-conversation");
-    setMessages([
-      { id: "preview-user", role: "user", content: "请根据这份年度材料生成分析报告。", attachments: [{ document_id: 2101, role: "SOURCE", filename: "年度材料.md" }] },
-      {
-        id: "preview-assistant",
-        turnId: "preview-turn",
-        role: "assistant",
-        content: "我还不能可靠判断报告类型，请从下面的候选中选择一项后继续。",
-        status: "done",
-        hits: [],
-        interaction: {
-          type: "TEMPLATE_SELECTION",
-          status: "OPEN",
-          question: "当前材料可能对应多类报告，请确认要生成哪一种？",
-          options: [
-            { value: "R2", label: "组织温室气体排放清单报告", description: "适合 Scope 1/2/3 年度盘查与组织边界材料。" },
-            { value: "R3", label: "ESG/可持续发展报告", description: "适合同时包含治理、战略、风险与指标目标的材料。" },
-            { value: "R6", label: "SBTi 目标设定报告", description: "适合基准年清单、近期目标与净零路径材料。" },
-          ],
-        },
-      },
-    ]);
-  }, [isDemo, location.search]);
-
-  useEffect(() => {
-    setSelectedModelId((current) => {
-      if (!needsExplicitModel) return current ? "" : current;
-      if (current && chatModels.some((model) => String(model.id) === String(current))) return current;
-      return chatModels.length === 1 ? String(chatModels[0].id) : "";
-    });
-  }, [chatModels, needsExplicitModel]);
-
-  useEffect(() => {
-    if (!showModelSelector && openSelector === "model") setOpenSelector(null);
-  }, [showModelSelector, openSelector]);
+    // 流式输出期间仅在用户位于底部时跟随；用户上滑阅读时保持当前位置。
+    if (!stickToBottomRef.current) return;
+    const el = threadRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages]);
 
   useEffect(() => {
     if (!openSelector) return undefined;
@@ -348,17 +201,8 @@ export function PlaygroundPage() {
   }, [openSelector]);
 
   useEffect(() => {
-    // 切换会话时恢复"粘底"跟随。
-    stickToBottomRef.current = true;
-  }, [conversationId]);
-
-  useEffect(() => {
-    // 流式输出期间仅在用户位于底部时跟随；用户上滑阅读时保持当前位置。
-    if (!stickToBottomRef.current) return;
-    const el = threadRef.current;
-    if (!el) return;
-    el.scrollTop = el.scrollHeight;
-  }, [messages]);
+    if (!showModelSelector && openSelector === "model") setOpenSelector(null);
+  }, [showModelSelector, openSelector]);
 
   useEffect(() => {
     if (!sourceMessageId || !activeCitationIndex) return undefined;
@@ -367,13 +211,6 @@ export function PlaygroundPage() {
     });
     return () => window.cancelAnimationFrame(frame);
   }, [activeCitationIndex, sourceMessageId]);
-
-  function toggleDataset(datasetId) {
-    const normalized = String(datasetId);
-    setSelectedDatasetIds((current) => current.includes(normalized)
-      ? current.filter((item) => item !== normalized)
-      : [...current, normalized]);
-  }
 
   function selectorTriggerRef(selector) {
     if (selector === "datasets") return datasetTriggerRef.current;
@@ -387,68 +224,14 @@ export function PlaygroundPage() {
     window.requestAnimationFrame(() => trigger?.focus());
   }
 
-  function selectModel(modelId) {
-    setSelectedModelId(String(modelId));
+  function handleSelectModel(modelId) {
+    selectModel(modelId);
     closeSelectorAndRestoreFocus("model");
   }
 
-  async function openConversation(id) {
-    if (!id) return;
-    // 生成中的后台流与当前视图解绑：其事件不再更新界面，完成后仍会持久化到该对话。
-    activeAssistantRef.current = null;
-    setHistoryLoading(true);
-    setAttachmentError("");
-    try {
-      const turns = await listAgentConversationTurns(id);
-      setConversationId(id);
-      setAttachments([]);
-      setMessages(turns.flatMap((turn) => [
-        {
-          id: `user-${turn.turn_id}`,
-          role: "user",
-          content: turn.user_content,
-          attachments: turn.attachments || [],
-        },
-        {
-          id: `assistant-${turn.turn_id}`,
-          turnId: turn.turn_id,
-          role: "assistant",
-          content: turn.assistant_content || "",
-          status: turn.status === "FAILED" ? "error" : turn.status === "CANCELLED" ? "stopped" : "done",
-          error: turn.error_message,
-          interaction: turn.interaction,
-          reportRunId: turn.report_run_id,
-          hits: [],
-        },
-      ]));
-    } catch (error) {
-      setAttachmentError(error?.message || "历史对话读取失败");
-    } finally {
-      setHistoryLoading(false);
-    }
-  }
-
-  async function uploadConversationFile(file) {
-    if (!file) return;
-    if (attachments.length >= 2) {
-      throw new Error("一次最多上传两份文件，请先移除现有的。");
-    }
-    setUploading(true);
-    try {
-      // 小文件就地提取文本直接交给模型；超限时后端返回"文件过大，请先导入知识库"。
-      const result = isDemo ? await mockAgentAttachment(file) : await uploadAgentAttachment(file);
-      const content = result?.content;
-      if (!content) throw new Error("上传成功但未提取到内容");
-      setAttachments((current) => [...current, {
-        id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-        filename: result.filename || file.name,
-        content,
-        pageCount: result.page_count ?? null,
-        charCount: result.char_count ?? content.length,
-      }]);
-    } finally {
-      setUploading(null);
-    }
+  function handleSubmit(event) {
+    stickToBottomRef.current = true;
+    submitQuestion(event);
   }
 
   async function handleFileSelection(event) {
@@ -461,159 +244,6 @@ export function PlaygroundPage() {
     } catch (error) {
       setAttachmentError(error?.message || "文件上传失败");
     }
-  }
-
-  async function confirmTemplate(message, reportType) {
-    if (!conversationId || !message.turnId) return;
-    setMessages((current) => updateMessage(current, message.id, (item) => ({ ...item, confirmationBusy: true })));
-    try {
-      if (isDemo) {
-        setMessages((current) => updateMessage(current, message.id, (item) => ({
-          ...item,
-          content: `已按「${message.interaction?.options?.find((item) => item.value === reportType)?.label || reportType}」创建预览报告任务。`,
-          interaction: { ...item.interaction, status: "ANSWERED", selected: reportType },
-          confirmationBusy: false,
-        })));
-        return;
-      }
-      const result = await confirmAgentTemplateSelection(conversationId, message.turnId, reportType);
-      setMessages((current) => updateMessage(current, message.id, (item) => ({
-        ...item,
-        content: result.turn.assistant_content,
-        interaction: result.turn.interaction,
-        reportRunId: result.turn.report_run_id,
-        confirmationBusy: false,
-      })));
-      await refreshConversations();
-    } catch (error) {
-      setMessages((current) => updateMessage(current, message.id, (item) => ({
-        ...item,
-        confirmationBusy: false,
-        error: error?.message || "提交选择失败",
-      })));
-    }
-  }
-
-  function handleStreamEvent(eventOrName, maybePayload) {
-    const assistantId = activeAssistantRef.current;
-    if (!assistantId) return;
-    const { event, data } = normalizeEvent(eventOrName, maybePayload);
-    if (event === "conversation_started") {
-      setConversationId(data.conversation_id ?? null);
-    }
-    setMessages((current) => updateMessage(current, assistantId, (message) => {
-      if (event === "stream_started") {
-        return { ...message, requestId: data.request_id ?? message.requestId, status: "recalling" };
-      }
-      if (event === "conversation_started") {
-        return { ...message, turnId: data.turn_id ?? message.turnId };
-      }
-      if (event === "confirmation_required") {
-        return { ...message, interaction: data.interaction, status: "done" };
-      }
-      if (event === "report_started") {
-        return { ...message, reportRunId: data.report_run?.run_id ?? null };
-      }
-      if (event === "recall_done") {
-        const nextHits = data.hits ?? [];
-        return {
-          ...message,
-          hits: mergeRecallHits(message.hits, nextHits),
-          failedSources: data.failed_sources ?? [],
-          retrievalScope: data.scope ?? message.retrievalScope,
-          retrievalDetails: data.retrieval ?? message.retrievalDetails,
-          knowledgeBaseCounts: data.per_knowledge_base_counts ?? message.knowledgeBaseCounts,
-          status: nextHits.length ? "recalling" : "empty",
-        };
-      }
-      if (event === "answer_delta") {
-        return { ...message, content: message.content + (data.text ?? data.delta ?? ""), status: "generating" };
-      }
-      if (event === "answer_done") {
-        return {
-          ...message,
-          content: data.answer ?? message.content,
-          hits: data.hits ?? message.hits,
-          failedSources: data.failed_sources ?? message.failedSources,
-          retrievalScope: data.scope ?? message.retrievalScope,
-          retrievalDetails: data.retrieval ?? message.retrievalDetails,
-          knowledgeBaseCounts: data.per_knowledge_base_counts ?? message.knowledgeBaseCounts,
-          elapsedMs: data.elapsed_ms ?? null,
-          requestId: data.request_id ?? message.requestId,
-          status: "done",
-        };
-      }
-      if (event === "error") {
-        return { ...message, error: data.message ?? "流式响应中断，请稍后重试。", status: "error" };
-      }
-      return message;
-    }));
-  }
-
-  async function submitQuestion(event) {
-    event?.preventDefault();
-    if (!canSubmit || typeof streamAgent !== "function") return;
-    stickToBottomRef.current = true;
-
-    const prompt = question.trim();
-    const idBase = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const assistantId = `assistant-${idBase}`;
-    const submittedAttachments = attachments.map((attachment) => ({
-      filename: attachment.filename,
-      content: attachment.content,
-    }));
-    const userMessage = {
-      id: `user-${idBase}`,
-      role: "user",
-      content: prompt,
-      attachments: submittedAttachments,
-    };
-    const assistantMessage = {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      status: "recalling",
-      hits: [],
-      failedSources: [],
-      datasetIds: [...selectedDatasetIds],
-      modelId: selectedModelId || null,
-    };
-    setOpenSelector(null);
-    setMessages((current) => [...current, userMessage, assistantMessage]);
-    // 附件随本轮一起发出，发送后即清空，不残留到下一轮。
-    setQuestion("");
-    setAttachments([]);
-    activeAssistantRef.current = assistantId;
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      await streamAgent({
-        query: prompt,
-        datasetIds: selectedDatasetIds.map(Number),
-        llmConfigId: selectedModelId ? Number(selectedModelId) : undefined,
-        conversationId,
-        attachments: submittedAttachments,
-        signal: controller.signal,
-        onEvent: handleStreamEvent,
-      });
-    } catch (error) {
-      setMessages((current) => updateMessage(current, assistantId, (message) => ({
-        ...message,
-        status: controller.signal.aborted || error?.name === "AbortError" ? "stopped" : "error",
-        error: controller.signal.aborted || error?.name === "AbortError"
-          ? "已停止生成。"
-          : error?.message || "无法完成本次生成，请检查模型配置和系统状态。",
-      })));
-    } finally {
-      abortRef.current = null;
-      activeAssistantRef.current = null;
-      refreshConversations();
-    }
-  }
-
-  function stopGeneration() {
-    abortRef.current?.abort();
   }
 
   function closeSourceDrawer() {
@@ -646,7 +276,7 @@ export function PlaygroundPage() {
   }
 
   const composer = (
-    <form className="chat-composer" onSubmit={submitQuestion}>
+    <form className="chat-composer" onSubmit={handleSubmit}>
       <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={handleFileSelection} />
       {attachments.length ? (
         <div className="composer-attachments" aria-label="对话附件">
@@ -657,7 +287,7 @@ export function PlaygroundPage() {
                 <strong>{attachment.filename}</strong>
                 <small>{attachment.pageCount ? `${attachment.pageCount} 页 · 已读取` : "已读取"}</small>
               </span>
-              <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}><X size={13} /></button>
+              <button type="button" aria-label="移除附件" onClick={() => removeAttachment(attachment.id)}><X size={13} /></button>
             </span>
           ))}
         </div>
@@ -673,7 +303,7 @@ export function PlaygroundPage() {
           if (event.nativeEvent?.isComposing || event.isComposing) return;
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
-            submitQuestion(event);
+            handleSubmit(event);
           }
         }}
       />
@@ -723,7 +353,7 @@ export function PlaygroundPage() {
                     <button
                       type="button"
                       className={`composer-selector__option${!selectedDatasetIds.length ? " is-selected" : ""}`}
-                      onClick={() => setSelectedDatasetIds([])}
+                      onClick={() => clearDatasetSelection()}
                       aria-pressed={!selectedDatasetIds.length}
                     >
                       <span className="composer-selector__check">{!selectedDatasetIds.length ? <Check size={13} /> : null}</span>
@@ -798,7 +428,7 @@ export function PlaygroundPage() {
                               name="chat-model"
                               value={model.id}
                               checked={selected}
-                              onChange={() => selectModel(model.id)}
+                              onChange={() => handleSelectModel(model.id)}
                             />
                             <span className="composer-selector__radio">{selected ? <Check size={12} /> : null}</span>
                             <span className="composer-selector__copy"><strong>{modelLabel(model)}</strong><small>{modelDescription(model)}</small></span>
@@ -818,7 +448,7 @@ export function PlaygroundPage() {
           ) : null}
         </div>
 
-        {isRunning ? (
+        {isActiveStreaming ? (
           <button className="composer-send composer-send--stop" type="button" onClick={stopGeneration} aria-label="停止生成"><Square size={14} fill="currentColor" /></button>
         ) : (
           <button className="composer-send" type="submit" disabled={!canSubmit} aria-label="发送"><ArrowUp size={18} /></button>
@@ -835,7 +465,7 @@ export function PlaygroundPage() {
   return (
     <div className="conversation-workspace">
       <aside className="conversation-history" aria-label="历史对话">
-        <header><span>最近对话</span><button type="button" aria-label="新建对话" onClick={() => { activeAssistantRef.current = null; setConversationId(null); setMessages([]); setAttachments([]); }}><Plus size={15} /></button></header>
+        <header><span>最近对话</span><button type="button" aria-label="新建对话" onClick={startNewConversation}><Plus size={15} /></button></header>
         <div className="conversation-history__list">
           {historyLoading ? <p>正在读取…</p> : conversations.length ? conversations.map((item) => (
             <div className={`conversation-history__item${item.conversation_id === conversationId ? " is-active" : ""}`} key={item.conversation_id}>
@@ -844,7 +474,7 @@ export function PlaygroundPage() {
               </button>
               {pendingDeleteId === item.conversation_id ? (
                 <div className="conversation-history__confirm" role="group" aria-label="确认删除对话">
-                  <button type="button" className="is-danger" onClick={() => { void handleDeleteConversation(item.conversation_id); }} disabled={deletingId === item.conversation_id}>
+                  <button type="button" className="is-danger" onClick={() => { void deleteConversation(item.conversation_id); }} disabled={deletingId === item.conversation_id}>
                     {deletingId === item.conversation_id ? <LoaderCircle className="spin" size={12} /> : "删除"}
                   </button>
                   <button type="button" onClick={() => setPendingDeleteId(null)} disabled={Boolean(deletingId)}>取消</button>
@@ -854,9 +484,9 @@ export function PlaygroundPage() {
                   type="button"
                   className="conversation-history__delete"
                   aria-label={`删除对话：${item.title}`}
-                  title={isRunning ? "生成中，暂不能删除" : "删除整段对话"}
-                  onClick={() => { setHistoryError(""); setPendingDeleteId(item.conversation_id); }}
-                  disabled={isRunning}
+                  title={isConversationStreaming(item.conversation_id) ? "生成中，暂不能删除" : "删除整段对话"}
+                  onClick={() => { clearHistoryError(); setPendingDeleteId(item.conversation_id); }}
+                  disabled={isConversationStreaming(item.conversation_id)}
                 >
                   <Trash2 size={13} />
                 </button>
