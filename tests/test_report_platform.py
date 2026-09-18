@@ -48,6 +48,7 @@ from app.services.report_ir import (
     ReportIRPatchError,
     apply_report_ir_patch,
     build_fixture_report_ir,
+    excerpt_belongs_to_chunk,
     validate_report_ir,
 )
 from app.services.report_model_policy import (
@@ -269,6 +270,133 @@ def test_blocking_not_applicable_and_forged_user_evidence_cannot_publish() -> No
         evidence_context=context,
     )
     assert any("真实用户回答" in error for error in strict.errors)
+
+
+# --- 证据摘录的逐字校验 -------------------------------------------------------
+#
+# 摘录必须出自它引用的那一分片，这是防伪造的地基。但「逐字」过去的判法是严格字符串
+# 包含：模型照抄时顺手规整标点、去掉解析留下的 ** 与 [表格引用: …]、把换行并成一句，
+# 就会被判成不实引用——一次实跑里 19 条摘录全部因此打回，只能回头重抄一遍。现在先
+# 抹平形状再比：形状不该管，文字才要管。
+
+# 真实解析出来的分片就长这样：全角标点、markdown 强调标记、表格占位符混在一起。
+_REAL_CHUNK = (
+    "**报告编号：23523GZ0013R0M**\n\n伊顿电气有限公司\n\n微型断路器\n\n碳足迹评价报告\n\n"
+    "**核查机构名称（公章）：**杭州中奥质量认证有限公司\n\n"
+    "[表格引用: table_001]\n表格摘要：未提供表格总结。"
+)
+
+
+def test_excerpt_survives_formatting_differences() -> None:
+    assert excerpt_belongs_to_chunk("**报告编号：23523GZ0013R0M**", _REAL_CHUNK)
+    # 全角标点被规整成半角
+    assert excerpt_belongs_to_chunk("核查机构名称(公章):杭州中奥质量认证有限公司", _REAL_CHUNK)
+    # 去掉强调标记、把换行并成一句
+    assert excerpt_belongs_to_chunk("伊顿电气有限公司 微型断路器 碳足迹评价报告", _REAL_CHUNK)
+    # 引用跨过解析留下的表格占位符（原文里那行标记被略去，两边的字连起来读）
+    assert excerpt_belongs_to_chunk(
+        "产品碳足迹信息如下：表格摘要：未提供表格总结。",
+        "产品碳足迹信息如下：\n\n[表格引用: table_002]\n表格摘要：未提供表格总结。",
+    )
+    # 分页标记同理
+    assert excerpt_belongs_to_chunk(
+        "第一章 范围第二章 目标", "第一章 范围\n<!-- WORD_PAGE -->\n第二章 目标"
+    )
+
+
+def test_excerpt_must_still_come_from_the_chunk() -> None:
+    """抹平的是形状，不是内容：编出来的、或别处拼来的句子照样过不了。"""
+    assert not excerpt_belongs_to_chunk("该产品碳足迹总值为 0.44 kgCO2e", _REAL_CHUNK)
+    assert not excerpt_belongs_to_chunk("核查机构名称：某某检测有限公司", _REAL_CHUNK)
+    # 顺序颠倒不算「连续的一段」
+    assert not excerpt_belongs_to_chunk("微型断路器伊顿电气有限公司", _REAL_CHUNK)
+    # 数值被改动——碳核算里改一个数字就是另一回事，标点可以不管，数字必须管
+    assert not excerpt_belongs_to_chunk(
+        "原材料获取 392.05 gCO2-eq", "原材料获取 392.04 gCO2-eq；运输分销 15.16 gCO2-eq"
+    )
+
+
+def test_excerpt_check_is_lenient_only_about_shape() -> None:
+    assert excerpt_belongs_to_chunk(None, _REAL_CHUNK)
+    assert excerpt_belongs_to_chunk("", _REAL_CHUNK)
+    assert excerpt_belongs_to_chunk("   ", _REAL_CHUNK)
+    assert not excerpt_belongs_to_chunk("任何一句话", "")
+    # 分片里的每个字都在，但被重新拼过——不是原文的连续片段
+    assert not excerpt_belongs_to_chunk("杭州中奥质量认证有限公司报告编号", _REAL_CHUNK)
+
+
+def _excerpt_ir(run: ReportRun, template, *, excerpt: str) -> dict:
+    report_ir = build_fixture_report_ir(run=run, template=template, answered_questions=[])
+    report_ir["evidence"] = [
+        {
+            "evidence_id": "E-DOC-EXCERPT",
+            "source_type": "DOCUMENT",
+            "document_id": int(run.document_id),
+            "document_version": int(run.document_version),
+            "chunk_id": "c1",
+            "content_hash": "c" * 64,
+            "excerpt": excerpt,
+            "metadata": {},
+        }
+    ]
+    return report_ir
+
+
+def _excerpt_context() -> ReportEvidenceContext:
+    return ReportEvidenceContext(
+        document_chunks={"c1": {"content_hash": "c" * 64, "content": _REAL_CHUNK}},
+        user_answer_hashes={},
+    )
+
+
+def test_validate_report_ir_accepts_a_tidied_excerpt() -> None:
+    run, template, _report_ir = _fixture_report_ir()
+    tidied = "核查机构名称(公章):杭州中奥质量认证有限公司"
+
+    validation = validate_report_ir(
+        _excerpt_ir(run, template, excerpt=tidied),
+        run=run,
+        template=template,
+        evidence_context=_excerpt_context(),
+    )
+
+    assert not [error for error in validation.errors if "摘录" in error]
+
+
+def test_validate_report_ir_rejects_a_fabricated_excerpt() -> None:
+    run, template, _report_ir = _fixture_report_ir()
+    fabricated = "核查机构为杭州中奥质量认证有限公司，保证等级为合理保证"
+
+    validation = validate_report_ir(
+        _excerpt_ir(run, template, excerpt=fabricated),
+        run=run,
+        template=template,
+        evidence_context=_excerpt_context(),
+    )
+
+    assert any("摘录不属于对应文档分片" in error for error in validation.errors)
+
+
+def test_excerpt_rule_is_stated_where_the_model_reads_it() -> None:
+    """模型不知道就不会遵守：schema 与报告 agent 的提示词里都要写明逐字照抄。
+
+    同时钉住措辞别骗人：校验放宽之后不能再对模型说「整理过的会被判为不实引用」——
+    那是句已经不成立的威胁，模型试出来一次就不再信这套契约了。
+    """
+    root = Path(__file__).resolve().parents[1]
+    schema = json.loads(
+        (root / "reporting" / "common" / "evidence.schema.json").read_text(encoding="utf-8")
+    )
+    description = schema["properties"]["excerpt"]["description"]
+    assert "逐字" in description
+    assert "忽略" in description, "要说清标点形状的差异会被忽略"
+    assert "不实引用" not in description, "校验已放宽，不能再这样吓唬模型"
+
+    prompt = (
+        root / "apps" / "pi-service" / "src" / "runtime" / "report-agent.js"
+    ).read_text(encoding="utf-8")
+    assert "逐字复制" in prompt
+    assert "不实引用" not in prompt
 
 
 def test_chunk_coverage_requires_exact_order_hash_and_completion() -> None:
