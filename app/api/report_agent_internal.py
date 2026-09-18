@@ -17,12 +17,18 @@ from app.domain.time import utc_now
 from app.rag.config import settings
 from app.rag.database import get_db
 from app.rag.models.chunk_record import ChunkRecordDB
+from app.rag.services.storage.factory import StorageFactory
 from app.services.report_agent_tokens import (
     ReportAgentTokenError,
     verify_report_agent_token,
 )
 from app.services.report_budget import STRUCTURE_HINT_CHARS_PER_CHUNK
 from app.services.report_calculations import ReportCalculationError, execute_registered_formula
+from app.services.report_inline_source import (
+    SOURCE_KIND_INLINE,
+    payload_chunks,
+    read_inline_source,
+)
 from app.services.report_ir import (
     ReportIRPatchError,
     apply_report_ir_patch,
@@ -292,6 +298,10 @@ async def get_analysis_context(run: Annotated[ReportRun, Depends(_authorized_run
         "dataset_id": run.dataset_id,
         "document_id": run.document_id,
         "document_version": run.document_version,
+        # 直传材料的来源就是用户上传的那个文件，把它一并告诉 agent，
+        # 免得正文里提到「本报告」时它无从指名来源。
+        "source_kind": run.source_kind,
+        "source_filename": run.inline_source_filename,
         "report_type": run.report_type,
         "template_id": run.template_id,
         "template_version": run.template_version,
@@ -368,24 +378,27 @@ async def read_document_chunks(
     run: Annotated[ReportRun, Depends(_authorized_run)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
+    """按游标读来源分片。两种来源产出同一份形状，agent 侧不必区分。"""
     offset = int(payload.cursor or 0)
-    rows = (
-        await db.scalars(
-            select(ChunkRecordDB)
-            .where(
-                ChunkRecordDB.doc_id == run.document_id,
-                ChunkRecordDB.document_version == run.document_version,
-                ChunkRecordDB.user_id == run.user_id,
-                ChunkRecordDB.set_id == run.dataset_id,
+    if run.source_kind == SOURCE_KIND_INLINE:
+        items, has_more = await _inline_chunk_page(run, offset=offset, limit=payload.limit)
+    else:
+        rows = (
+            await db.scalars(
+                select(ChunkRecordDB)
+                .where(
+                    ChunkRecordDB.doc_id == run.document_id,
+                    ChunkRecordDB.document_version == run.document_version,
+                    ChunkRecordDB.user_id == run.user_id,
+                    ChunkRecordDB.set_id == run.dataset_id,
+                )
+                .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
+                .offset(offset)
+                .limit(payload.limit + 1)
             )
-            .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
-            .offset(offset)
-            .limit(payload.limit + 1)
-        )
-    ).all()
-    items, has_more = _chunk_page(rows, page_limit=payload.limit)
-    return {
-        "items": [
+        ).all()
+        rows, has_more = _chunk_page(rows, page_limit=payload.limit)
+        items = [
             {
                 "chunk_id": row.chunk_id,
                 "chunk_index": row.chunk_index,
@@ -398,13 +411,42 @@ async def read_document_chunks(
                 "end_line": row.end_line,
                 "structure": _structure_hint(row.structure_metadata),
             }
-            for row in items
-        ],
+            for row in rows
+        ]
+    return {
+        "items": items,
         "next_cursor": str(offset + len(items)) if has_more else None,
         "complete": not has_more,
         "manifest_hash": run.document_manifest["chunk_manifest_sha256"],
         "total_chunks": run.document_manifest["chunk_count"],
     }
+
+
+async def _inline_chunk_page(
+    run: ReportRun, *, offset: int, limit: int
+) -> tuple[list[dict], bool]:
+    """直传材料没有页码与行号，也没有结构提示：那几项对图片/表格切片才有意义。"""
+    payload = await read_inline_source(
+        StorageFactory.get_storage(), bucket=run.parsed_bucket, object_key=run.parsed_object_key
+    )
+    chunks = payload_chunks(payload)
+    page = chunks[offset : offset + limit]
+    items = [
+        {
+            "chunk_id": chunk.chunk_id,
+            "chunk_index": chunk.chunk_index,
+            "chunk_type": "TEXT",
+            "content": chunk.content,
+            "content_hash": chunk.content_hash,
+            "start_page": None,
+            "end_page": None,
+            "start_line": None,
+            "end_line": None,
+            "structure": None,
+        }
+        for chunk in page
+    ]
+    return items, offset + len(page) < len(chunks)
 
 
 @router.post("/runs/{run_id}/custom-template-chunks")
@@ -413,33 +455,51 @@ async def read_custom_template_chunks(
     run: Annotated[ReportRun, Depends(_authorized_run)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    manifest = run.custom_template_manifest
-    if (
-        not run.custom_template_document_id
-        or not run.custom_template_document_version
-        or not manifest
-    ):
+    raw_manifest = run.custom_template_manifest
+    manifest = raw_manifest if isinstance(raw_manifest, dict) else None
+    if not manifest:
         return {"items": [], "next_cursor": None, "complete": True, "available": False}
     offset = int(payload.cursor or 0)
-    rows = (
-        await db.scalars(
-            select(ChunkRecordDB)
-            .where(
-                ChunkRecordDB.doc_id == run.custom_template_document_id,
-                ChunkRecordDB.document_version == run.custom_template_document_version,
-                ChunkRecordDB.user_id == run.user_id,
-                ChunkRecordDB.set_id == run.dataset_id,
+    if manifest.get("source_kind") == SOURCE_KIND_INLINE:
+        # 对话直传的模板：分片冻结在任务自己的对象存储上，与来源正文同一套切分。
+        chunks = payload_chunks(
+            await read_inline_source(
+                StorageFactory.get_storage(),
+                bucket=str(manifest.get("bucket") or run.parsed_bucket),
+                object_key=str(manifest.get("object_key") or ""),
             )
-            .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
-            .offset(offset)
-            .limit(payload.limit + 1)
         )
-    ).all()
-    items, has_more = _chunk_page(rows, page_limit=payload.limit)
-    return {
-        "available": True,
-        "filename": manifest.get("filename"),
-        "items": [
+        page = chunks[offset : offset + payload.limit]
+        items: list[dict[str, Any]] = [
+            {
+                "chunk_id": chunk.chunk_id,
+                "chunk_index": chunk.chunk_index,
+                "content": chunk.content,
+                "content_hash": chunk.content_hash,
+                "structure": None,
+            }
+            for chunk in page
+        ]
+        has_more = offset + len(page) < len(chunks)
+    else:
+        if not run.custom_template_document_id or not run.custom_template_document_version:
+            return {"items": [], "next_cursor": None, "complete": True, "available": False}
+        rows = (
+            await db.scalars(
+                select(ChunkRecordDB)
+                .where(
+                    ChunkRecordDB.doc_id == run.custom_template_document_id,
+                    ChunkRecordDB.document_version == run.custom_template_document_version,
+                    ChunkRecordDB.user_id == run.user_id,
+                    ChunkRecordDB.set_id == run.dataset_id,
+                )
+                .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
+                .offset(offset)
+                .limit(payload.limit + 1)
+            )
+        ).all()
+        rows, has_more = _chunk_page(rows, page_limit=payload.limit)
+        items = [
             {
                 "chunk_id": row.chunk_id,
                 "chunk_index": row.chunk_index,
@@ -447,8 +507,12 @@ async def read_custom_template_chunks(
                 "content_hash": row.content_hash,
                 "structure": _structure_hint(row.structure_metadata),
             }
-            for row in items
-        ],
+            for row in rows
+        ]
+    return {
+        "available": True,
+        "filename": manifest.get("filename"),
+        "items": items,
         "next_cursor": str(offset + len(items)) if has_more else None,
         "complete": not has_more,
         "manifest_hash": manifest["chunk_manifest_sha256"],

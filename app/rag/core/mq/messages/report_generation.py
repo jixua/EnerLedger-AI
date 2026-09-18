@@ -11,8 +11,10 @@ from app.rag.core.mq.message import AbstractMessage, MessagePayload
 class ReportGenerationPayload(MessagePayload):
     run_id: str = Field(min_length=1, max_length=36)
     user_id: int = Field(gt=0)
-    document_id: int = Field(gt=0)
-    document_version: int = Field(gt=0)
+    # 对话直传的材料没有文档可指，这两项为空。判断来源看 report_run.source_kind，
+    # 不要靠它们是否为空反推。
+    document_id: int | None = Field(default=None, gt=0)
+    document_version: int | None = Field(default=None, gt=0)
 
 
 class ReportGenerationMessage(AbstractMessage):
@@ -51,8 +53,8 @@ class ReportGenerationMessage(AbstractMessage):
         *,
         run_id: str,
         user_id: int,
-        document_id: int,
-        document_version: int,
+        document_id: int | None,
+        document_version: int | None,
     ) -> ReportGenerationMessage:
         return cls(
             ReportGenerationPayload(

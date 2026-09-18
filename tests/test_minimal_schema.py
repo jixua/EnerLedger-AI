@@ -20,6 +20,7 @@ CORE_TABLES = {
     "report_run",
     "report_question",
     "report_artifact",
+    "report_material",
     "structured_asset",
     "structured_asset_alias",
     "structured_asset_version",
@@ -40,7 +41,7 @@ actual = set(Base.metadata.tables)
 expected = {
     "agent_conversation", "agent_conversation_turn",
     "dataset", "document", "document_chunk", "document_folder", "llm_config",
-    "report_run", "report_question", "report_artifact",
+    "report_run", "report_question", "report_artifact", "report_material",
     "structured_asset", "structured_asset_alias", "structured_asset_version",
     "structured_query_audit", "structured_table", "structured_term_alias",
 }
@@ -72,7 +73,7 @@ actual = set(Base.metadata.tables)
 expected = {
     "agent_conversation", "agent_conversation_turn",
     "dataset", "document", "document_chunk", "document_folder", "llm_config",
-    "report_run", "report_question", "report_artifact",
+    "report_run", "report_question", "report_artifact", "report_material",
     "structured_asset", "structured_asset_alias", "structured_asset_version",
     "structured_query_audit", "structured_table", "structured_term_alias",
 }
@@ -107,6 +108,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0010_structured_report_merge.py",
         "0011_agent_conversations.py",
         "0012_report_ir_draft.py",
+        "0013_report_inline_source.py",
     ]
 
     root_revision = runpy.run_path(str(version_files[0]))
@@ -124,6 +126,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     merge_revision = runpy.run_path(str(version_files[12]))
     conversation_revision = runpy.run_path(str(version_files[13]))
     draft_revision = runpy.run_path(str(version_files[14]))
+    inline_source_revision = runpy.run_path(str(version_files[15]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
@@ -163,6 +166,8 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     assert conversation_revision["down_revision"] == "0010_structured_report_merge"
     assert draft_revision["revision"] == "0012_report_ir_draft"
     assert draft_revision["down_revision"] == "0011_agent_conversations"
+    assert inline_source_revision["revision"] == "0013_report_inline_source"
+    assert inline_source_revision["down_revision"] == "0012_report_ir_draft"
 
 
 def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
@@ -198,6 +203,9 @@ def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
     assert "idx_document_folder_parent" in sql
     assert "alter table llm_config add column supports_tool_calling bool" in sql
     assert "create table report_run" in sql
+    assert "create table report_material" in sql
+    assert "alter table report_run add column source_kind varchar(16) not null" in sql
+    assert "alter table report_run add column inline_source_filename varchar(512)" in sql
     assert "create table agent_conversation" in sql
     assert "create table agent_conversation_turn" in sql
     assert "custom_template_manifest json" in sql

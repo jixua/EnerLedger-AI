@@ -173,13 +173,18 @@ async def confirm_template_selection(
     turn.interaction = interaction
     turn.status = "PROCESSING_ACTION"
     await db.commit()
+    # 来源与模板都可能是知识库文档，也可能是对话直传的材料；卡片里带的是哪一套，
+    # 就按哪一套重建任务。
+    source_document_id = interaction.get("source_document_id")
     try:
         run = await create_report(
-            document_id=int(interaction["source_document_id"]),
+            document_id=int(source_document_id) if source_document_id else None,
             payload=ReportCreateRequest(
                 report_type=payload.report_type,
                 llm_config_id=int(interaction["llm_config_id"]),
                 custom_template_document_id=interaction.get("template_document_id"),
+                material_id=interaction.get("source_material_id"),
+                template_material_id=interaction.get("template_material_id"),
                 user_instructions=interaction.get("user_instructions"),
             ),
             user_id=owner_user_id,

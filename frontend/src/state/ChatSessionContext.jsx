@@ -6,9 +6,18 @@ import {
   deleteAgentConversation,
   listAgentConversations,
   listAgentConversationTurns,
-  uploadAgentAttachment,
+  uploadAgentMaterial,
 } from "../lib/api";
 import { isDocumentRetrievalReady } from "../lib/parse-quality";
+import { documentIdOf, documentNameOf, referencesDocument } from "../lib/doc-mention";
+import {
+  appendTurn,
+  conversationIdOfThreadKey,
+  isDraftThreadKey,
+  moveThreadBucket,
+  nextDraftThreadKey,
+  threadKeyForSubmit,
+} from "../lib/chat-threads";
 import { useApp } from "./AppContext";
 
 /**
@@ -26,20 +35,6 @@ const ChatSessionContext = createContext(null);
 /** 仍在流式推进的状态。对话框与对话页共用这一份判定，避免两处各写一套。 */
 const STREAMING_STATUSES = new Set(["recalling", "generating"]);
 export const isStreamingMessage = (message) => STREAMING_STATUSES.has(message.status);
-
-/** 新建但服务端还没返回 conversation_id 时的临时桶名。 */
-const DRAFT_THREAD_PREFIX = "draft:";
-
-const isDraftThreadKey = (key) => typeof key === "string" && key.startsWith(DRAFT_THREAD_PREFIX);
-
-function nextDraftThreadKey() {
-  return `${DRAFT_THREAD_PREFIX}${Date.now()}-${Math.random().toString(16).slice(2)}`;
-}
-
-function conversationIdOfThreadKey(key) {
-  if (!key || isDraftThreadKey(key)) return null;
-  return key;
-}
 
 function normalizeEvent(eventOrName, maybePayload) {
   if (typeof eventOrName === "string") return { event: eventOrName, data: maybePayload ?? {} };
@@ -90,13 +85,28 @@ function turnsToMessages(turns) {
 }
 
 /** 把待定桶改挂到服务端返回的真实 conversation_id 下。 */
-function rekeyThreads(threads, fromKey, toKey) {
-  if (fromKey === toKey || !threads[fromKey]) return threads;
-  const next = { ...threads };
-  const moved = next[fromKey];
-  delete next[fromKey];
-  next[toKey] = [...moved, ...(next[toKey] || [])];
-  return next;
+/**
+ * 会话级附件：材料与版式模板挂在对话上，跨轮有效，所以每轮都随请求重发。
+ *
+ * 重开一段旧对话时按「最后一轮带过附件的那一轮」恢复——服务端每轮都记了当轮附件，
+ * 因此最后一轮的记录就是这段对话的当前上下文。
+ */
+function carriedAttachments(turns) {
+  const ordered = Array.isArray(turns) ? turns : [];
+  for (let index = ordered.length - 1; index >= 0; index -= 1) {
+    const items = ordered[index]?.attachments;
+    if (!Array.isArray(items) || !items.length) continue;
+    return items
+      .filter((item) => item?.material_id)
+      .map((item, position) => ({
+        id: `restored-${ordered[index].turn_id ?? index}-${position}`,
+        filename: item.filename || "已上传文件",
+        materialId: item.material_id,
+        pageCount: null,
+        charCount: null,
+      }));
+  }
+  return [];
 }
 
 /** 预览模式不连后端：文本类文件本地读，其余给一段占位文本。 */
@@ -105,7 +115,13 @@ async function mockAgentAttachment(file) {
   const content = textLike
     ? (await file.text()).slice(0, 60000)
     : `（预览模式）已读取文件《${file.name}》的正文内容。`;
-  return { filename: file.name, content, page_count: null, char_count: content.length };
+  // 预览模式没有后端暂存，用一个假 id 走完界面流程即可。
+  return {
+    material_id: `demo-${file.name || "attachment"}`,
+    filename: file.name,
+    page_count: null,
+    char_count: content.length,
+  };
 }
 
 export function ChatSessionProvider({ children }) {
@@ -126,6 +142,9 @@ export function ChatSessionProvider({ children }) {
   const [pendingDeleteId, setPendingDeleteId] = useState(null);
   const [deletingId, setDeletingId] = useState(null);
   const [attachments, setAttachments] = useState([]);
+  // 输入框里 @ 引用的那份知识库文档。引用本身写在文本里，这里只记「指的是哪一份」；
+  // 文本里的 @文件名 被删掉就不再算引用（见 lib/doc-mention.js）。
+  const [mentionedDocument, setMentionedDocument] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [attachmentError, setAttachmentError] = useState("");
   const [question, setQuestion] = useState("");
@@ -192,6 +211,36 @@ export function ChatSessionProvider({ children }) {
   );
 
   const effectiveDatasets = selectedDatasetIds.length ? selectedDatasets : activeDatasets;
+
+  /**
+   * 可以被 @ 引用的文档：当前生效的知识库范围内、且已经解析到可检索状态的。
+   * 范围跟着数据集选择走——@ 一份当前范围之外的文档，后端会因为归属校验直接 404
+   * （agent.py 要求附件的 dataset_id 落在本次 dataset_ids 内）。
+   */
+  const mentionableDocuments = useMemo(() => {
+    const scope = new Set(effectiveDatasets.map((dataset) => Number(dataset.id)));
+    const names = new Map(activeDatasets.map((dataset) => [Number(dataset.id), dataset.name]));
+    return flattenDocuments(documents)
+      .filter(isDocumentRetrievalReady)
+      .filter((document) => scope.has(Number(document.dataset_id ?? document.datasetId)))
+      .map((document) => ({
+        ...document,
+        dataset_name: names.get(Number(document.dataset_id ?? document.datasetId)) || "",
+      }));
+  }, [activeDatasets, documents, effectiveDatasets]);
+
+  /** 当前仍然成立的引用：文本里还写着 @文件名，且那份文档仍在可选范围里。 */
+  const activeMention = useMemo(() => {
+    if (!mentionedDocument) return null;
+    if (!referencesDocument(question, mentionedDocument)) return null;
+    const id = documentIdOf(mentionedDocument);
+    return mentionableDocuments.some((document) => documentIdOf(document) === id)
+      ? mentionedDocument
+      : null;
+  }, [mentionedDocument, mentionableDocuments, question]);
+
+  const mentionDocument = useCallback((document) => setMentionedDocument(document), []);
+  const clearMention = useCallback(() => setMentionedDocument(null), []);
   const boundChatIds = useMemo(
     () => new Set(effectiveDatasets.map((dataset) => dataset.chat_config_id).filter(Boolean).map(String)),
     [effectiveDatasets],
@@ -248,8 +297,8 @@ export function ChatSessionProvider({ children }) {
     // 正在流式写入的这段以内存里的桶为准：服务端回合完成前 assistant_content 是空的，
     // 用接口结果覆盖会把已经生成的文字擦掉。
     if (streamOwnerRef.current?.threadKey === id) {
+      // 正在流式写入的这段：附件就在内存里，保持原样。
       setActiveThreadKey(id);
-      setAttachments([]);
       return;
     }
     setHistoryLoading(true);
@@ -258,7 +307,8 @@ export function ChatSessionProvider({ children }) {
       const turns = await listAgentConversationTurns(id);
       setThreads((current) => ({ ...current, [id]: turnsToMessages(turns) }));
       setActiveThreadKey(id);
-      setAttachments([]);
+      // 材料与模板挂在对话上，重开这段话时把它们恢复到输入区。
+      setAttachments(carriedAttachments(turns));
     } catch (error) {
       setAttachmentError(error?.message || "历史对话读取失败");
     } finally {
@@ -349,16 +399,16 @@ export function ChatSessionProvider({ children }) {
     }
     setUploading(true);
     try {
-      // 小文件就地提取文本直接交给模型；超限时后端返回"文件过大，请先导入知识库"。
-      const result = isDemo ? await mockAgentAttachment(file) : await uploadAgentAttachment(file);
-      const content = result?.content;
-      if (!content) throw new Error("上传成功但未提取到内容");
+      // 文件正文留在服务端，这里只拿 material_id；超限时后端返回"文件过大，请先导入知识库"。
+      const result = isDemo ? await mockAgentAttachment(file) : await uploadAgentMaterial(file);
+      const materialId = result?.material_id;
+      if (!materialId) throw new Error("上传成功但未拿到材料编号");
       setAttachments((current) => [...current, {
         id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
         filename: result.filename || file.name,
-        content,
+        materialId,
         pageCount: result.page_count ?? null,
-        charCount: result.char_count ?? content.length,
+        charCount: result.char_count ?? null,
       }]);
     } finally {
       setUploading(false);
@@ -382,7 +432,7 @@ export function ChatSessionProvider({ children }) {
       const toKey = nextConversationId || fromKey;
       if (toKey !== fromKey) {
         owner.threadKey = toKey;
-        setThreads((current) => rekeyThreads(current, fromKey, toKey));
+        setThreads((current) => moveThreadBucket(current, fromKey, toKey));
         setActiveThreadKey((current) => (current === fromKey ? toKey : current));
       }
       owner.conversationId = nextConversationId;
@@ -488,11 +538,27 @@ export function ChatSessionProvider({ children }) {
     const prompt = question.trim();
     const idBase = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
     const assistantId = `assistant-${idBase}`;
-    const draftKey = nextDraftThreadKey();
-    const submittedAttachments = attachments.map((attachment) => ({
-      filename: attachment.filename,
-      content: attachment.content,
-    }));
+    // 已经在某段对话里就接着写那份对话，只有新对话才开临时桶——这样这一轮立刻排在
+    // 历史消息之后，不必等 conversation_started 回来改挂（改挂期间它会显示在最上面）。
+    const threadKey = threadKeyForSubmit(activeThreadKeyRef.current);
+    // 上传的材料走 material_id；@ 引用的知识库文档走 document_id，并显式声明它
+    // 是主体（SOURCE）。不声明时角色由模型判定，一份长得像报告模板的文档就会被
+    // 当成版式模板——用户 @ 它是为了拿它当材料。
+    const submittedAttachments = [
+      ...attachments.map((attachment) => ({
+        filename: attachment.filename,
+        material_id: attachment.materialId,
+      })),
+      ...(activeMention
+        ? [
+            {
+              filename: documentNameOf(activeMention),
+              document_id: documentIdOf(activeMention),
+              role: "SOURCE",
+            },
+          ]
+        : []),
+    ];
     const userMessage = {
       id: `user-${idBase}`,
       role: "user",
@@ -510,16 +576,21 @@ export function ChatSessionProvider({ children }) {
       modelId: selectedModelId || null,
     };
 
-    setThreads((current) => ({ ...current, [draftKey]: [userMessage, assistantMessage] }));
-    setActiveThreadKey(draftKey);
-    // 附件随本轮一起发出，发送后即清空，不残留到下一轮。
+    setThreads((current) => ({
+      ...current,
+      [threadKey]: appendTurn(current[threadKey], userMessage, assistantMessage),
+    }));
+    setActiveThreadKey(threadKey);
+    // 附件不随发送清空：材料与版式模板挂在对话上，后续几轮还要继续用。
+    // @ 引用只对这一轮有效（文本随输入框一起清掉），下轮要用再 @ 一次。
     setQuestion("");
-    setAttachments([]);
+    setMentionedDocument(null);
 
     const owner = {
-      threadKey: draftKey,
+      threadKey,
       assistantId,
-      conversationId: conversationIdOfThreadKey(activeThreadKeyRef.current),
+      // 新对话这里还是 null，等 conversation_started 带回真实 id 再落到 owner 上
+      conversationId: conversationIdOfThreadKey(threadKey),
     };
     streamOwnerRef.current = owner;
     const controller = new AbortController();
@@ -560,6 +631,7 @@ export function ChatSessionProvider({ children }) {
       void refreshConversations();
     }
   }, [
+    activeMention,
     attachments,
     canSubmit,
     handleStreamEvent,
@@ -659,6 +731,10 @@ export function ChatSessionProvider({ children }) {
     needsExplicitModel,
     activeDatasets,
     retrievalReadyCounts,
+    mentionableDocuments,
+    mentionedDocument: activeMention,
+    mentionDocument,
+    clearMention,
     datasetTriggerLabel: !selectedDatasetIds.length
       ? `全部知识库${activeDatasets.length ? `（${activeDatasets.length}）` : ""}`
       : selectedDatasets.length === 1

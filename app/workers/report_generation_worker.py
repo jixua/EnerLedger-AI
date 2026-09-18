@@ -33,10 +33,12 @@ from app.services.report_budget import (
     load_document_payload_stats,
     report_context_budget,
 )
+from app.services.report_inline_source import SOURCE_KIND_INLINE
 from app.services.report_ir import build_fixture_report_ir, validate_report_ir
 from app.services.report_queue import ReportRunClaim, ReportRunQueueService
 from app.services.report_source_context import (
     load_document_chunk_manifest,
+    load_inline_template_manifest,
     load_report_source_context,
     validate_chunk_coverage,
 )
@@ -129,7 +131,10 @@ class FixtureReportProcessor:
             "report_ir_sha256": hashlib.sha256(encoded).hexdigest(),
             "template_id": run.template_id,
             "template_version": run.template_version,
-            "document_version": int(run.document_version),
+            # 直传材料来源没有文档版本；manifest 是记录用的，按空写即可。
+            "document_version": (
+                int(run.document_version) if run.document_version is not None else None
+            ),
             "generator": "platform-fixture",
         }
         return ReportProcessingResult(
@@ -165,14 +170,25 @@ class PiReportProcessor:
             )
             error.error_code = "REPORT_DOCUMENT_MANIFEST_CHANGED"
             raise error
-        if run.custom_template_document_id:
+        expected_custom = run.custom_template_manifest or {}
+        if expected_custom.get("source_kind") == SOURCE_KIND_INLINE:
+            # 内联模板冻结在任务自己的对象存储上，外部改不到；只需确认它读得回来、
+            # 且清单与冻结值一致。
+            custom_manifest = await load_inline_template_manifest(run)
+            if (
+                custom_manifest.content_hash != expected_custom.get("chunk_manifest_sha256")
+                or len(custom_manifest.items) != expected_custom.get("chunk_count")
+            ):
+                error = PiReportProcessorError("冻结的用户模板已经变化", retryable=False)
+                error.error_code = "REPORT_CUSTOM_TEMPLATE_CHANGED"
+                raise error
+        elif run.custom_template_document_id:
             custom_document = await db.scalar(
                 select(Document).where(
                     Document.id == run.custom_template_document_id,
                     Document.user_id == run.user_id,
                 )
             )
-            expected_custom = run.custom_template_manifest or {}
             if (
                 custom_document is None
                 or int(custom_document.dataset_id) != int(run.dataset_id)
@@ -191,9 +207,14 @@ class PiReportProcessor:
                 raise error
         # 与创建任务时同一套上下文预算：重试、历史任务等任何执行路径都不允许在
         # 「一轮读不完」的情况下调用模型（必然以输出截断告终）。
-        source_chunks, source_chars = await load_document_payload_stats(
-            db, document_id=int(run.document_id), document_version=int(run.document_version)
-        )
+        if run.source_kind == SOURCE_KIND_INLINE:
+            # 冻结快照不会漂移，直接用创建时记下的规模，不必再读一次对象存储
+            source_chunks = int(expected_manifest.get("chunk_count") or 0)
+            source_chars = int(expected_manifest.get("char_count") or 0)
+        else:
+            source_chunks, source_chars = await load_document_payload_stats(
+                db, document_id=int(run.document_id), document_version=int(run.document_version)
+            )
         custom_chunks = custom_chars = 0
         if run.custom_template_document_id:
             custom_chunks, custom_chars = await load_document_payload_stats(
@@ -366,7 +387,10 @@ class PiReportProcessor:
             "report_ir_sha256": hashlib.sha256(encoded).hexdigest(),
             "template_id": run.template_id,
             "template_version": run.template_version,
-            "document_version": int(run.document_version),
+            # 直传材料来源没有文档版本；manifest 是记录用的，按空写即可。
+            "document_version": (
+                int(run.document_version) if run.document_version is not None else None
+            ),
             "chunk_manifest_sha256": chunk_manifest.content_hash,
             "chunk_count": len(chunk_manifest.items),
             "generator": "pi-agent",
@@ -430,42 +454,47 @@ class ReportGenerationWorker:
             run = await db.scalar(select(ReportRun).where(ReportRun.id == payload.run_id))
             if run is None:
                 return
-            if (
-                int(run.user_id) != payload.user_id
-                or int(run.document_id) != payload.document_id
-                or int(run.document_version) != payload.document_version
+            if int(run.user_id) != payload.user_id or (
+                payload.document_id is not None
+                and (
+                    run.document_id != payload.document_id
+                    or run.document_version != payload.document_version
+                )
             ):
                 raise ValueError("报告消息与冻结任务身份不一致")
-            document = await db.scalar(
-                select(Document).where(
-                    Document.id == run.document_id,
-                    Document.user_id == run.user_id,
-                )
-            )
-            if (
-                document is None
-                or document.status != DOCUMENT_STATUS_READY
-                or int(document.version) != int(run.document_version)
-                or document.parsed_bucket != run.parsed_bucket
-                or document.parsed_object_key != run.parsed_object_key
-            ):
-                await db.execute(
-                    update(ReportRun)
-                    .where(ReportRun.id == run.id)
-                    .values(
-                        state="STALE_DOCUMENT",
-                        stage="FAILED",
-                        error_code="REPORT_DOCUMENT_VERSION_CHANGED",
-                        error_message="文档版本或解析产物已变化，请重新创建报告",
-                        finished_at=utc_now(),
-                        lease_token=None,
-                        lease_owner=None,
-                        lease_expires_at=None,
+            # 直传材料没有文档可指，也就没有「文档版本已变化」这回事：它的正文是创建
+            # 任务时冻结的快照，外部改不到，不存在漂移。这里只对文档来源校验。
+            if run.source_kind != SOURCE_KIND_INLINE:
+                document = await db.scalar(
+                    select(Document).where(
+                        Document.id == run.document_id,
+                        Document.user_id == run.user_id,
                     )
-                    .execution_options(synchronize_session=False)
                 )
-                await db.commit()
-                return
+                if (
+                    document is None
+                    or document.status != DOCUMENT_STATUS_READY
+                    or int(document.version) != int(run.document_version)
+                    or document.parsed_bucket != run.parsed_bucket
+                    or document.parsed_object_key != run.parsed_object_key
+                ):
+                    await db.execute(
+                        update(ReportRun)
+                        .where(ReportRun.id == run.id)
+                        .values(
+                            state="STALE_DOCUMENT",
+                            stage="FAILED",
+                            error_code="REPORT_DOCUMENT_VERSION_CHANGED",
+                            error_message="文档版本或解析产物已变化，请重新创建报告",
+                            finished_at=utc_now(),
+                            lease_token=None,
+                            lease_owner=None,
+                            lease_expires_at=None,
+                        )
+                        .execution_options(synchronize_session=False)
+                    )
+                    await db.commit()
+                    return
 
         async with get_db_context() as db:
             claim = await self.queue.claim(

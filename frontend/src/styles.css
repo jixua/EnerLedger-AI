@@ -234,7 +234,9 @@ img { max-width: 100%; }
 
 .page { width: 100%; max-width: var(--page-column); margin: 0 auto; padding: 42px 48px 56px; }
 
-.button, .icon-button { border: 1px solid transparent; transition: background 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform 150ms ease; }
+/* text-decoration 是给 Link 用的：它渲染出来是 <a>，浏览器默认加下划线，
+   而按钮式链接的边框、底色、字号都在下面定好了，只有文字装饰没人管。 */
+.button, .icon-button { border: 1px solid transparent; text-decoration: none; transition: background 150ms ease, border-color 150ms ease, color 150ms ease, box-shadow 150ms ease, transform 150ms ease; }
 .button { min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 8px; padding: 0 15px; border-radius: var(--radius-md); font-size: 12px; font-weight: 600; white-space: nowrap; }
 .button:hover:not(:disabled) { transform: translateY(-1px); }
 .button:not(:disabled):active { transform: translateY(0) scale(.97); }

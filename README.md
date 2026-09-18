@@ -19,7 +19,7 @@
 - MySQL 保留 `dataset`、`document_folder`、`document`、`document_chunk`、`llm_config` 五张业务表；单管理员身份由部署配置提供，不新增用户表，也不提供注册接口。
 - 不建立解析日志、阶段流水线、会话、消息、用量日志、厂商目录或模型目录表。
 - `document.status` 使用 `QUEUED`、`PROCESSING`、`READY`、`FAILED`。只有 `READY` 文档可以参与检索。
-- `POST /api/v1/documents/{document_id}/reports` 冻结文档、模板和模型版本后创建报告任务，经 outbox 投递到 RabbitMQ 交给独立 `report-worker`；生成过程可提问、可取消、可重试，产物为 Markdown 与 DOCX。
+- `POST /api/v1/documents/{document_id}/reports` 冻结文档、模板和模型版本后创建报告任务，经 outbox 投递到 RabbitMQ 交给独立 `report-worker`；生成过程可提问、可取消、可重试，产物为 Markdown、DOCX 与 HTML。
 - `POST /api/v1/rag/stream` 在一次请求中完成三路召回、上下文拼装和 LLM SSE 输出；当前不持久化会话或回答历史。
 - `POST /api/v1/agent/stream` 由 FastAPI 鉴权并代理独立 Pi Agent；Pi 只能调用当前运行范围内的受控知识库检索工具。前端历史仍仅存在当前页面，不冒充服务端会话。
 
@@ -261,16 +261,33 @@ curl -N http://127.0.0.1:8000/api/v1/rag/stream \
 curl -X POST http://127.0.0.1:8000/api/v1/documents/123/reports \
   -H 'Authorization: Bearer <登录接口返回的 access_token>' \
   -H 'Content-Type: application/json' \
-  -d '{"report_type":"R1","llm_config_id":1,"reporting_year":2025}'
+  -d '{"report_type":"R1","llm_config_id":1,"reporting_year":2025,"output_formats":["ONLINE","DOCX","HTML"]}'
 ```
 
 任务创建时冻结文档版本、模板版本和模型配置，写入 `report_run` 后经 outbox 投递到 RabbitMQ，由独立 `report-worker` 领取并驱动 Pi report-agent 生成。Pi 侧按模板要求的证据、字段台账和章节逐块落库，缺失关键信息时任务转入 `NEEDS_INPUT` 并通过 `GET /api/v1/report-runs/{run_id}/questions` 提问，作答后继续，澄清轮次不消耗重试预算。
 
-报告正文以 ReportIR（结构化中间表示）为真值，`GET /api/v1/report-runs/{run_id}/report` 返回该结构用于在线预览。完成后按 `output_formats` 渲染 Markdown 与 DOCX 上传对象存储，并写入 `report_artifact` 记录；`GET /api/v1/report-runs/{run_id}/artifacts/{artifact_id}` 提供下载。渲染不重新调用模型。
+报告正文以 ReportIR（结构化中间表示）为真值，`GET /api/v1/report-runs/{run_id}/report` 返回该结构用于在线预览。完成后按 `output_formats` 渲染产物上传对象存储，并写入 `report_artifact` 记录；`GET /api/v1/report-runs/{run_id}/artifacts/{artifact_id}` 提供下载。渲染不重新调用模型。
+
+`output_formats` 可取值 `ONLINE`（仅在线预览，不落盘）、`MARKDOWN`、`DOCX`、`HTML`，默认 `["ONLINE", "DOCX", "HTML"]`。三种产物都直接从 ReportIR 渲染，不经过中间格式：块的读法（列名、分项、平行数组的别名）集中在 `app/services/report_blocks.py`，四个渲染器共用，因此同一份报告在页面与三种导出件里内容一致。Word 里的表格是真表格（表头加底色、数值列右对齐、跨页重复表头），图表用单元格底色画成条形与占比条，页码走 Word 域、打开时刷新；HTML 产物是单文件：样式内联、不引用外部资源、不加载脚本，正文全部转义并附带禁止外部加载的 CSP，可直接双击打开或打印成 PDF。
 
 上下文预算在创建时和 worker 预检两处把关：文档正文加结构提示超出模型窗口时返回 `REPORT_DOCUMENT_TOO_LARGE`，不会静默截断。
 
-前端在对话页和文档详情页都能发起报告任务；「报告中心」（`GET /api/v1/report-runs`）汇总当前用户跨文档的全部任务、状态和可下载产物。
+报告来源有两种，由 `report_run.source_kind` 区分：
+
+- `DOCUMENT`：路径上的 `document_id`，即已入库解析的知识库文档。
+- `INLINE`：对话里直传的材料。文件经 `POST /api/v1/agent/materials` 就地提取文本后在服务端暂存（**不进知识库**——不建文档记录、不切块入库、不建索引、不进召回），返回 `material_id`；创建报告时只传这个 id，正文不再回传浏览器。材料超过大小/页数/字符阈值时返回 413，提示先导入知识库。
+
+`INLINE` 来源在内部会被切成报告专用的分片并冻结在该任务上（分片 ID 形如 `M-1`），agent 照旧按游标读完、提交时附带覆盖清单供服务端逐项核对——对用户是「没入库」，对链路是「该有的都有」，防伪造的覆盖校验一行没放松。因此 `report_run` 上 `document_id` / `document_version` / `dataset_id` 三个字段对 `INLINE` 为空，判断来源一律看 `source_kind`。
+
+**版式模板同样支持直传**，走 `template_material_id`：文件和来源材料一样暂存在服务端、切成 `M-` 分片后冻结在任务的 `custom_template_manifest` 里（用 `source_kind` 区分知识库模板与内联模板），agent 通过 `read_custom_template_chunks` 读它。模板只控制章节标题、顺序、内容表达与版式，改不了业务字段、公式、证据与免责声明。
+
+一轮对话最多带两份文件，**材料与模板都挂在对话上**（不随发送清空、重开对话时按最后一轮带附件的那一轮恢复），因此后续几轮可以继续用同一份材料或模板。角色由模型判定（`decide_material_roles`）：判不出来时回落规则——报告特征更明显的那份当模板；只有一份且像一份成型的报告时，认成模板而不是来源，此时若用户直接要报告，会明确提示缺少来源材料。问答链路只把**本轮新增**的附件正文交代给模型，挂着的历史附件不重复注入，避免几轮下来把上下文吃光。
+
+一轮里判出多份来源时不静默只取一份，而是明确拒绝并说明（`REPORT_SOURCE_AMBIGUOUS`）。报告类型不唯一时沿用确认卡片（`TEMPLATE_SELECTION`），卡片同时带上材料与文档两套引用。
+
+**对话里可以 `@` 一份知识库文档**（输入框打 `@` 弹出候选，一次一份，候选只列当前知识库范围内已解析到可检索状态的文档）。引用写成文本里的 `@文件名`——模型据此知道「这份文件」指哪一份，用户回头读这句话也读得懂；结构化身份另走附件的 `document_id`，并显式声明 `role: SOURCE`，免得一份长得像报告模板的文档被当成版式模板。之后两条路都通：说「用 @X 生成报告」走报告任务，来源为 `DOCUMENT` 并冻结该文档的版本（产物里带「来源文档」链接）；直接问它就只是提问，检索范围会被收窄到这一份文档（`scoped_doc_ids`），需要通读时模型再按目录与章节读取全文。与挂在对话上的材料不同，**`@` 引用只对当前这一轮有效**，下一轮要用再 `@` 一次。
+
+前端在对话页和文档详情页都能发起报告任务；「报告中心」（`GET /api/v1/report-runs`）汇总当前用户跨文档的全部任务、状态和可下载产物，其中「来源」列对 `INLINE` 任务显示上传时的原文件名。
 
 ## 文档状态
 

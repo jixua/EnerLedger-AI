@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 from io import BytesIO
+from typing import Any
 
 os.environ.setdefault("ADMIN_PASSWORD_HASH", "scrypt:test-only")
 
@@ -13,7 +14,7 @@ import fitz  # noqa: E402
 import pytest  # noqa: E402
 from fastapi import HTTPException, UploadFile  # noqa: E402
 
-from app.api.agent import AgentAttachment, upload_agent_attachment  # noqa: E402
+from app.api.agent import AgentAttachment, upload_agent_material  # noqa: E402
 from app.rag.config import settings  # noqa: E402
 from app.services.agent_attachment_text import (  # noqa: E402
     DirectAttachmentTooLargeError,
@@ -80,43 +81,89 @@ def test_extension_normalization() -> None:
 
 
 def test_attachment_accepts_exactly_one_kind() -> None:
-    assert AgentAttachment(filename="a.md", content="正文").is_direct is True
+    assert AgentAttachment(filename="a.md", material_id="m-1").is_direct is True
     assert AgentAttachment(document_id=3).is_direct is False
 
     with pytest.raises(ValueError):
-        AgentAttachment(document_id=3, filename="a.md", content="正文")
+        AgentAttachment(document_id=3, filename="a.md", material_id="m-1")
     with pytest.raises(ValueError):
         AgentAttachment(filename="a.md")
 
 
-@pytest.mark.asyncio
-async def test_upload_endpoint_returns_extracted_text(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "AGENT_ENABLED", True)
+class _MaterialSession:
+    """暂存材料用的最小会话替身：记录写操作，不连库。"""
 
-    result = await upload_agent_attachment(_upload("说明.md", "# 标题".encode()), user_id=1)
+    def __init__(self) -> None:
+        self.added: list[Any] = []
+        self.commits = 0
+
+    def add(self, value: Any) -> None:
+        self.added.append(value)
+
+    async def commit(self) -> None:
+        self.commits += 1
+
+
+class _MaterialStorage:
+    def __init__(self) -> None:
+        self.uploaded: list[tuple[str, str, int, str]] = []
+
+    def upload_bytes(self, bucket, object_key, content, content_type) -> None:
+        self.uploaded.append((bucket, object_key, len(content), content_type))
+
+
+@pytest.fixture()
+def staged(monkeypatch: pytest.MonkeyPatch) -> tuple[_MaterialSession, _MaterialStorage]:
+    """上传接口现在把正文暂存在服务端，测试里给一个不落盘的替身。"""
+    monkeypatch.setattr(settings, "AGENT_ENABLED", True)
+    session = _MaterialSession()
+    storage = _MaterialStorage()
+    monkeypatch.setattr(
+        "app.api.agent.StorageFactory.get_storage", staticmethod(lambda: storage)
+    )
+    return session, storage
+
+
+@pytest.mark.asyncio
+async def test_upload_endpoint_stages_text_and_returns_material_id(staged) -> None:
+    session, storage = staged
+
+    result = await upload_agent_material(
+        _upload("说明.md", "# 标题".encode()), user_id=1, db=session
+    )
 
     assert result["filename"] == "说明.md"
-    assert result["content"].startswith("# 标题")
-    assert result["char_count"] == len(result["content"])
+    assert result["char_count"] > 0
+    # 正文不回传浏览器，只回一个 id 与元数据
+    assert "content" not in result
+    assert len(result["material_id"]) == 36
+    assert session.commits == 1
+    assert [type(row).__name__ for row in session.added] == ["ReportMaterial"]
+    assert len(storage.uploaded) == 1
+    bucket, object_key, size, content_type = storage.uploaded[0]
+    assert object_key.startswith(f"report-materials/1/{result['material_id']}")
+    assert size > 0
+    assert content_type == "text/plain; charset=utf-8"
+    assert bucket == settings.MINIO_PRIVATE_BUCKET
 
 
 @pytest.mark.asyncio
-async def test_upload_endpoint_rejects_unsupported_type(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "AGENT_ENABLED", True)
+async def test_upload_endpoint_rejects_unsupported_type(staged) -> None:
+    session, _storage = staged
 
     with pytest.raises(HTTPException) as excinfo:
-        await upload_agent_attachment(_upload("说明.txt", b"hi"), user_id=1)
+        await upload_agent_material(_upload("说明.txt", b"hi"), user_id=1, db=session)
 
     assert excinfo.value.status_code == 415
 
 
 @pytest.mark.asyncio
-async def test_upload_endpoint_reports_too_large(monkeypatch: pytest.MonkeyPatch) -> None:
-    monkeypatch.setattr(settings, "AGENT_ENABLED", True)
+async def test_upload_endpoint_reports_too_large(staged, monkeypatch: pytest.MonkeyPatch) -> None:
+    session, _storage = staged
     monkeypatch.setattr(settings, "AGENT_DIRECT_ATTACHMENT_MAX_BYTES", 1024)
 
     with pytest.raises(HTTPException) as excinfo:
-        await upload_agent_attachment(_upload("说明.md", b"x" * 4096), user_id=1)
+        await upload_agent_material(_upload("说明.md", b"x" * 4096), user_id=1, db=session)
 
     assert excinfo.value.status_code == 413
     assert excinfo.value.detail["code"] == "ATTACHMENT_TOO_LARGE"

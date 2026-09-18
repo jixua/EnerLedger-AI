@@ -14,13 +14,9 @@ import json
 import os
 import re
 import tempfile
-from io import BytesIO
 from pathlib import Path
 from typing import Any
 
-from docx import Document as WordDocument
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.shared import Cm
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -29,22 +25,35 @@ from app.rag.config import settings
 from app.rag.observability.logging import logger
 from app.rag.services.storage.base import BaseObjectStorage
 from app.rag.services.storage.factory import StorageFactory
-from app.services.markdown_docx import (
-    add_markdown,
-    configure_document_styles,
-    set_run_font,
+from app.services.report_blocks import (
+    block_data,
+    block_unit,
+    evidence_location,
+    flatten_text,
+    list_items,
+    metric_items,
+    series_items,
+    table_columns,
+    table_rows,
+    trim_text,
 )
+from app.services.report_docx import render_report_docx
+from app.services.report_html import render_report_html
 from app.services.report_templates import ReportTemplate
 
 RENDERER_VERSION = "report-ir/1"
 
+# 这些块在 Markdown 里本身就是多行的表格，证据标注不能挂在最后一行上。
+_TABLE_LIKE_BLOCKS = ("table", "metric_cards", "bar_chart", "donut_chart")
+
 # 除在线渲染外允许落盘的格式。
-DOWNLOADABLE_FORMATS = ("MARKDOWN", "DOCX")
+DOWNLOADABLE_FORMATS = ("MARKDOWN", "DOCX", "HTML")
 _CONTENT_TYPES = {
     "MARKDOWN": "text/markdown; charset=utf-8",
     "DOCX": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    "HTML": "text/html; charset=utf-8",
 }
-_EXTENSIONS = {"MARKDOWN": "md", "DOCX": "docx"}
+_EXTENSIONS = {"MARKDOWN": "md", "DOCX": "docx", "HTML": "html"}
 
 
 class ReportArtifactError(RuntimeError):
@@ -54,13 +63,15 @@ class ReportArtifactError(RuntimeError):
 def render_report_markdown(
     *, run: ReportRun, template: ReportTemplate, report_ir: dict[str, Any]
 ) -> str:
-    """把 ReportIR 渲染成 Markdown（同时作为 DOCX 的中间表示）。
+    """把 ReportIR 渲染成 Markdown。
 
-    不使用引用块（``>``）语法：Word 转换只识别标题/表格/列表/段落，
-    提示类内容用「【提示】」前缀表达，两种产物都成立。
+    Markdown 只作为可下载的纯文本产物，不再是 Word 的中间表示——表格、分页、图表
+    在 Word 里各有各的做法，绕一层就必然走样。提示类内容用「【提示】」前缀而不是
+    引用块，同一段文字在纯文本里、在 Markdown 预览里、被复制到别处时都读得通。
     """
     title = template.definition.get("name") or run.template_id
-    lines: list[str] = [f"# {run.report_type} 报告 · {title}"]
+    # 标题用报告名称而不是 R1–R7：那是内部编号，界面上从不呈现，导出件里也不该出现。
+    lines: list[str] = [f"# {title}"]
     lines.append("")
     for section in report_ir.get("sections") or []:
         lines.append(f"## {section.get('title')}")
@@ -103,8 +114,8 @@ def render_report_markdown(
             "| {evidence_id} | {source_type} | {location} | {excerpt} |".format(
                 evidence_id=item.get("evidence_id"),
                 source_type=item.get("source_type"),
-                location=_cell(_evidence_location(item)),
-                excerpt=_cell(_trim(item.get("excerpt"), 120)),
+                location=_cell(evidence_location(item)),
+                excerpt=_cell(trim_text(item.get("excerpt"), 120)),
             )
             for item in evidence
         ]
@@ -137,130 +148,68 @@ def render_report_markdown(
 
 def _render_block(block: dict[str, Any]) -> str:
     block_type = block.get("type")
-    data = block.get("data") if isinstance(block.get("data"), dict) else {}
+    data = block_data(block)
     evidence = block.get("evidence_ids") or []
     suffix = f"（证据：{', '.join(evidence)}）" if evidence else ""
     lines: list[str] = []
 
     if block_type in ("paragraph", "heading", "signature_block", "source_note"):
-        text = str(block.get("text") or "").strip()
+        text = flatten_text(block.get("text"))
         if text:
             lines.append(f"{text}{suffix}")
     elif block_type == "callout":
-        text = str(block.get("text") or "").strip()
+        text = flatten_text(block.get("text"))
         if text:
             lines.append(f"**【提示】** {text}{suffix}")
     elif block_type == "list":
-        items = data.get("items") or []
-        texts = [str(item.get("text") if isinstance(item, dict) else item) for item in items]
-        if not texts and block.get("text"):
-            texts = [str(block["text"])]
-        lines += [f"- {text}" for text in texts if text]
+        lines += [f"- {item}" for item in list_items(block)]
     elif block_type == "metric_cards":
-        items = data.get("items") or []
+        items = metric_items(block)
         if items:
             lines += ["| 指标 | 值 |", "| --- | --- |"]
             lines += [
                 f"| {_cell(item.get('label'))} | {_cell(item.get('value'))} |" for item in items
             ]
     elif block_type in ("bar_chart", "donut_chart"):
-        series = data.get("series") or []
+        series = series_items(block)
         if series:
-            unit = data.get("unit") or ""
-            lines += [f"| 分项 | 数值（{unit}） |", "| --- | --- |"]
+            unit = block_unit(block)
+            lines += [f"| 分项 | 数值（{unit}） |" if unit else "| 分项 | 数值 |", "| --- | --- |"]
             lines += [
                 f"| {_cell(item.get('label'))} | {_cell(item.get('value'))} |" for item in series
             ]
     elif block_type == "table":
-        rows = data.get("rows") or []
-        columns = data.get("columns")
+        rows = table_rows(data)
         if rows:
-            if isinstance(rows[0], dict):
-                columns = columns or list(rows[0].keys())
-                lines += ["| " + " | ".join(_cell(name) for name in columns) + " |"]
-                lines += ["|" + " --- |" * len(columns)]
-                lines += [
-                    "| " + " | ".join(_cell(row.get(name)) for name in columns) + " |"
-                    for row in rows
-                ]
-            else:
-                if columns:
-                    lines += ["| " + " | ".join(_cell(name) for name in columns) + " |"]
-                    lines += ["|" + " --- |" * len(columns)]
-                lines += ["| " + " | ".join(_cell(cell) for cell in row) + " |" for row in rows]
+            # 列名缺失时补空列名，凑不出列名也要留下一行分隔符：少了它，整张表在
+            # Word 里会退化成一段带竖线的文字（表格识别就靠这一行）。
+            columns = table_columns(data)
+            width = max(len(row) for row in rows)
+            columns = [*columns, *([""] * (width - len(columns)))]
+            lines += ["| " + " | ".join(_cell(name) for name in columns) + " |"]
+            lines += ["|" + " --- |" * len(columns)]
+            lines += ["| " + " | ".join(_cell(cell) for cell in row) + " |" for row in rows]
         elif block.get("text"):
             lines.append(str(block["text"]))
     elif block_type == "page_break":
         lines.append("")
     else:
         payload = json.dumps(data or block.get("text"), ensure_ascii=False)
-        lines.append(f"```\n{_trim(payload, 1200)}\n```")
+        lines.append(f"```\n{trim_text(payload, 1200)}\n```")
 
-    if suffix and lines and not any(suffix in line for line in lines):
-        lines[-1] = f"{lines[-1]}{suffix}"
+    if suffix and lines:
+        if block_type in _TABLE_LIKE_BLOCKS:
+            # 表格与图表块的证据标注单独占一行。挂在最后一行上会被 Markdown 当成
+            # 表格里的一个单元格——两列的表格因此变成三列，最后一格写着证据编号。
+            lines.append(suffix)
+        elif not any(suffix in line for line in lines):
+            lines[-1] = f"{lines[-1]}{suffix}"
     return "\n".join(lines)
 
 
 def _cell(value: Any) -> str:
-    if value is None:
-        return ""
-    return re.sub(r"\s+", " ", str(value)).replace("|", "／").strip()
-
-
-def _trim(value: Any, limit: int) -> str:
-    text = "" if value is None else str(value)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:limit]
-
-
-def _evidence_location(item: dict[str, Any]) -> str:
-    if item.get("chunk_id"):
-        return str(item["chunk_id"])
-    if item.get("reference_uri"):
-        return str(item["reference_uri"])
-    if item.get("page"):
-        return f"第 {item['page']} 页"
-    return ""
-
-
-def build_report_docx(*, run: ReportRun, template: ReportTemplate, markdown: str) -> bytes:
-    """把渲染好的 Markdown 转成 Word。"""
-    output = WordDocument()
-    configure_document_styles(output)
-    output.core_properties.title = f"{run.report_type} 报告"
-    output.core_properties.subject = template.definition.get("name") or run.template_id
-
-    section = output.sections[0]
-    section.page_width = Cm(21)
-    section.page_height = Cm(29.7)
-    section.left_margin = Cm(3.0)
-    section.right_margin = Cm(2.5)
-    section.top_margin = Cm(3.0)
-    section.bottom_margin = Cm(2.5)
-
-    title = output.add_paragraph()
-    title.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    set_run_font(title.add_run(f"{run.report_type} 报告"), size=22, bold=True)
-    subtitle = output.add_paragraph()
-    subtitle.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    set_run_font(subtitle.add_run(template.definition.get("name") or run.template_id), size=13)
-
-    meta = output.add_paragraph()
-    meta.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    set_run_font(
-        meta.add_run(
-            f"任务 {run.id}　文档版本 v{run.document_version}　"
-            f"模板 {run.template_id} v{run.template_version}"
-        ),
-        size=9,
-    )
-    output.add_paragraph()
-
-    add_markdown(output, markdown)
-
-    stream = BytesIO()
-    output.save(stream)
-    return stream.getvalue()
+    """表格单元格：竖线会截断 Markdown 表格，换成全角斜杠。"""
+    return flatten_text(value).replace("|", "／")
 
 
 async def read_report_artifact(
@@ -295,10 +244,31 @@ async def read_report_artifact(
 
 
 def artifact_object_key(*, run: ReportRun, artifact_type: str, digest: str) -> str:
+    # 直传材料没有数据集与文档，路径中段换成 inline；run_id 仍然保证唯一。
+    source_segment = (
+        f"{int(run.dataset_id)}/{int(run.document_id)}"
+        if run.dataset_id is not None and run.document_id is not None
+        else "inline"
+    )
     return (
-        f"reports/{int(run.user_id)}/{int(run.dataset_id)}/{int(run.document_id)}/"
+        f"reports/{int(run.user_id)}/{source_segment}/"
         f"{run.id}/report-{digest[:12]}.{_EXTENSIONS[artifact_type]}"
     )
+
+
+def report_display_name(run: ReportRun) -> str:
+    """面向用户的报告名：模板名优先，快照里没有才退回内部编号 R1–R7。
+
+    R1–R7 是内部编号，接口和界面上都不直接呈现（见 ``app/api/reports.py`` 的
+    ``report_type_name``），下载文件名也不该例外。
+    """
+    snapshot = run.template_snapshot if isinstance(run.template_snapshot, dict) else {}
+    return flatten_text(snapshot.get("name")) or str(run.report_type)
+
+
+def _filename_part(value: str, limit: int) -> str:
+    """文件名片段：去掉路径分隔符等非法字符，并限制长度。"""
+    return re.sub(r'[\\/:*?"<>|]+', "_", value)[:limit]
 
 
 def artifact_download_name(
@@ -306,8 +276,14 @@ def artifact_download_name(
 ) -> str:
     stem = re.split(r"[\\/]", str(document_filename or ""))[-1]
     stem = re.sub(r"\.[^.]+$", "", stem).strip() or f"报告-{run.id[:8]}"
-    stem = re.sub(r'[\\/:*?"<>|]+', "_", stem)[:60]
-    return f"{stem}-{run.report_type}报告.{_EXTENSIONS[artifact_type]}"
+    name = report_display_name(run)
+    # 模板名本身就以「报告」结尾（「产品碳足迹评价报告」），再拼一次会得到
+    # 「…报告报告」；只有退回内部编号时才需要补这个后缀。
+    label = name if name.endswith("报告") else f"{name}报告"
+    return (
+        f"{_filename_part(stem, 60)}-{_filename_part(label, 60)}"
+        f".{_EXTENSIONS[artifact_type]}"
+    )
 
 
 async def purge_report_artifacts(
@@ -340,6 +316,10 @@ async def purge_report_artifacts(
                 error=str(exc)[:200],
             ).warning("清理报告产物失败")
         await db.delete(artifact)
+    # 必须在这里把删除落到库：`report_artifact` 上有 (run_id, artifact_type) 唯一键，
+    # 而同一个 flush 里 SQLAlchemy 先执行 insert 再执行 delete。留着待删行不 flush，
+    # 紧接着重新落盘就会撞唯一键——重建同一份产物恰恰是这个函数的主要用途之一。
+    await db.flush()
     return len(existing)
 
 
@@ -358,12 +338,19 @@ async def persist_report_artifacts(
 
     object_storage = storage or StorageFactory.get_storage()
     bucket = settings.MINIO_PRIVATE_BUCKET
-    markdown = render_report_markdown(run=run, template=template, report_ir=report_ir)
+    # 三种产物都从同一份 ReportIR 出发，各自直接渲染：表格、分页、图表在 Markdown、
+    # HTML、Word 里各有各的做法，中间绕一层就必然会走样。
     payloads: list[tuple[str, bytes]] = []
     if "MARKDOWN" in requested:
+        markdown = render_report_markdown(run=run, template=template, report_ir=report_ir)
         payloads.append(("MARKDOWN", markdown.encode("utf-8")))
     if "DOCX" in requested:
-        payloads.append(("DOCX", build_report_docx(run=run, template=template, markdown=markdown)))
+        payloads.append(
+            ("DOCX", render_report_docx(run=run, template=template, report_ir=report_ir))
+        )
+    if "HTML" in requested:
+        html = render_report_html(run=run, template=template, report_ir=report_ir)
+        payloads.append(("HTML", html.encode("utf-8")))
 
     await purge_report_artifacts(db, run_id=str(run.id), storage=object_storage)
 

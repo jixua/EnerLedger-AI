@@ -113,9 +113,12 @@ function toAgentRequestBody(payload) {
   if (conversationId) body.conversation_id = conversationId;
   if (payload.attachments?.length) {
     body.attachments = payload.attachments.map((attachment) => {
-      // 直传附件携带提取后的文本；知识库附件仍按 document_id 引用。
-      if (attachment.content) {
-        return { filename: attachment.filename, content: attachment.content };
+      // 直传附件只带服务端的材料 id（正文留在那边）；知识库附件仍按 document_id 引用。
+      if (attachment.material_id ?? attachment.materialId) {
+        return {
+          filename: attachment.filename,
+          material_id: attachment.material_id ?? attachment.materialId,
+        };
       }
       return {
         document_id: attachment.documentId ?? attachment.document_id,

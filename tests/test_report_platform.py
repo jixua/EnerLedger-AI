@@ -20,7 +20,7 @@ os.environ.setdefault("ADMIN_PASSWORD_HASH", "scrypt:test-only")
 import app.api.reports as reports_api
 from app.api.report_agent_internal import _chunk_page, get_run_clarifications
 from app.api.reports import ReportCreateRequest, create_report, delete_report_run
-from app.domain.models import Document, ReportQuestion, ReportRun
+from app.domain.models import Document, ReportMaterial, ReportQuestion, ReportRun
 from app.rag.config import settings
 from app.rag.core.mq.messages import ReportGenerationMessage
 from app.rag.models.db_models import LLMModelConfigDB
@@ -31,7 +31,6 @@ from app.services.report_agent_tokens import (
 )
 from app.services.report_artifacts import (
     artifact_download_name,
-    build_report_docx,
     persist_report_artifacts,
     render_report_markdown,
 )
@@ -41,6 +40,9 @@ from app.services.report_budget import (
     estimate_document_tokens,
 )
 from app.services.report_calculations import execute_registered_formula
+from app.services.report_docx import render_report_docx
+from app.services.report_html import render_report_html
+from app.services.report_inline_source import SOURCE_KIND_INLINE, build_inline_chunks
 from app.services.report_ir import (
     ReportEvidenceContext,
     ReportIRPatchError,
@@ -52,7 +54,11 @@ from app.services.report_model_policy import (
     ReportModelEndpointError,
     validate_report_model_endpoint,
 )
-from app.services.report_source_context import ReportChunkManifest, validate_chunk_coverage
+from app.services.report_source_context import (
+    ReportChunkManifest,
+    load_report_source_context,
+    validate_chunk_coverage,
+)
 from app.services.report_templates import (
     ReportTemplate,
     ReportTemplateError,
@@ -477,6 +483,7 @@ async def test_create_report_freezes_uploaded_template_manifest(
     assert response["custom_template_document_id"] == 8
     assert run.custom_template_document_version == 3
     assert run.custom_template_manifest == {
+        "source_kind": "DOCUMENT",
         "document_id": 8,
         "document_version": 3,
         "filename": "组织碳盘查模板.docx",
@@ -746,10 +753,12 @@ def test_report_markdown_renders_sections_ledgers_and_evidence() -> None:
 
     markdown = render_report_markdown(run=run, template=template, report_ir=report_ir)
 
-    assert markdown.startswith("# R1 报告")
+    # 标题用报告名称：R1–R7 是内部编号，界面上从不呈现，导出件里也不该出现
+    assert markdown.startswith("# 产品碳足迹评价报告")
+    assert "R1" not in markdown.splitlines()[0]
     assert f"## {report_ir['sections'][0]['title']}" in markdown
     assert "正文段落。（证据：E-1）" in markdown
-    # 提示块不能用 Markdown 引用语法：Word 转换器不识别它。
+    # 提示块不用 Markdown 引用语法：同一段话在纯文本里、在预览里都读得通
     assert "**【提示】** 口径提示。" in markdown
     assert not any(line.startswith(">") for line in markdown.splitlines())
     assert "| 项目 | 值 |" in markdown and "| 功能单位 | 1 吨 |" in markdown
@@ -760,23 +769,230 @@ def test_report_markdown_renders_sections_ledgers_and_evidence() -> None:
 
 def test_report_docx_builds_valid_document() -> None:
     run, template, report_ir = _fixture_report_ir()
-    markdown = render_report_markdown(run=run, template=template, report_ir=report_ir)
 
-    payload = build_report_docx(run=run, template=template, markdown=markdown)
+    payload = render_report_docx(run=run, template=template, report_ir=report_ir)
 
     assert payload[:2] == b"PK"  # zip 容器
     assert len(payload) > 2000
-    assert artifact_download_name(
-        run=run, document_filename="清单材料.docx", artifact_type="DOCX"
-    ) == "清单材料-R1报告.docx"
 
     exported = WordDocument(BytesIO(payload))
     text = "\n".join(paragraph.text for paragraph in exported.paragraphs)
-    assert "R1 报告" in text
+    assert "产品碳足迹评价报告" in text
     section = exported.sections[0]
     assert section.page_width.cm == pytest.approx(21, abs=0.01)
     assert section.page_height.cm == pytest.approx(29.7, abs=0.01)
     assert exported.styles["Heading 1"].font.size.pt == 15
+    # 表格是表格，不是一段带竖线的文字
+    assert exported.tables
+    assert "|" not in text
+
+
+def test_artifact_download_name_uses_template_name_not_internal_code() -> None:
+    """下载文件名用模板名。R1–R7 是内部编号，界面上从不呈现，文件名也不该例外。"""
+    run, _template, _ir = _fixture_report_ir()
+
+    assert artifact_download_name(
+        run=run, document_filename="清单材料.docx", artifact_type="DOCX"
+    ) == "清单材料-产品碳足迹评价报告.docx"
+    # 模板名本身以「报告」结尾，不再重复拼一次
+    assert "报告报告" not in artifact_download_name(
+        run=run, document_filename="清单材料.docx", artifact_type="DOCX"
+    )
+    # 三种产物共用同一套命名，只有扩展名不同
+    assert artifact_download_name(
+        run=run, document_filename="清单材料.docx", artifact_type="HTML"
+    ) == "清单材料-产品碳足迹评价报告.html"
+    assert artifact_download_name(
+        run=run, document_filename="清单材料.docx", artifact_type="MARKDOWN"
+    ) == "清单材料-产品碳足迹评价报告.md"
+
+    # 快照里没有模板名时才退回内部编号，这时才需要补上「报告」后缀
+    run.template_snapshot = {}
+    assert artifact_download_name(
+        run=run, document_filename="清单材料.docx", artifact_type="DOCX"
+    ) == "清单材料-R1报告.docx"
+    # 没有源文件名时用任务号兜底
+    assert artifact_download_name(
+        run=run, document_filename=None, artifact_type="DOCX"
+    ).startswith("报告-")
+
+
+class _InlineStorage:
+    """直传材料的内联来源走对象存储，这里用一个内存替身。"""
+
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], bytes] = {}
+
+    def upload_bytes(self, bucket, object_key, content, content_type) -> None:
+        self.objects[(bucket, object_key)] = content
+
+    def download_to_path(self, bucket, object_key, dst) -> None:
+        Path(dst).write_bytes(self.objects[(bucket, object_key)])
+
+
+class _NoQuestionsSession:
+    """内联来源只查补充问答，那条查询返回空即可。"""
+
+    async def scalars(self, _statement):
+        class Rows:
+            def all(self):
+                return []
+
+        return Rows()
+
+
+@pytest.mark.asyncio
+async def test_inline_source_freezes_chunks_and_reads_back_the_same_manifest() -> None:
+    """直传材料不进知识库，但报告链路该有的分片与清单一样不能少。"""
+    run, _template, _ir = _fixture_report_ir()
+    storage = _InlineStorage()
+    text = "\n\n".join(f"第{index}段。" + "内容" * 200 for index in range(1, 9))
+    material = ReportMaterial(
+        id="m-1",
+        user_id=1,
+        filename="年度材料.pdf",
+        char_count=len(text),
+        page_count=3,
+        bucket="private",
+        object_key="report-materials/1/m-1.txt",
+        content_hash="x" * 64,
+    )
+
+    source = await reports_api._material_source(
+        storage, material=material, text=text, run_id="run-1"
+    )
+
+    assert source.kind == SOURCE_KIND_INLINE
+    # 没有文档可指——这正是那三个字段改成可空的原因
+    assert source.document_id is None and source.document_version is None
+    assert source.dataset_id is None
+    assert source.filename == "年度材料.pdf"
+    assert source.chars == len(text)
+    assert source.chunks >= 1
+    assert storage.objects[(source.bucket, source.object_key)]
+
+    run.source_kind = SOURCE_KIND_INLINE
+    run.parsed_bucket = source.bucket
+    run.parsed_object_key = source.object_key
+    _context, manifest = await load_report_source_context(
+        _NoQuestionsSession(), run=run, storage=storage
+    )
+
+    assert len(manifest.items) == source.chunks
+    assert manifest.chunk_ids[0] == "M-1"
+
+    # agent 读到底并原样回报覆盖时通过；少报一片就不许提交
+    complete = {
+        "complete": True,
+        "manifest_hash": manifest.content_hash,
+        "chunks": list(manifest.items),
+    }
+    assert validate_chunk_coverage(complete, manifest) == []
+    assert validate_chunk_coverage(
+        {**complete, "chunks": list(manifest.items)[:-1]}, manifest
+    )
+    assert validate_chunk_coverage({**complete, "complete": False}, manifest)
+
+
+def test_inline_source_rejects_an_empty_material() -> None:
+    assert build_inline_chunks("") == []
+    assert build_inline_chunks("  \n\n  ") == []
+
+
+def test_report_html_keeps_charts_and_escapes_model_content() -> None:
+    run, template, report_ir = _fixture_report_ir()
+    report_ir["sections"][0]["blocks"] = [
+        {"type": "paragraph", "text": "正文段落。", "evidence_ids": ["E-1"]},
+        {"type": "callout", "text": "<script>alert(1)</script>", "evidence_ids": []},
+        {
+            "type": "metric_cards",
+            "data": {"items": [{"label": "总碳足迹", "value": 12.5}]},
+            "evidence_ids": [],
+        },
+        {
+            "type": "bar_chart",
+            "data": {
+                "unit": "kgCO2e",
+                "series": [{"label": "原料", "value": 3}, {"label": "运输", "value": 1}],
+            },
+            "evidence_ids": [],
+        },
+        {
+            "type": "donut_chart",
+            "data": {
+                "unit": "kgCO2e",
+                "series": [{"label": "原料", "value": 3}, {"label": "运输", "value": 1}],
+            },
+            "evidence_ids": [],
+        },
+    ]
+    report_ir["warnings"] = ["口径提示。"]
+    report_ir["limitations"] = ["本报告不构成核查结论。"]
+    report_ir["evidence"] = [
+        {
+            "evidence_id": "E-1",
+            "source_type": "DOCUMENT",
+            "chunk_id": "c-1",
+            "content_hash": "a" * 64,
+            "excerpt": "原文摘录",
+        }
+    ]
+
+    html = render_report_html(run=run, template=template, report_ir=report_ir)
+
+    assert html.startswith("<!DOCTYPE html>")
+    assert '<html lang="zh-CN">' in html
+    assert f"<title>{template.name}</title>" in html
+    # 模型写的正文一律转义；并断掉一切外部加载与脚本执行
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "default-src 'none'" in html
+    # 这是 HTML 路线相对 Word 的意义所在：图表仍是图表，不降级成表格
+    assert 'class="bar__fill"' in html
+    assert 'class="share__segment"' in html
+    assert "kgCO2e" in html
+    # 阅读提示在正文之前，台账与限制在正文之后
+    assert html.index("阅读提示") < html.index("正文段落。") < html.index("字段台账")
+    assert "证据台账" in html and "使用限制" in html
+
+
+def test_report_html_uses_diverging_bars_when_series_has_negatives() -> None:
+    run, template, report_ir = _fixture_report_ir()
+    report_ir["sections"][0]["blocks"] = [
+        {
+            "type": "bar_chart",
+            "data": {
+                "unit": "tCO2e",
+                "series": [{"label": "排放", "value": 8}, {"label": "绿电抵扣", "value": -2}],
+            },
+            "evidence_ids": [],
+        }
+    ]
+
+    html = render_report_html(run=run, template=template, report_ir=report_ir)
+
+    # 含负值时长度条会把负值画成零宽，改用围绕零基线的发散条
+    assert 'class="diverge__fill is-negative"' in html
+    assert 'class="bar__fill"' not in html
+
+
+def test_report_html_falls_back_to_table_when_share_chart_unsuited() -> None:
+    run, template, report_ir = _fixture_report_ir()
+    report_ir["sections"][0]["blocks"] = [
+        {
+            "type": "donut_chart",
+            "data": {
+                "series": [{"label": f"分项{index}", "value": index + 1} for index in range(6)]
+            },
+            "evidence_ids": [],
+        }
+    ]
+
+    html = render_report_html(run=run, template=template, report_ir=report_ir)
+
+    # 超出配色槽位数时色相会重复，读者对不回分项，改出数据表
+    assert 'class="share__segment"' not in html
+    assert "分项5" in html
 
 
 class _ArtifactStorage:
@@ -797,6 +1013,7 @@ class _ArtifactSession:
         self.existing = list(existing)
         self.added: list[Any] = []
         self.deleted: list[Any] = []
+        self.ops: list[str] = []
         self.commits = 0
 
     async def scalars(self, _statement):
@@ -811,9 +1028,14 @@ class _ArtifactSession:
 
     async def delete(self, value):
         self.deleted.append(value)
+        self.ops.append("delete")
 
     def add(self, value):
         self.added.append(value)
+        self.ops.append("add")
+
+    async def flush(self):
+        self.ops.append("flush")
 
     async def commit(self):
         self.commits += 1
@@ -831,19 +1053,44 @@ async def test_persist_report_artifacts_writes_only_requested_formats() -> None:
     ) == []
     assert storage.uploaded == []
 
-    run.output_formats = ["ONLINE", "MARKDOWN", "DOCX"]
+    run.output_formats = ["ONLINE", "MARKDOWN", "DOCX", "HTML"]
     session = _ArtifactSession()
     created = await persist_report_artifacts(
         session, run=run, template=template, report_ir=report_ir, storage=storage
     )
-    assert [artifact.artifact_type for artifact in created] == ["MARKDOWN", "DOCX"]
+    assert [artifact.artifact_type for artifact in created] == ["MARKDOWN", "DOCX", "HTML"]
     assert [item[3] for item in storage.uploaded] == [
         "text/markdown; charset=utf-8",
         "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/html; charset=utf-8",
     ]
     assert all(item[1].startswith(f"reports/11/3/7/{run.id}/report-") for item in storage.uploaded)
-    assert len(session.added) == 2 and session.commits == 1
+    assert [item[1].rsplit(".", 1)[-1] for item in storage.uploaded] == ["md", "docx", "html"]
+    assert len(session.added) == 3 and session.commits == 1
     assert all(artifact.content_hash and artifact.size_bytes > 0 for artifact in created)
+
+
+@pytest.mark.asyncio
+async def test_persist_report_artifacts_flushes_purge_before_reinsert() -> None:
+    """重复落盘同一份产物时，删除必须先于插入落到库。
+
+    ``report_artifact`` 上有 (run_id, artifact_type) 唯一键，而同一个 flush 里
+    SQLAlchemy 先执行 insert 再执行 delete；不显式 flush，重建同一份产物就会撞唯一键。
+    """
+    run, template, report_ir = _fixture_report_ir()
+    run.output_formats = ["ONLINE", "DOCX", "HTML"]
+    storage = _ArtifactStorage()
+
+    first = await persist_report_artifacts(
+        _ArtifactSession(), run=run, template=template, report_ir=report_ir, storage=storage
+    )
+    session = _ArtifactSession(existing=first)
+    created = await persist_report_artifacts(
+        session, run=run, template=template, report_ir=report_ir, storage=storage
+    )
+
+    assert [artifact.artifact_type for artifact in created] == ["DOCX", "HTML"]
+    assert session.ops.index("flush") < session.ops.index("add")
 
 
 class _DeleteRunSession:
@@ -873,6 +1120,9 @@ class _DeleteRunSession:
 
     async def delete(self, value):
         self.deleted.append(value)
+
+    async def flush(self):
+        pass
 
     async def commit(self):
         self.commits += 1

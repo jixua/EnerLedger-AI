@@ -10,6 +10,8 @@ import {
   listReportTemplates,
 } from "../lib/api";
 import {
+  DEFAULT_REPORT_DOWNLOAD_FORMATS,
+  REPORT_DOWNLOAD_FORMATS,
   formatReportTime,
   isActiveReportRun,
   reportRunPath,
@@ -43,9 +45,18 @@ export function ReportGenerationDialog({ document, open, onClose }) {
   const [modelId, setModelId] = useState("");
   const [reportingYear, setReportingYear] = useState(String(new Date().getFullYear()));
   const [instructions, setInstructions] = useState("");
+  const [formats, setFormats] = useState(DEFAULT_REPORT_DOWNLOAD_FORMATS);
   const [created, setCreated] = useState(null);
 
   const documentId = documentIdOf(document);
+
+  function toggleFormat(value) {
+    setFormats((current) =>
+      current.includes(value)
+        ? current.filter((item) => item !== value)
+        : [...current, value],
+    );
+  }
 
   const selectedTemplate = useMemo(
     () => templates.find((template) => template.report_type === reportType),
@@ -115,6 +126,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
         language: "zh-CN",
         reporting_year: Number(reportingYear),
         user_instructions: instructions.trim() || null,
+        output_formats: ["ONLINE", ...formats],
       });
       setCreated(next);
       setHistory((current) => [next, ...current]);
@@ -191,10 +203,30 @@ export function ReportGenerationDialog({ document, open, onClose }) {
                   <span>报告年度</span>
                   <input type="number" min="1900" max="2200" value={reportingYear} onChange={(event) => setReportingYear(event.target.value)} />
                 </label>
-                <label className="form-field">
-                  <span>输出格式</span>
-                  <input value="在线报告 + Word" readOnly />
-                </label>
+                {/* 在线预览不是可选项——报告页本身就在线渲染，所以这里只列下载产物 */}
+                <div className="form-field report-format-field">
+                  <span>输出格式 <b>*</b></span>
+                  <div className="report-format-choices">
+                    {REPORT_DOWNLOAD_FORMATS.map((item) => {
+                      const checked = formats.includes(item.value);
+                      return (
+                        <label key={item.value} className={`report-format-choice${checked ? " is-on" : ""}`}>
+                          <input
+                            type="checkbox"
+                            checked={checked}
+                            disabled={loading || submitting}
+                            onChange={() => toggleFormat(item.value)}
+                          />
+                          <span>
+                            <strong>{item.label}</strong>
+                            <small>{item.hint}</small>
+                          </span>
+                        </label>
+                      );
+                    })}
+                  </div>
+                  <small className="report-format-hint">报告页始终提供在线预览；下载格式至少选一种。</small>
+                </div>
               </div>
               <label className="form-field">
                 <span>补充要求</span>
@@ -229,7 +261,7 @@ export function ReportGenerationDialog({ document, open, onClose }) {
 
             <footer className="dialog__footer">
               <button type="button" className="button button--ghost" onClick={onClose} disabled={submitting}>取消</button>
-              <button type="submit" className="button button--primary" disabled={submitting || loading || !selectedTemplate || !modelId}>
+              <button type="submit" className="button button--primary" disabled={submitting || loading || !selectedTemplate || !modelId || !formats.length}>
                 {submitting ? <Loader2 className="spin" size={16} /> : <FileOutput size={16} />}
                 {submitting ? "正在创建" : "创建报告任务"}
               </button>

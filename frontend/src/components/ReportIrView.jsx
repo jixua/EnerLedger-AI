@@ -1,58 +1,29 @@
 /**
  * ReportIR 的在线渲染。
  *
- * 块类型与语义对齐后端 app/services/report_artifacts.py 的 _render_block：
- * paragraph/heading/signature_block/source_note 为文字，callout 为提示，
- * list 取 data.items，metric_cards 取 data.items，bar_chart/donut_chart 取
- * data.series，table 取 data.rows 与 data.columns。未识别的类型按 JSON 兜底，
- * 与 Word 导出保持一致，避免在线视图比下载产物少内容。
+ * 块数据的读法（列名、分项、平行数组的别名）在 ../lib/reportBlocks，与后端
+ * app/services/report_blocks.py 一一对应；这里只管每种块排成什么样子。未识别的
+ * 类型按 JSON 兜底，与 Markdown / HTML / Word 三种导出件保持一致，避免在线视图
+ * 比下载产物少内容。
  */
+
+import {
+  formatValue,
+  listItems,
+  metricItems,
+  readableCell,
+  seriesItems,
+  tableColumns,
+  tableRows,
+  toNumber,
+} from "../lib/reportBlocks";
 
 const CHART_SERIES_SLOTS = 5;
 
-function toNumber(value) {
-  const parsed = typeof value === "number" ? value : Number.parseFloat(value);
-  return Number.isFinite(parsed) ? parsed : null;
-}
-
-function formatValue(value, unit) {
-  if (value === null || value === undefined || value === "") return "—";
-  const text = typeof value === "number" ? String(value) : String(value);
-  return unit ? `${text} ${unit}` : text;
-}
-
-function listItems(block) {
-  const items = block?.data?.items;
-  if (Array.isArray(items) && items.length) {
-    return items
-      .map((item) => (item && typeof item === "object" ? item.text ?? item.label : item))
-      .filter((text) => text !== null && text !== undefined && String(text).trim() !== "")
-      .map((text) => String(text));
-  }
-  return block?.text ? [String(block.text)] : [];
-}
-
-function tableColumns(data, rows) {
-  if (Array.isArray(data?.columns) && data.columns.length) return data.columns.map(String);
-  const first = Array.isArray(rows) ? rows[0] : null;
-  if (first && !Array.isArray(first) && typeof first === "object") return Object.keys(first);
-  return [];
-}
-
-function tableRows(data) {
-  const rows = Array.isArray(data?.rows) ? data.rows : [];
-  const columns = tableColumns(data, rows);
-  return rows.map((row) => {
-    if (Array.isArray(row)) {
-      return columns.length
-        ? columns.map((_, index) => (index < row.length ? row[index] : ""))
-        : row;
-    }
-    if (row && typeof row === "object") {
-      return columns.length ? columns.map((name) => row[name]) : Object.values(row);
-    }
-    return [row];
-  });
+/** 图表与表格的标题：模型给这一块起的名字，导出件里也在同一位置出现。 */
+function FigureCaption({ block }) {
+  const text = typeof block?.text === "string" ? block.text.trim() : "";
+  return text ? <p className="report-figure__caption">{text}</p> : null;
 }
 
 function EvidenceChips({ ids }) {
@@ -62,12 +33,6 @@ function EvidenceChips({ ids }) {
       {ids.map((id) => <code key={id}>{id}</code>)}
     </span>
   );
-}
-
-function readableCell(value) {
-  if (value === null || value === undefined) return "";
-  if (typeof value === "object") return JSON.stringify(value);
-  return String(value);
 }
 
 /** 数据表兜底视图：图表旁始终提供等价表格，满足无障碍与打印需求。 */
@@ -99,7 +64,7 @@ function DataTable({ columns, rows, caption }) {
 
 function ReportTable({ block }) {
   const data = block?.data || {};
-  const columns = tableColumns(data, data.rows);
+  const columns = tableColumns(data);
   const rows = tableRows(data);
 
   if (!rows.length) {
@@ -108,6 +73,7 @@ function ReportTable({ block }) {
 
   return (
     <figure className="report-figure">
+      <FigureCaption block={block} />
       <div className="data-table-wrap">
         <table className="data-table report-table">
           {columns.length ? (
@@ -133,22 +99,25 @@ function ReportTable({ block }) {
 const CJK = /[\u4e00-\u9fff]/;
 
 function MetricCards({ block }) {
-  const items = Array.isArray(block?.data?.items) ? block.data.items : [];
+  const items = metricItems(block);
   if (!items.length) return null;
   return (
-    <div className="report-metrics">
-      {items.map((item, index) => {
-        const value = readableCell(item?.value);
-        // 数值用指标字号，中文值退回正文偏大字号，避免一句话占满整行
-        const isText = CJK.test(value);
-        return (
-          <div className="report-metric" key={`${item?.label ?? index}`}>
-            <span className="report-metric__label">{readableCell(item?.label)}</span>
-            <strong className={`report-metric__value${isText ? " is-text" : ""}`}>{value || "—"}</strong>
-          </div>
-        );
-      })}
-    </div>
+    <figure className="report-figure report-figure--tight">
+      <FigureCaption block={block} />
+      <div className="report-metrics">
+        {items.map((item, index) => {
+          const value = readableCell(item?.value);
+          // 数值用指标字号，中文值退回正文偏大字号，避免一句话占满整行
+          const isText = CJK.test(value);
+          return (
+            <div className="report-metric" key={`${item?.label ?? index}`}>
+              <span className="report-metric__label">{readableCell(item?.label)}</span>
+              <strong className={`report-metric__value${isText ? " is-text" : ""}`}>{value || "—"}</strong>
+            </div>
+          );
+        })}
+      </div>
+    </figure>
   );
 }
 
@@ -157,7 +126,7 @@ function MetricCards({ block }) {
  * 改用围绕零基线的发散条——长度条会把负值画成零宽，读者只能看到数字却看不到长度。
  */
 function BarChart({ block }) {
-  const series = Array.isArray(block?.data?.series) ? block.data.series : [];
+  const series = seriesItems(block);
   const unit = block?.data?.unit || "";
   const values = series.map((item) => toNumber(item?.value));
   const hasNegative = values.some((value) => value !== null && value < 0);
@@ -175,6 +144,7 @@ function BarChart({ block }) {
   if (hasNegative) {
     return (
       <figure className="report-figure">
+        <FigureCaption block={block} />
         <ul className="report-legend report-legend--polarity">
           <li><i style={{ background: "var(--report-positive)" }} aria-hidden="true" /><span className="report-legend__label">正值：排放 / 增加</span></li>
           <li><i style={{ background: "var(--report-negative)" }} aria-hidden="true" /><span className="report-legend__label">负值：减排 / 抵扣</span></li>
@@ -212,6 +182,7 @@ function BarChart({ block }) {
 
   return (
     <figure className="report-figure">
+      <FigureCaption block={block} />
       <div className="report-bars">
         {series.map((item, index) => {
           const value = values[index];
@@ -242,7 +213,7 @@ function BarChart({ block }) {
  * 既不生成新色相，也不给出误导性的占比。
  */
 function ShareChart({ block }) {
-  const series = Array.isArray(block?.data?.series) ? block.data.series : [];
+  const series = seriesItems(block);
   const unit = block?.data?.unit || "";
   const values = series.map((item) => toNumber(item?.value));
   const total = values.reduce((sum, value) => sum + Math.max(value ?? 0, 0), 0);
@@ -265,6 +236,7 @@ function ShareChart({ block }) {
 
   return (
     <figure className="report-figure">
+      <FigureCaption block={block} />
       <div className="report-share" role="img" aria-label="构成占比">
         {series.map((item, index) => {
           const share = ((values[index] ?? 0) / total) * 100;
