@@ -345,6 +345,63 @@ def build_fixture_report_ir(
     }
 
 
+# 摘录逐字校验会撞上的「形状差异」：解析器留下的标记、全角半角标点、空白换行。
+# 这些只在形状上不同，文字是同一段，不该被判成不实引用。
+_MARKUP_MARKERS = re.compile(r"<!--.*?-->|\[(?:表格|图片|图表)引用:[^\]]*\]")
+_PUNCTUATION_SHAPE = str.maketrans(
+    {
+        "，": ",",
+        "。": ".",
+        "：": ":",
+        "；": ";",
+        "（": "(",
+        "）": ")",
+        "、": ",",
+        "！": "!",
+        "？": "?",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "《": "<",
+        "》": ">",
+        "—": "-",
+        "－": "-",
+        "～": "~",
+        "　": " ",
+    }
+)
+_EMPHASIS_MARKERS = str.maketrans("", "", "*`_#")
+
+
+def excerpt_skeleton(value: Any) -> str:
+    """只留文字、不留形状：去掉解析标记、强调符号、标点与空白后的那一串字。
+
+    用来判断摘录是否出自同一段原文。刻意只抹形状不抹文字——比对的是「连续的一段
+    字」，所以编出来的句子照样过不了；但标点被规整过、换行被并成一句、解析留下的
+    ``**`` 与 ``[表格引用: …]`` 被略去，都不再算问题。
+    """
+    if value is None:
+        return ""
+    plain = _MARKUP_MARKERS.sub("", str(value))
+    plain = plain.translate(_PUNCTUATION_SHAPE).translate(_EMPHASIS_MARKERS)
+    return re.sub(r"\s+", "", plain)
+
+
+def excerpt_belongs_to_chunk(excerpt: Any, content: Any) -> bool:
+    """摘录是否确实出自这段原文。
+
+    严格逐字比对会把「同一句话、标点不同」判成不实引用，而模型照抄时顺手整理标点、
+    去掉强调标记是常态——一次实跑里 19 条摘录全部因此被打回，模型只能回头重抄一遍。
+    这里改成先抹平形状再比：约束的实质没变（摘录必须来自那一分片），但不再因为标点
+    形状让人白跑一轮。
+    """
+    quote = excerpt_skeleton(excerpt)
+    if not quote:
+        return True
+    return quote in excerpt_skeleton(content)
+
+
 def validate_report_ir(
     report_ir: dict[str, Any],
     *,
@@ -416,8 +473,13 @@ def validate_report_ir(
                 ):
                     errors.append(f"证据 {evidence_id} 不是冻结文档分片的真实引用")
                 excerpt = item.get("excerpt")
-                if excerpt and chunk is not None and excerpt not in str(chunk.get("content") or ""):
-                    errors.append(f"证据 {evidence_id} 摘录不属于对应文档分片")
+                if excerpt and chunk is not None and not excerpt_belongs_to_chunk(
+                    excerpt, chunk.get("content")
+                ):
+                    errors.append(
+                        f"证据 {evidence_id} 摘录不属于对应文档分片"
+                        "（须逐字取自该分片，不要改写或拼接）"
+                    )
             elif source_type == "USER_INPUT":
                 question_id = (item.get("metadata") or {}).get("question_id")
                 expected_hash = evidence_context.user_answer_hashes.get(question_id)
