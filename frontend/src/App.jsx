@@ -3,6 +3,7 @@ import { BrowserRouter, Navigate, Route, Routes, useLocation } from "react-route
 import { AppShell } from "./components/AppShell";
 import { AppProvider } from "./state/AppContext";
 import { AuthProvider, useAuth } from "./state/AuthContext";
+import { ChatSessionProvider } from "./state/ChatSessionContext";
 
 const DatasetsPage = lazy(() => import("./pages/DatasetsPage").then((module) => ({ default: module.DatasetsPage })));
 const DatasetDetailPage = lazy(() => import("./pages/DatasetDetailPage").then((module) => ({ default: module.DatasetDetailPage })));
@@ -25,7 +26,14 @@ function ProtectedApp() {
   const location = useLocation();
   if (checking) return <PageLoader />;
   if (!authenticated) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  return <AppProvider><AppShell /></AppProvider>;
+  // 对话会话挂在 AppShell 之上：切页只卸载路由内容，生成中的流不受影响。
+  return (
+    <AppProvider>
+      <ChatSessionProvider>
+        <AppShell />
+      </ChatSessionProvider>
+    </AppProvider>
+  );
 }
 
 function AdminRoute({ children }) {

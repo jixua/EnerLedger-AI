@@ -91,20 +91,23 @@ test("界面只讲报告类型名称，不暴露 R1–R7 内部编号", async ()
 
 test("对话上传只做直传分析：不要求选知识库，也没有模板角色", async () => {
   const playground = await read("pages/PlaygroundPage.jsx");
+  // 附件上传与发送后的清空属于会话状态，随对话状态一起放在 provider 里。
+  const chatSession = await read("state/ChatSessionContext.jsx");
   const sse = await read("lib/sse.js");
   // 一个入口按钮，不再有「来源文档 / 报告模板」的角色菜单
   assert.match(playground, /aria-label="上传文件"/);
   assert.doesNotMatch(playground, /pickUploadFile|composer-selector__panel--upload/);
   // 份数上限仍在
-  assert.match(playground, /attachments\.length >= 2/);
+  assert.match(chatSession, /attachments\.length >= 2/);
   // 小文件就地提取文本，不再强制选择知识库做上传解析
-  assert.match(playground, /uploadAgentAttachment/);
-  assert.doesNotMatch(playground, /uploadDocuments/);
-  assert.doesNotMatch(playground, /上传对话资料前，请只选择一个知识库/);
+  assert.match(chatSession, /uploadAgentAttachment/);
+  assert.doesNotMatch(chatSession, /uploadDocuments/);
+  assert.doesNotMatch(chatSession, /上传对话资料前，请只选择一个知识库/);
   // 报告模板角色已从对话上传里移除
   assert.doesNotMatch(playground, /toggleTemplateRole|allowRoleToggle/);
+  assert.doesNotMatch(chatSession, /toggleTemplateRole|allowRoleToggle/);
   // 附件随本轮发出后即清空，不残留到下一轮
-  assert.match(playground, /setQuestion\(""\);\s*\n\s*setAttachments\(\[\]\);/);
+  assert.match(chatSession, /setQuestion\(""\);\s*\n\s*setAttachments\(\[\]\);/);
   // 直传附件把提取文本发给服务端；知识库附件仍按 document_id 引用
   assert.match(sse, /filename: attachment\.filename, content: attachment\.content/);
   assert.match(sse, /\.\.\.\(attachment\.role \? \{ role: attachment\.role \} : \{\}\)/);

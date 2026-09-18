@@ -180,6 +180,7 @@ const datasetDetailSource = await readFile(new URL("../src/pages/DatasetDetailPa
 const documentDetailSource = await readFile(new URL("../src/pages/DocumentDetailPage.jsx", import.meta.url), "utf8");
 const tasksSource = await readFile(new URL("../src/pages/TasksPage.jsx", import.meta.url), "utf8");
 const playgroundSource = await readFile(new URL("../src/pages/PlaygroundPage.jsx", import.meta.url), "utf8");
+const chatSessionSource = await readFile(new URL("../src/state/ChatSessionContext.jsx", import.meta.url), "utf8");
 
 test("dataset totals and search share one compact toolbar with search on the right", () => {
   assert.match(datasetListSource, /<section className="knowledge-toolbar"[\s\S]*className="knowledge-toolbar__stats"[\s\S]*className="search-field"/);
@@ -207,7 +208,7 @@ test("quality diagnostics never block READY documents or add a detail-page banne
   assert.match(datasetDetailSource, /datasetDocuments\.filter\(isDocumentRetrievalReady\)/);
   assert.match(tasksSource, /counts\.RETRIEVAL_READY/);
   assert.match(tasksSource, /canRetryDocument\(document\)/);
-  assert.match(playgroundSource, /isDocumentRetrievalReady\(document\)/);
+  assert.match(chatSessionSource, /isDocumentRetrievalReady\(document\)/);
 });
 
 test("parse queue only presents progress supported by the document lifecycle contract", () => {
@@ -222,12 +223,12 @@ test("parse queue only presents progress supported by the document lifecycle con
 });
 
 test("the primary conversation page always uses Pi Agent", () => {
-  assert.match(playgroundSource, /streamAgent/);
-  assert.match(playgroundSource, /await streamAgent\(/);
-  assert.doesNotMatch(playgroundSource, /streamRag/);
-  assert.doesNotMatch(playgroundSource, /conversationMode/);
-  assert.doesNotMatch(playgroundSource, /chat-mode-switch/);
-  assert.doesNotMatch(playgroundSource, /普通对话/);
+  assert.match(chatSessionSource, /streamAgent/);
+  assert.match(chatSessionSource, /await streamAgent\(/);
+  assert.doesNotMatch(chatSessionSource, /streamRag/);
+  assert.doesNotMatch(chatSessionSource, /conversationMode/);
+  assert.doesNotMatch(chatSessionSource, /chat-mode-switch/);
+  assert.doesNotMatch(chatSessionSource, /普通对话/);
   assert.match(playgroundSource, /全部知识库/);
-  assert.match(playgroundSource, /const showModelSelector = needsExplicitModel && chatModels\.length > 1/);
+  assert.match(chatSessionSource, /const showModelSelector = needsExplicitModel && chatModels\.length > 1/);
 });
