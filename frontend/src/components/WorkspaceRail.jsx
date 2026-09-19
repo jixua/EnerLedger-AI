@@ -107,7 +107,7 @@ export function WorkspaceRail({ navigation, admin, collapsed, mobileOpen, onColl
               {historyLoading ? <p className="rail-conversations__hint">正在读取…</p> : conversations.length ? conversations.map((item) => (
                 <div className={`rail-conversations__item${item.conversation_id === conversationId ? " is-active" : ""}`} key={item.conversation_id}>
                   <button type="button" className="rail-conversations__open" onClick={() => { void handleOpenConversation(item.conversation_id); }}>
-                    <MessageSquareText size={14} /><span><strong>{item.title}</strong><small>{item.turn_count} 轮对话</small></span>
+                    <MessageSquareText size={14} /><strong>{item.title}</strong>
                   </button>
                   {pendingDeleteId === item.conversation_id ? (
                     <div className="rail-conversations__confirm" role="group" aria-label="确认删除对话">
