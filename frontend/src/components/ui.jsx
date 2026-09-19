@@ -85,6 +85,17 @@ export function Skeleton({ width = "100%", height = 16 }) {
   return <span className="skeleton" style={{ width, height }} aria-hidden="true" />;
 }
 
+/** 懒加载页面与工作台面板共用的骨架屏。 */
+export function PageLoader() {
+  return (
+    <div className="route-loader">
+      <span className="skeleton" />
+      <span className="skeleton" />
+      <span className="skeleton" />
+    </div>
+  );
+}
+
 export function formatDate(value, withTime = false) {
   if (!value) return "—";
   const date = new Date(value);

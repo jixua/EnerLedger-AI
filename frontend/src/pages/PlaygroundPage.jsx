@@ -9,13 +9,10 @@ import {
   Database,
   FileText,
   LoaderCircle,
-  MessageSquareText,
   Paperclip,
-  Plus,
   Search,
   Sparkles,
   Square,
-  Trash2,
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -106,22 +103,12 @@ export function PlaygroundPage() {
     messages,
     conversationId,
     conversations,
-    historyLoading,
-    historyError,
-    pendingDeleteId,
-    deletingId,
-    setPendingDeleteId,
-    clearHistoryError,
-    openConversation,
-    startNewConversation,
-    deleteConversation,
     confirmTemplate,
     confirmationSelections,
     setConfirmationSelections,
     submitQuestion,
     stopGeneration,
     isActiveStreaming,
-    isConversationStreaming,
     question,
     setQuestion,
     attachments,
@@ -641,45 +628,15 @@ export function PlaygroundPage() {
     </form>
   );
 
+  // 「最近对话」列表已移入工作台左栏（components/WorkspaceRail.jsx）：它属于导航，
+  // 不该跟着对话页一起被切走。
   return (
-    <div className="conversation-workspace">
-      <aside className="conversation-history" aria-label="历史对话">
-        <header><span>最近对话</span><button type="button" aria-label="新建对话" onClick={startNewConversation}><Plus size={15} /></button></header>
-        <div className="conversation-history__list">
-          {historyLoading ? <p>正在读取…</p> : conversations.length ? conversations.map((item) => (
-            <div className={`conversation-history__item${item.conversation_id === conversationId ? " is-active" : ""}`} key={item.conversation_id}>
-              <button type="button" className="conversation-history__open" onClick={() => openConversation(item.conversation_id)}>
-                <MessageSquareText size={14} /><span><strong>{item.title}</strong><small>{item.turn_count} 轮对话</small></span>
-              </button>
-              {pendingDeleteId === item.conversation_id ? (
-                <div className="conversation-history__confirm" role="group" aria-label="确认删除对话">
-                  <button type="button" className="is-danger" onClick={() => { void deleteConversation(item.conversation_id); }} disabled={deletingId === item.conversation_id}>
-                    {deletingId === item.conversation_id ? <LoaderCircle className="spin" size={12} /> : "删除"}
-                  </button>
-                  <button type="button" onClick={() => setPendingDeleteId(null)} disabled={Boolean(deletingId)}>取消</button>
-                </div>
-              ) : (
-                <button
-                  type="button"
-                  className="conversation-history__delete"
-                  aria-label={`删除对话：${item.title}`}
-                  title={isConversationStreaming(item.conversation_id) ? "生成中，暂不能删除" : "删除整段对话"}
-                  onClick={() => { clearHistoryError(); setPendingDeleteId(item.conversation_id); }}
-                  disabled={isConversationStreaming(item.conversation_id)}
-                >
-                  <Trash2 size={13} />
-                </button>
-              )}
-            </div>
-          )) : <p>还没有历史对话</p>}
-          {historyError ? <p className="conversation-history__error" role="alert">{historyError}</p> : null}
-        </div>
-      </aside>
+    <div className="conversation-page-wrapper">
       <div className={`conversation-page${messages.length ? " conversation-page--active" : ""}`}>
       {!messages.length ? (
         <div className="conversation-empty">
           <div className="conversation-empty__intro">
-            <h1>把碳知识库<br />变成会回答问题的专家</h1>
+            <h1>把资料库<br />变成会回答问题的专家</h1>
             <p>AI 检索政策、标准与核算资料，生成有依据的答案，并回溯原文片段和页码。</p>
           </div>
           <div className="conversation-empty__composer">{composer}</div>
