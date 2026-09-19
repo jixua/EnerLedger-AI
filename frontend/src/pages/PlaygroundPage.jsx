@@ -30,11 +30,6 @@ import {
   recallChunkNumberFromHref,
 } from "../lib/recall-evidence";
 
-const SUGGESTED_QUESTIONS = [
-  "企业天然气燃烧排放如何核算？",
-  "请概括文档中的碳排放数据质量要求。",
-];
-
 const STATUS_COPY = {
   recalling: "正在查找相关内容",
   generating: "正在生成回复",
@@ -500,15 +495,10 @@ export function PlaygroundPage() {
       {!messages.length ? (
         <div className="conversation-empty">
           <div className="conversation-empty__intro">
-            <h1>把碳知识库<br />变成会回答问题的专家</h1>
-            <p>AI 检索政策、标准与核算资料，生成有依据的答案，并回溯原文片段和页码。</p>
+            <h1>让碳知识库会回答问题</h1>
+            <p>AI 检索政策、标准与核算资料，答案有据可依，并可回溯原文片段与页码。</p>
           </div>
           <div className="conversation-empty__composer">{composer}</div>
-          <div className="chat-suggestions" aria-label="建议问题">
-            {SUGGESTED_QUESTIONS.map((suggestion) => (
-              <button type="button" key={suggestion} onClick={() => setQuestion(suggestion)}>{suggestion}</button>
-            ))}
-          </div>
         </div>
       ) : (
         <div
