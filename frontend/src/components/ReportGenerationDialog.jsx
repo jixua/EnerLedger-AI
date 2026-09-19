@@ -19,6 +19,7 @@ import {
   reportStateTone,
   reportTypeName,
 } from "../lib/reportRun";
+import { useScrollLock } from "../lib/useScrollLock";
 
 function documentIdOf(document) {
   return document?.document_id ?? document?.documentId ?? document?.id;
@@ -47,6 +48,8 @@ export function ReportGenerationDialog({ document, open, onClose }) {
   const [instructions, setInstructions] = useState("");
   const [formats, setFormats] = useState(DEFAULT_REPORT_DOWNLOAD_FORMATS);
   const [created, setCreated] = useState(null);
+
+  useScrollLock(open);
 
   const documentId = documentIdOf(document);
 
@@ -240,24 +243,23 @@ export function ReportGenerationDialog({ document, open, onClose }) {
                 </div>
               ) : null}
               {error ? <p className="form-error" role="alert">{error}</p> : null}
+              {history.length ? (
+                <div className="report-generation-dialog__history">
+                  <h3>本文件已有的报告（{history.length}）</h3>
+                  <ul>
+                    {history.slice(0, 5).map((item) => (
+                      <li key={item.run_id}>
+                        <Link to={reportRunPath(item.run_id)}>
+                          <strong>{reportTypeName(item)}</strong>
+                          <span className={`report-state ${reportStateTone(item.state)}`}>{reportStateLabel(item.state)}</span>
+                          <small>{formatReportTime(item.created_at)}</small>
+                        </Link>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              ) : null}
             </div>
-
-            {history.length ? (
-              <div className="report-generation-dialog__history">
-                <h3>本文件已有的报告（{history.length}）</h3>
-                <ul>
-                  {history.slice(0, 5).map((item) => (
-                    <li key={item.run_id}>
-                      <Link to={reportRunPath(item.run_id)}>
-                        <strong>{reportTypeName(item)}</strong>
-                        <span className={`report-state ${reportStateTone(item.state)}`}>{reportStateLabel(item.state)}</span>
-                        <small>{formatReportTime(item.created_at)}</small>
-                      </Link>
-                    </li>
-                  ))}
-                </ul>
-              </div>
-            ) : null}
 
             <footer className="dialog__footer">
               <button type="button" className="button button--ghost" onClick={onClose} disabled={submitting}>取消</button>
