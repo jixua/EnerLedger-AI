@@ -216,15 +216,23 @@ img { max-width: 100%; }
 .status-dot--success { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
 .status-dot--warning { background: var(--warning); box-shadow: 0 0 0 3px var(--warning-soft); }
 .page-viewport { flex: 1; min-height: 0; overflow: auto; background: var(--panel); }
+/* 弹窗打开时锁住正文滚动，见 lib/useScrollLock.js。滚轮落在遮罩上会穿透到
+   下面的滚动容器，只把遮罩设成 fixed 并不能挡住。 */
+.page-viewport.scroll-locked,
+body.scroll-locked { overflow: hidden; }
 .route-transition {
+  position: relative;
   width: 100%;
   height: 100%;
   min-height: 100%;
   animation: route-enter 220ms cubic-bezier(.22, .8, .32, 1) both;
 }
+/* 入场用 top 位移而不是 transform：这个元素里渲染着页面自己的弹窗遮罩，
+   position: fixed 的包含块会被祖先的 transform 捕获（translateY(0) 这种单位矩阵也算），
+   于是遮罩不再相对视口固定，而是跟着 .page-viewport 一起滚。 */
 @keyframes route-enter {
-  from { opacity: 0; transform: translateY(5px); }
-  to { opacity: 1; transform: translateY(0); }
+  from { opacity: 0; top: 5px; }
+  to { opacity: 1; top: 0; }
 }
 .service-banner { padding: 9px 18px; border-bottom: 1px solid color-mix(in srgb, var(--warning) 28%, var(--hairline)); background: var(--warning-soft); color: var(--warning); font-size: 10px; line-height: 1.5; }
 /* 内容列宽的唯一来源。此前 .page 写 1440、pages.css 里各页写 1320，而 pages.css 由
