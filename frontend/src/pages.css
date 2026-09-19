@@ -873,10 +873,6 @@
 .composer-warning--action { color: var(--muted); }
 .composer-warning--action a { margin: 0 3px; color: var(--primary-active); font-weight: 600; text-underline-offset: 2px; }
 
-.chat-suggestions { width: 100%; display: flex; flex-wrap: wrap; justify-content: center; gap: 8px; }
-.chat-suggestions button { min-width: 0; padding: 8px 13px; border: 1px solid var(--hairline); border-radius: var(--radius-pill); background: transparent; color: var(--muted); font-size: 10px; line-height: 1.45; text-align: left; }
-.chat-suggestions button:hover { border-color: var(--primary-mid); background: var(--primary-soft); color: var(--primary-active); }
-
 .conversation-thread { min-height: 0; flex: 1; overflow-y: auto; }
 .message-column { width: min(var(--reading-column), calc(100% - 48px)); min-height: calc(100% - 150px); display: flex; flex-direction: column; gap: 30px; margin: 0 auto; padding: 38px 0 28px; }
 .chat-message { display: grid; grid-template-columns: 34px minmax(0, 1fr); align-items: flex-start; gap: 13px; }
@@ -1147,7 +1143,6 @@
   .knowledge-row__actions { grid-column: 2; }
   .conversation-empty { width: calc(100% - 28px); justify-content: flex-start; padding-top: 64px; }
   .conversation-empty h1 { font-size: 31px; }
-  .chat-suggestions { grid-template-columns: 1fr; }
   .message-column { width: calc(100% - 28px); padding-top: 28px; }
   .conversation-composer-dock { width: calc(100% - 16px); padding-inline: 6px; }
   .composer-selector__trigger { max-width: 190px; }
@@ -1175,7 +1170,6 @@
   .composer-selector__trigger { width: 100%; max-width: 100%; }
   .composer-selector__panel { width: min(340px, calc(100vw - 40px)); }
   .composer-send { flex: 0 0 auto; }
-  .chat-suggestions { display: none; }
 }
 
 /* 旧对话样式兼容 */
