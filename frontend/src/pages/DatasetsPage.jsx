@@ -147,9 +147,13 @@ export function DatasetsPage() {
     <div className="page page--datasets">
       <header className="knowledge-hero">
         <div className="knowledge-hero__copy">
-          <h1>碳知识库</h1>
+          <h1>资料库</h1>
           <p className="page-header__description">集中管理碳核算标准、方法与业务资料，为智能问答提供可靠依据。</p>
         </div>
+        {/* 顶栏撤掉后这里是列表非空时唯一的创建入口（空态那个按钮只在没数据时出现）。 */}
+        <button type="button" className="button button--primary knowledge-hero__action" onClick={openCreate} disabled={!canCreate}>
+          <Plus size={16} /> 新建知识库
+        </button>
       </header>
 
       <section className="knowledge-toolbar" aria-label="知识库筛选">

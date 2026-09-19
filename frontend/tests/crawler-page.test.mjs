@@ -35,7 +35,9 @@ test("crawler review gates parsing behind an explicit approval action", () => {
 
 test("reviewer navigation only exposes chat and document review", () => {
   assert.match(appShellSource, /admin\?\.role === "reviewer"/);
-  assert.match(appShellSource, /to === "\/" \|\| to === "\/crawler\/review"/);
+  // 对话已从导航数组里拿掉（改成左栏顶层那个「新建对话」动作，人人都有），
+  // 所以审核员剩下的白名单条目就只有资料审核这一条。
+  assert.match(appShellSource, /to === "\/crawler\/review"/);
   assert.match(appSource, /function AdminRoute/);
 });
 
