@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Loader2 } from "lucide-react";
+import { Select } from "./ui";
 
 function isAnswerMissing(question, value) {
   if (question.field_type === "date_range") return !value?.start || !value?.end;
@@ -59,33 +60,33 @@ export function ReportQuestionsForm({ questions, submitting, error, submitLabel 
         <span>回答将标记为 USER_INPUT，不会改写为来源文档事实。</span>
       </div>
       {questions.map((question) => (
-        <label key={question.question_id} className="form-field">
+        <div key={question.question_id} className="form-field">
           <span>{question.question} {question.required ? <b>*</b> : null}</span>
           {question.options?.length ? (
-            <select
+            <Select
+              ariaLabel={question.question}
               value={answers[question.question_id] || ""}
-              onChange={(event) => update(question.question_id, event.target.value)}
-            >
-              <option value="">请选择</option>
-              {question.options.map((option) => (
-                <option key={String(option.value)} value={option.value}>{option.label}</option>
-              ))}
-            </select>
+              onChange={(value) => update(question.question_id, value)}
+              options={[{ value: "", label: "请选择" }, ...question.options.map((option) => ({ value: option.value, label: option.label }))]}
+            />
           ) : question.field_type === "date_range" ? (
             <span className="report-date-range">
               <input
                 type="date"
+                aria-label={`${question.question}开始日期`}
                 value={answers[question.question_id]?.start || ""}
                 onChange={(event) => update(question.question_id, { ...(answers[question.question_id] || {}), start: event.target.value })}
               />
               <input
                 type="date"
+                aria-label={`${question.question}结束日期`}
                 value={answers[question.question_id]?.end || ""}
                 onChange={(event) => update(question.question_id, { ...(answers[question.question_id] || {}), end: event.target.value })}
               />
             </span>
           ) : question.field_type === "array" ? (
             <textarea
+              aria-label={question.question}
               rows="3"
               value={answers[question.question_id] || ""}
               onChange={(event) => update(question.question_id, event.target.value)}
@@ -93,13 +94,14 @@ export function ReportQuestionsForm({ questions, submitting, error, submitLabel 
             />
           ) : (
             <input
+              aria-label={question.question}
               type={["number", "integer"].includes(question.field_type) ? "number" : question.field_type === "date" ? "date" : "text"}
               value={answers[question.question_id] || ""}
               onChange={(event) => update(question.question_id, event.target.value)}
             />
           )}
           <small>字段：{question.field_label || question.field_id}</small>
-        </label>
+        </div>
       ))}
       {validationError ? <p className="form-error" role="alert">{validationError}</p> : null}
       {error ? <p className="form-error" role="alert">{error}</p> : null}

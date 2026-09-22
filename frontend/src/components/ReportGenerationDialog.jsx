@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { AlertCircle, CheckCircle2, FileOutput, Loader2, X } from "lucide-react";
 import { Link } from "react-router-dom";
+import { Select } from "./ui";
 
 import {
   createDocumentReport,
@@ -185,23 +186,14 @@ export function ReportGenerationDialog({ document, open, onClose }) {
             <div className="report-generation-dialog__body">
               {loading ? <div className="report-dialog-loading"><Loader2 className="spin" size={18} />正在读取模板和模型…</div> : null}
               <div className="form-grid form-grid--two">
-                <label className="form-field">
+                <div className="form-field">
                   <span>报告类型 <b>*</b></span>
-                  <select value={reportType} onChange={(event) => setReportType(event.target.value)} disabled={loading}>
-                    {templates.map((template) => (
-                      <option key={template.report_type} value={template.report_type}>
-                        {template.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label className="form-field">
+                  <Select ariaLabel="报告类型" value={reportType} onChange={setReportType} disabled={loading} options={templates.map((template) => ({ value: template.report_type, label: template.name }))} />
+                </div>
+                <div className="form-field">
                   <span>分析模型 <b>*</b></span>
-                  <select value={modelId} onChange={(event) => setModelId(event.target.value)} disabled={loading}>
-                    <option value="">请选择 CHAT 模型</option>
-                    {models.map((model) => <option key={model.id} value={model.id}>{model.display_name || model.model_name}</option>)}
-                  </select>
-                </label>
+                  <Select ariaLabel="分析模型" value={modelId} onChange={setModelId} disabled={loading} options={[{ value: "", label: "请选择 CHAT 模型" }, ...models.map((model) => ({ value: model.id, label: model.display_name || model.model_name }))]} />
+                </div>
                 <label className="form-field">
                   <span>报告年度</span>
                   <input type="number" min="1900" max="2200" value={reportingYear} onChange={(event) => setReportingYear(event.target.value)} />

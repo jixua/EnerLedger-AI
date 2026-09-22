@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import { KeyRound, LoaderCircle, Plus, RefreshCw, UserRoundCog, X } from "lucide-react";
 
+import { Select } from "../components/ui";
 import { createUser, listUsers, resetUserPassword, updateUser } from "../lib/api";
 import { useAuth } from "../state/AuthContext";
 
@@ -9,23 +10,13 @@ const ROLE_LABELS = {
   user: "普通账号",
   reviewer: "审核账号",
 };
+const ROLE_OPTIONS = Object.entries(ROLE_LABELS).map(([value, label]) => ({ value, label }));
 
 const DEMO_USERS = [
   { id: 1, username: "root", role: "admin", status: "ACTIVE", last_login_at: "2026-09-22T12:00:00Z", created_at: "2026-08-01T00:00:00Z" },
   { id: 2, username: "paper-reviewer", role: "reviewer", status: "ACTIVE", last_login_at: "2026-09-21T08:30:00Z", created_at: "2026-09-01T00:00:00Z" },
   { id: 3, username: "analyst", role: "user", status: "ACTIVE", last_login_at: null, created_at: "2026-09-20T00:00:00Z" },
 ];
-
-function formatDate(value) {
-  if (!value) return "—";
-  return new Intl.DateTimeFormat("zh-CN", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  }).format(new Date(value));
-}
 
 export function UsersPage() {
   const { admin } = useAuth();
@@ -137,27 +128,25 @@ export function UsersPage() {
         {loading && users.length === 0 ? <div className="user-management__loading"><LoaderCircle className="spin" size={18} />正在加载账号</div> : (
           <div className="data-table-wrap">
             <table className="data-table user-table">
-              <thead><tr><th>账号</th><th>角色</th><th>状态</th><th>最近登录</th><th>创建时间</th><th>操作</th></tr></thead>
+              <thead><tr><th>账号</th><th>角色</th><th>状态</th><th>操作</th></tr></thead>
               <tbody>
                 {users.map((account) => {
                   const isRoot = account.id === 1;
                   const busy = busyId === account.id;
                   return (
                     <tr key={account.id}>
-                      <td><strong>{account.username}</strong>{isRoot ? <small>root</small> : null}</td>
+                      <td><strong>{account.username}</strong></td>
                       <td>
-                        <select
-                          aria-label={`${account.username}的角色`}
+                        <Select
+                          className="user-role-select"
+                          ariaLabel={`${account.username}的角色`}
                           value={account.role}
+                          options={ROLE_OPTIONS}
                           disabled={busy || isRoot}
-                          onChange={(event) => void patchAccount(account, { role: event.target.value })}
-                        >
-                          {Object.entries(ROLE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}
-                        </select>
+                          onChange={(role) => void patchAccount(account, { role })}
+                        />
                       </td>
                       <td><span className={`user-status user-status--${account.status.toLowerCase()}`}>{account.status === "ACTIVE" ? "启用" : "已停用"}</span></td>
-                      <td>{formatDate(account.last_login_at)}</td>
-                      <td>{formatDate(account.created_at)}</td>
                       <td>
                         <div className="user-table__actions">
                           <button className="button button--secondary button--sm" type="button" onClick={() => { setResetTarget(account); setResetPassword(""); }} disabled={busy}>
@@ -189,7 +178,7 @@ export function UsersPage() {
             <form className="form-stack" onSubmit={handleCreate}>
               <label className="form-field"><span>用户名</span><input autoFocus required maxLength={64} value={form.username} onChange={(event) => setForm((current) => ({ ...current, username: event.target.value }))} /></label>
               <label className="form-field"><span>初始密码</span><input type="password" required minLength={8} maxLength={256} autoComplete="new-password" value={form.password} onChange={(event) => setForm((current) => ({ ...current, password: event.target.value }))} /><small>至少 8 个字符。</small></label>
-              <label className="form-field"><span>角色</span><select value={form.role} onChange={(event) => setForm((current) => ({ ...current, role: event.target.value }))}>{Object.entries(ROLE_LABELS).map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <div className="form-field"><span>角色</span><Select ariaLabel="角色" value={form.role} options={ROLE_OPTIONS} onChange={(role) => setForm((current) => ({ ...current, role }))} /></div>
               <footer className="dialog__footer"><button className="button button--ghost" type="button" onClick={() => setCreateOpen(false)} disabled={submitting}>取消</button><button className="button button--primary" type="submit" disabled={submitting}>{submitting ? <LoaderCircle className="spin" size={15} /> : <Plus size={15} />}{submitting ? "正在创建" : "创建账号"}</button></footer>
             </form>
           </section>

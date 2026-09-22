@@ -29,6 +29,7 @@ import {
 } from "../components/DocumentHtmlTable";
 import { DocumentPreviewImage } from "../components/DocumentPreviewImage";
 import { ReportGenerationDialog } from "../components/ReportGenerationDialog";
+import { Select } from "../components/ui";
 import { listDocumentReportRuns } from "../lib/api";
 import {
   createDocumentBoundaryPlugin,
@@ -565,10 +566,7 @@ export function DocumentDetailPage() {
               <p>按原文连续展示；分割线标记正文进入检索索引的位置。</p>
             </div>
             <div className="document-reader__actions">
-              <select aria-label="跳转到分片" value={jumpTarget} onChange={(event) => jumpToSection(event.target.value)} disabled={!readerBoundaries.length}>
-                <option value="">跳转到分片</option>
-                {readerBoundaries.map((entry) => <option key={entry.anchorId} value={entry.anchorId}>分片 {String(entry.readerIndex + 1).padStart(2, "0")}</option>)}
-              </select>
+              <Select className="document-chunk-select" ariaLabel="跳转到分片" value={jumpTarget} onChange={jumpToSection} disabled={!readerBoundaries.length} options={[{ value: "", label: "跳转到分片" }, ...readerBoundaries.map((entry) => ({ value: entry.anchorId, label: `分片 ${String(entry.readerIndex + 1).padStart(2, "0")}` }))]} />
               <button type="button" className="button button--secondary" onClick={() => setShowBoundaries((current) => !current)} disabled={!readerBoundaries.length}>{showBoundaries ? <EyeOff size={15} /> : <Eye size={15} />}{showBoundaries ? "隐藏分片线" : "显示分片线"}</button>
               <button type="button" className="button button--secondary" onClick={() => { void copyText(preview?.content || "", "document"); }} disabled={!preview?.content}>{copiedValue === "document" ? <Check size={14} /> : <Copy size={14} />}{copiedValue === "document" ? "已复制" : "复制全文"}</button>
             </div>
