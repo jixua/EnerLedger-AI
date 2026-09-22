@@ -27,6 +27,7 @@ CORE_TABLES = {
     "structured_query_audit",
     "structured_table",
     "structured_term_alias",
+    "user_account",
 }
 
 
@@ -43,7 +44,7 @@ expected = {
     "dataset", "document", "document_chunk", "document_folder", "llm_config",
     "report_run", "report_question", "report_artifact", "report_material",
     "structured_asset", "structured_asset_alias", "structured_asset_version",
-    "structured_query_audit", "structured_table", "structured_term_alias",
+    "structured_query_audit", "structured_table", "structured_term_alias", "user_account",
 }
 if actual != expected:
     raise SystemExit(f"unexpected metadata tables: {sorted(actual)}")
@@ -75,7 +76,7 @@ expected = {
     "dataset", "document", "document_chunk", "document_folder", "llm_config",
     "report_run", "report_question", "report_artifact", "report_material",
     "structured_asset", "structured_asset_alias", "structured_asset_version",
-    "structured_query_audit", "structured_table", "structured_term_alias",
+    "structured_query_audit", "structured_table", "structured_term_alias", "user_account",
 }
 if actual != expected:
     raise SystemExit(f"unexpected metadata tables: {sorted(actual)}")
@@ -109,6 +110,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
         "0011_agent_conversations.py",
         "0012_report_ir_draft.py",
         "0013_report_inline_source.py",
+        "0014_user_accounts.py",
     ]
 
     root_revision = runpy.run_path(str(version_files[0]))
@@ -127,6 +129,7 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     conversation_revision = runpy.run_path(str(version_files[13]))
     draft_revision = runpy.run_path(str(version_files[14]))
     inline_source_revision = runpy.run_path(str(version_files[15]))
+    user_accounts_revision = runpy.run_path(str(version_files[16]))
     assert root_revision["revision"] == "0001_minimal_rag"
     assert root_revision["down_revision"] is None
     assert queue_revision["revision"] == "0002_document_parse_queue"
@@ -168,6 +171,8 @@ def test_alembic_has_single_minimal_revision_chain() -> None:
     assert draft_revision["down_revision"] == "0011_agent_conversations"
     assert inline_source_revision["revision"] == "0013_report_inline_source"
     assert inline_source_revision["down_revision"] == "0012_report_ir_draft"
+    assert user_accounts_revision["revision"] == "0014_user_accounts"
+    assert user_accounts_revision["down_revision"] == "0013_report_inline_source"
 
 
 def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
@@ -220,6 +225,8 @@ def test_alembic_offline_sql_contains_only_minimal_schema() -> None:
     assert "create table agent_conversation" in sql
     assert "create table agent_conversation_turn" in sql
     assert "create table structured_query_audit" in sql
+    assert "create table user_account" in sql
+    assert "idx_user_account_role_status" in sql
 
     legacy_tables = {
         "dataset_parse_config",
@@ -262,3 +269,5 @@ def test_readable_sql_snapshot_contains_current_chunk_structure_column() -> None
     assert "create table structured_asset" in sql
     assert "create table structured_asset_version" in sql
     assert "create table structured_table" in sql
+    assert "create table user_account" in sql
+    assert "auth_version int not null" in sql

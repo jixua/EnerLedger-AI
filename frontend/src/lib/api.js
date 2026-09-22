@@ -194,6 +194,30 @@ export function getCurrentAdmin({ signal } = {}) {
   return apiRequest("/api/v1/auth/me", { signal });
 }
 
+export function listUsers({ signal } = {}) {
+  return apiRequest("/api/v1/users", { signal });
+}
+
+export function createUser(payload, { signal } = {}) {
+  return apiRequest("/api/v1/users", { method: "POST", body: payload, signal });
+}
+
+export function updateUser(userId, payload, { signal } = {}) {
+  return apiRequest(`/api/v1/users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    body: payload,
+    signal,
+  });
+}
+
+export function resetUserPassword(userId, password, { signal } = {}) {
+  return apiRequest(`/api/v1/users/${encodeURIComponent(userId)}/reset-password`, {
+    method: "POST",
+    body: { password },
+    signal,
+  });
+}
+
 export function getSystemStatus({ signal } = {}) {
   return apiRequest("/api/v1/system/status", { signal });
 }

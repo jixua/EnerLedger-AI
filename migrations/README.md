@@ -3,6 +3,7 @@
 本目录管理当前项目的 MySQL 业务表：
 
 - `llm_config`
+- `user_account`
 - `dataset`
 - `document_folder`
 - `document`
@@ -26,7 +27,12 @@ Alembic 自己创建的 `alembic_version` 是版本记录表，不属于业务�
   -> 0006_document_dispatch_outbox
   -> 0007_crawler_document_review + 0007_document_folders
   -> 0008_document_folder_hierarchy
-  -> 0009_report_platform_foundation (head)
+  -> 0009_report_platform_foundation
+  -> 0010_structured_report_merge
+  -> 0011_agent_conversations
+  -> 0012_report_ir_draft
+  -> 0013_report_inline_source
+  -> 0014_user_accounts (head)
 ```
 
 `0001_minimal_rag` 直接创建最初四张业务表，不依赖历史 LinkRag schema；`0007_document_folders` 增加仅用于文档分类的 `document_folder` 表和可空 `document.folder_id`。`migrations/db.sql` 是当前 head 的可读 SQL 快照；正常部署应以 `alembic upgrade heads` 为准，以兼容 `dev` 中多个从 `master` 派生的候选迁移，不要同时手工执行 SQL 文件。

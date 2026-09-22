@@ -18,6 +18,7 @@ import {
   X,
 } from "lucide-react";
 
+import { Select } from "../components/ui";
 import { useApp } from "../state/AppContext";
 
 const CAPABILITIES = [
@@ -355,14 +356,10 @@ export function ModelsPage() {
                     <input required disabled={isCodexCli} value={form.model_name} onChange={(event) => updateField("model_name", event.target.value)} placeholder="官方模型 ID" maxLength={128} />
                   </label>
                 </div>
-                <label className="field">
+                <div className="field">
                   <span>模型能力</span>
-                  <select disabled={Boolean(editingModel) || isCodexCli} value={form.capability} onChange={(event) => updateField("capability", event.target.value)}>
-                    {CAPABILITIES.filter((item) => item.value !== "ALL").map((item) => (
-                      <option key={item.value} value={item.value}>{item.label}</option>
-                    ))}
-                  </select>
-                </label>
+                  <Select ariaLabel="模型能力" disabled={Boolean(editingModel) || isCodexCli} value={form.capability} onChange={(value) => updateField("capability", value)} options={CAPABILITIES.filter((item) => item.value !== "ALL")} />
+                </div>
               </div>
 
               <div className="form-section">
@@ -370,14 +367,10 @@ export function ModelsPage() {
                   <span>02</span>
                   <div><h3>连接配置</h3><p>{isCodexCli ? "复用本机 Codex CLI 登录态，无需 API Key。" : "系统将校验接口协议与模型能力。"}</p></div>
                 </div>
-                <label className="field">
+                <div className="field">
                   <span>接口协议</span>
-                  <select disabled={Boolean(editingModel)} value={form.protocol} onChange={(event) => updateField("protocol", event.target.value)}>
-                    {PROTOCOL_OPTIONS.map((item) => (
-                      <option value={item.value} key={item.value}>{item.label}</option>
-                    ))}
-                  </select>
-                </label>
+                  <Select ariaLabel="接口协议" disabled={Boolean(editingModel)} value={form.protocol} onChange={(value) => updateField("protocol", value)} options={PROTOCOL_OPTIONS} />
+                </div>
                 {isCodexCli ? (
                   <div className="form-hint">
                     启动 API 服务的系统中需要安装并登录 Codex CLI。该模式固定使用 GPT-5.4 Mini 和 medium（中等）推理档位。

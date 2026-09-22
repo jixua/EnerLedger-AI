@@ -13,10 +13,16 @@ const SystemPage = lazy(() => import("./pages/SystemPage").then((module) => ({ d
 const LoginPage = lazy(() => import("./pages/LoginPage").then((module) => ({ default: module.LoginPage })));
 
 function ProtectedApp() {
-  const { authenticated, checking } = useAuth();
+  const { admin, authenticated, checking } = useAuth();
   const location = useLocation();
   if (checking) return <PageLoader />;
   if (!authenticated) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
+  if (admin?.role === "reviewer" && !["/", "/crawler/review"].includes(location.pathname)) {
+    return <Navigate to="/" replace />;
+  }
+  if (admin?.role === "user" && ["/crawler/review", "/users"].includes(location.pathname)) {
+    return <Navigate to="/" replace />;
+  }
   // 会话与工作台挂在路由之上：切面板只换视图，生成中的流不受影响。
   return (
     <AppProvider>
@@ -32,6 +38,16 @@ function ProtectedApp() {
 function AdminRoute({ children }) {
   const { admin } = useAuth();
   return admin?.role === "admin" ? children : <Navigate to="/" replace />;
+}
+
+function BusinessRoute({ children }) {
+  const { admin } = useAuth();
+  return ["admin", "user"].includes(admin?.role) ? children : <Navigate to="/crawler/review" replace />;
+}
+
+function ReviewRoute({ children }) {
+  const { admin } = useAuth();
+  return ["admin", "reviewer"].includes(admin?.role) ? children : <Navigate to="/" replace />;
 }
 
 /**
@@ -51,17 +67,18 @@ export function App() {
           <Route element={<ProtectedApp />}>
             <Route element={<AppShell />}>
               <Route index element={null} />
-              <Route path="datasets" element={<AdminRoute>{null}</AdminRoute>} />
-              <Route path="tasks" element={<AdminRoute>{null}</AdminRoute>} />
-              <Route path="crawler/review" element={null} />
-              <Route path="reports" element={<AdminRoute>{null}</AdminRoute>} />
-              <Route path="models" element={<AdminRoute>{null}</AdminRoute>} />
-              <Route path="reports/:runId" element={<AdminRoute><Suspense fallback={<PageLoader />}><ReportDetailPage /></Suspense></AdminRoute>} />
+              <Route path="datasets" element={<BusinessRoute>{null}</BusinessRoute>} />
+              <Route path="tasks" element={<BusinessRoute>{null}</BusinessRoute>} />
+              <Route path="crawler/review" element={<ReviewRoute>{null}</ReviewRoute>} />
+              <Route path="reports" element={<BusinessRoute>{null}</BusinessRoute>} />
+              <Route path="models" element={<BusinessRoute>{null}</BusinessRoute>} />
+              <Route path="users" element={<AdminRoute>{null}</AdminRoute>} />
+              <Route path="reports/:runId" element={<BusinessRoute><Suspense fallback={<PageLoader />}><ReportDetailPage /></Suspense></BusinessRoute>} />
               <Route path="analysis-reports" element={<Navigate to="/reports" replace />} />
               <Route path="playground" element={<Navigate to="/" replace />} />
-              <Route path="datasets/:datasetId" element={<AdminRoute><Suspense fallback={<PageLoader />}><DatasetDetailPage /></Suspense></AdminRoute>} />
-              <Route path="datasets/:datasetId/documents/:documentId" element={<AdminRoute><Suspense fallback={<PageLoader />}><DocumentDetailPage /></Suspense></AdminRoute>} />
-              <Route path="system" element={<AdminRoute><Suspense fallback={<PageLoader />}><SystemPage /></Suspense></AdminRoute>} />
+              <Route path="datasets/:datasetId" element={<BusinessRoute><Suspense fallback={<PageLoader />}><DatasetDetailPage /></Suspense></BusinessRoute>} />
+              <Route path="datasets/:datasetId/documents/:documentId" element={<BusinessRoute><Suspense fallback={<PageLoader />}><DocumentDetailPage /></Suspense></BusinessRoute>} />
+              <Route path="system" element={<BusinessRoute><Suspense fallback={<PageLoader />}><SystemPage /></Suspense></BusinessRoute>} />
               <Route path="*" element={<Navigate to="/" replace />} />
             </Route>
           </Route>

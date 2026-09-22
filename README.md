@@ -233,7 +233,7 @@ Codex CLI，因此该模式默认面向本机直接启动的 API，不能把宿�
 Pi Agent 的信任边界、模型兼容、离线构建和服务令牌要求见
 [`docs/pi-agent.md`](docs/pi-agent.md)。
 
-除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。当前产品支持一个管理员和一个受限资料审核员，不提供注册入口；密码只以 scrypt 哈希保存在部署环境中。可用以下命令分别生成 `ADMIN_PASSWORD_HASH` 或 `REVIEWER_PASSWORD_HASH`：
+除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。账号保存在 `user_account` 表中，不提供注册入口；密码只保存 scrypt 哈希。首次升级后，服务会使用 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD_HASH` 创建固定 ID 为 1 的 root 管理员。可用以下命令生成首次引导密码哈希：
 
 ```bash
 uv run python -c 'from app.domain.auth import hash_admin_password; print(hash_admin_password("replace-me"))'
@@ -323,13 +323,13 @@ curl -X POST http://127.0.0.1:8000/api/v1/document-submissions \
 并创建待投递 outbox，随后才发送 RabbitMQ 解析消息。待审核和已拒绝资料不会出现在普通文档
 列表或解析队列中。
 
-受限资料审核员账号通过 `REVIEWER_USERNAME` 和 `REVIEWER_PASSWORD_HASH` 配置。
-密码哈希的生成方式与管理员一致；`REVIEWER_PASSWORD_HASH` 留空时该账号禁用。审核员仅可：
+管理员可以在“用户管理”中创建普通账号、审核账号或其他管理员，并执行停用、启用和密码重置。`REVIEWER_USERNAME` 和 `REVIEWER_PASSWORD_HASH` 仅用于升级时迁移旧审核员；新账号不再通过部署变量维护。审核员仅可：
 
+- 使用 AI 对话、查看自己的历史会话，并上传对话所需的临时材料；
 - 读取待审资料、查看原文件、通过或拒绝，并在通过时选择入库数据集；
-- 读取对话所需的数据集可用状态和脱敏模型摘要，使用 AI 对话。
+- 读取对话和审核所需的数据集名称及启用模型摘要，但不能管理数据集、文档或模型配置。
 
-数据集、文档、模型和系统配置的其他管理接口仍仅限管理员。
+普通账号可以使用对话、资料库、解析队列、报告、模型和系统状态，但不能审核资料或管理账号；管理员拥有全部权限。
 
 RabbitMQ 负责主动投递，MySQL `document` 行同时保存解析 lease 和 outbox 投递状态。
 文档状态与待投递标记在一次事务内提交；API 随后尝试发布，后台补偿器会用

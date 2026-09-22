@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { ArrowRight, Database, FileText, Loader2, Plus, Search, Settings2, X } from 'lucide-react';
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { Select } from '../components/ui';
 import { isDocumentRetrievalReady } from '../lib/parse-quality';
 import { useApp } from '../state/AppContext';
 
@@ -254,38 +255,26 @@ export function DatasetsPage() {
                 <textarea maxLength={512} rows={3} value={form.description} onChange={(event) => updateForm('description', event.target.value)} placeholder="说明资料范围、来源或用途" />
               </label>
               <div className="form-grid form-grid--two">
-                <label className="form-field">
+                <div className="form-field">
                   <span>稠密向量模型 <b>*</b></span>
-                  <select value={form.dense_embedding_config_id} onChange={(event) => updateForm('dense_embedding_config_id', event.target.value)}>
-                    <option value="">请选择</option>
-                    {denseModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}
-                  </select>
-                </label>
-                <label className="form-field">
+                  <Select ariaLabel="稠密向量模型" value={form.dense_embedding_config_id} onChange={(value) => updateForm('dense_embedding_config_id', value)} options={[{ value: '', label: '请选择' }, ...denseModels.map((model) => ({ value: modelId(model), label: modelLabel(model) }))]} />
+                </div>
+                <div className="form-field">
                   <span>稀疏向量模型 <b>*</b></span>
-                  <select value={form.sparse_embedding_config_id} onChange={(event) => updateForm('sparse_embedding_config_id', event.target.value)}>
-                    <option value="">请选择</option>
-                    {sparseModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}
-                  </select>
-                </label>
+                  <Select ariaLabel="稀疏向量模型" value={form.sparse_embedding_config_id} onChange={(value) => updateForm('sparse_embedding_config_id', value)} options={[{ value: '', label: '请选择' }, ...sparseModels.map((model) => ({ value: modelId(model), label: modelLabel(model) }))]} />
+                </div>
               </div>
               <div className="form-grid form-grid--two">
-                <label className="form-field">
+                <div className="form-field">
                   <span>对话模型 <small>可选</small></span>
-                  <select value={form.chat_config_id} onChange={(event) => updateForm('chat_config_id', event.target.value)}>
-                    <option value="">暂不绑定</option>
-                    {chatModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}
-                  </select>
+                  <Select ariaLabel="对话模型" value={form.chat_config_id} onChange={(value) => updateForm('chat_config_id', value)} options={[{ value: '', label: '暂不绑定' }, ...chatModels.map((model) => ({ value: modelId(model), label: modelLabel(model) }))]} />
                   <small>未绑定时，可在对话中选择模型。</small>
-                </label>
-                <label className="form-field">
+                </div>
+                <div className="form-field">
                   <span>PDF OCR / 视觉模型 <small>可选</small></span>
-                  <select value={form.vision_config_id} onChange={(event) => updateForm('vision_config_id', event.target.value)}>
-                    <option value="">暂不绑定</option>
-                    {visionModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}
-                  </select>
+                  <Select ariaLabel="PDF OCR / 视觉模型" value={form.vision_config_id} onChange={(value) => updateForm('vision_config_id', value)} options={[{ value: '', label: '暂不绑定' }, ...visionModels.map((model) => ({ value: modelId(model), label: modelLabel(model) }))]} />
                   <small>仅在 PDF 需要 OCR、图表解释或页面补全时调用；未绑定不会阻止文档完成解析和检索。</small>
-                </label>
+                </div>
               </div>
 
               {formError ? <p className="form-error" role="alert">{formError}</p> : null}

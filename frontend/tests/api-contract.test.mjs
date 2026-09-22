@@ -5,6 +5,7 @@ import {
   cancelReportRun,
   configureApi,
   createDataset,
+  createUser,
   createDocumentReport,
   createDocumentFolder,
   deleteDocumentFolder,
@@ -23,12 +24,15 @@ import {
   listDocumentReportRuns,
   listCrawlerSubmissions,
   listReportTemplates,
+  listUsers,
+  resetUserPassword,
   retryReportRun,
   confirmAgentTemplateSelection,
   reviewCrawlerSubmission,
   updateDocument,
   updateDocumentFolder,
   updateDataset,
+  updateUser,
   uploadAgentMaterial,
   uploadDocument,
 } from "../src/lib/api.js";
@@ -47,6 +51,33 @@ function jsonResponse(payload, status = 200) {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+test("user management uses administrator account endpoints", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse(init.method === "GET" ? [] : {
+      id: 8,
+      username: "auditor",
+      role: "reviewer",
+      status: "ACTIVE",
+    }, init.method === "POST" && url === "/api/v1/users" ? 201 : 200);
+  };
+
+  await listUsers();
+  await createUser({ username: "auditor", password: "password-123", role: "reviewer" });
+  await updateUser(8, { status: "DISABLED" });
+  await resetUserPassword(8, "next-password-123");
+
+  assert.deepEqual(requests.map(({ url, init }) => [url, init.method]), [
+    ["/api/v1/users", "GET"],
+    ["/api/v1/users", "POST"],
+    ["/api/v1/users/8", "PATCH"],
+    ["/api/v1/users/8/reset-password", "POST"],
+  ]);
+  assert.deepEqual(JSON.parse(requests[2].init.body), { status: "DISABLED" });
+  assert.deepEqual(JSON.parse(requests[3].init.body), { password: "next-password-123" });
+});
 
 test("document queue list uses real global endpoint and bearer token", async () => {
   configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });

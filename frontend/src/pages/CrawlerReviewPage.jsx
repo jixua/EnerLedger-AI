@@ -12,7 +12,7 @@ import {
   RefreshCw,
   XCircle,
 } from "lucide-react";
-import { formatBytes } from "../components/ui";
+import { formatBytes, Select } from "../components/ui";
 import {
   getCrawlerSubmissionFile,
   listCrawlerSubmissions,
@@ -231,16 +231,17 @@ export function CrawlerReviewPage() {
             <h2 id="crawler-review-title">第三方上传资料 · {submissionTotal} 项</h2>
           </div>
           <div className="crawler-results__actions crawler-review__actions">
-            <select
+            <Select
               className="crawler-review__filter"
-              aria-label="审核状态"
+              ariaLabel="审核状态"
               value={reviewStatus}
-              onChange={(event) => setReviewStatus(event.target.value)}
-            >
-              <option value="PENDING">待审核</option>
-              <option value="APPROVED">已通过</option>
-              <option value="REJECTED">已拒绝</option>
-            </select>
+              onChange={setReviewStatus}
+              options={[
+                { value: "PENDING", label: "待审核" },
+                { value: "APPROVED", label: "已通过" },
+                { value: "REJECTED", label: "已拒绝" },
+              ]}
+            />
             <button className="button button--secondary" type="button" onClick={() => loadReviewQueue()} disabled={reviewsLoading}>
               <RefreshCw className={reviewsLoading ? "spin" : ""} size={15} />刷新
             </button>
@@ -284,17 +285,16 @@ export function CrawlerReviewPage() {
                 <label className="crawler-review-card__target">
                   <span>目标数据集</span>
                   {submission.review_status === "PENDING" ? (
-                    <select
-                      aria-label={`${submission.source_title || submission.filename}的目标数据集`}
+                    <Select
+                      ariaLabel={`${submission.source_title || submission.filename}的目标数据集`}
                       value={targetDatasetIds[submission.document_id] ?? String(submission.dataset_id)}
-                      onChange={(event) => setTargetDatasetIds((current) => ({
+                      options={datasets.map((dataset) => ({ value: dataset.id, label: dataset.name }))}
+                      onChange={(datasetId) => setTargetDatasetIds((current) => ({
                         ...current,
-                        [submission.document_id]: event.target.value,
+                        [submission.document_id]: datasetId,
                       }))}
                       disabled={Boolean(reviewActionId)}
-                    >
-                      {datasets.map((dataset) => <option value={dataset.id} key={dataset.id}>{dataset.name}</option>)}
-                    </select>
+                    />
                   ) : <strong>{submission.dataset_name}</strong>}
                 </label>
                 {submission.source_url ? <a href={submission.source_url} target="_blank" rel="noreferrer">查看来源页面<ExternalLink size={13} /></a> : null}
