@@ -17,8 +17,8 @@ function ProtectedApp() {
   const location = useLocation();
   if (checking) return <PageLoader />;
   if (!authenticated) return <Navigate to="/login" replace state={{ from: location.pathname }} />;
-  if (admin?.role === "reviewer" && location.pathname !== "/crawler/review") {
-    return <Navigate to="/crawler/review" replace />;
+  if (admin?.role === "reviewer" && !["/", "/crawler/review"].includes(location.pathname)) {
+    return <Navigate to="/" replace />;
   }
   if (admin?.role === "user" && ["/crawler/review", "/users"].includes(location.pathname)) {
     return <Navigate to="/" replace />;

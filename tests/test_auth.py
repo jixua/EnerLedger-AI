@@ -107,10 +107,11 @@ def test_role_boundaries_separate_business_and_review_access() -> None:
 
     assert get_review_owner_user_id(reviewer) == ADMIN_USER_ID
     assert get_review_actor_user_id(reviewer) == 7
-    for dependency in (get_user_id, get_shared_owner_user_id, get_actor_user_id):
-        with pytest.raises(HTTPException) as forbidden:
-            dependency(reviewer)
-        assert forbidden.value.status_code == 403
+    assert get_shared_owner_user_id(reviewer) == ADMIN_USER_ID
+    assert get_actor_user_id(reviewer) == 7
+    with pytest.raises(HTTPException) as forbidden:
+        get_user_id(reviewer)
+    assert forbidden.value.status_code == 403
 
     assert get_user_id(normal) == ADMIN_USER_ID
     assert get_shared_owner_user_id(normal) == ADMIN_USER_ID

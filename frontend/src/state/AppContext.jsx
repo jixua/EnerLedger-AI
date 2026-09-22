@@ -153,7 +153,7 @@ export function AppProvider({ children }) {
       await Promise.all([
         applyResult(listDatasets(), setDatasets),
         applyResult(
-          isReviewer ? Promise.resolve([]) : listModelConfigs({ includeInactive: true }),
+          listModelConfigs({ includeInactive: !isReviewer }),
           setModels,
         ),
         applyResult(

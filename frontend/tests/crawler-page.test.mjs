@@ -14,6 +14,14 @@ const appSource = await readFile(
   new URL("../src/App.jsx", import.meta.url),
   "utf8",
 );
+const workspaceRailSource = await readFile(
+  new URL("../src/components/WorkspaceRail.jsx", import.meta.url),
+  "utf8",
+);
+const workspaceSectionsSource = await readFile(
+  new URL("../src/lib/workspace-sections.js", import.meta.url),
+  "utf8",
+);
 const pageStyles = await readFile(
   new URL("../src/pages.css", import.meta.url),
   "utf8",
@@ -33,12 +41,13 @@ test("crawler review gates parsing behind an explicit approval action", () => {
   assert.match(crawlerReviewPageSource, /datasetId: targetDatasetId/);
 });
 
-test("reviewer navigation only exposes document review", () => {
+test("reviewer navigation exposes chat and document review only", () => {
   assert.match(appShellSource, /roles: \["admin", "reviewer"\]/);
   assert.match(appShellSource, /roles\.includes\(admin\?\.role\)/);
   assert.match(appSource, /function AdminRoute/);
-  assert.match(appSource, /admin\?\.role === "reviewer"/);
-  assert.match(appSource, /Navigate to="\/crawler\/review"/);
+  assert.match(appSource, /\["\/", "\/crawler\/review"\]\.includes\(location\.pathname\)/);
+  assert.match(workspaceSectionsSource, /reviewer: new Set\(\["chat", "review"\]\)/);
+  assert.match(workspaceRailSource, /\["admin", "user", "reviewer"\]\.includes\(admin\?\.role\)/);
 });
 
 test("review preview renders PDF and Markdown without parsing Word before approval", () => {

@@ -41,8 +41,8 @@ export function WorkspaceRail({ navigation, admin, collapsed, mobileOpen, onColl
   } = useChatSession();
 
   const isCompact = collapsed && !mobileOpen;
-  const canChat = admin?.role !== "reviewer";
-  const homePath = canChat ? "/" : "/crawler/review";
+  const canChat = ["admin", "user", "reviewer"].includes(admin?.role);
+  const homePath = "/";
 
   async function handleOpenConversation(id) {
     await openConversation(id);

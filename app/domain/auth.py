@@ -287,18 +287,18 @@ def get_user_id(
 def get_shared_owner_user_id(
     principal: Annotated[dict[str, object], Depends(get_current_user)],
 ) -> int:
-    """Map chat/business access to the shared root-owned data boundary."""
+    """Map permitted chat access to the shared root-owned data boundary."""
 
-    _require_role(principal, {"admin", "user"})
+    _require_role(principal, {"admin", "user", "reviewer"})
     return ADMIN_USER_ID
 
 
 def get_actor_user_id(
     principal: Annotated[dict[str, object], Depends(get_current_user)],
 ) -> int:
-    """Return the authenticated actor for immutable audit attribution."""
+    """Return the authenticated chat actor for conversation ownership."""
 
-    _require_role(principal, {"admin", "user"})
+    _require_role(principal, {"admin", "user", "reviewer"})
     return int(principal["sub"])
 
 

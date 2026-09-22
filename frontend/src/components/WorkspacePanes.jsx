@@ -35,7 +35,7 @@ export function WorkspacePanes() {
   const matched = sectionForPath(location.pathname);
   // 与路由层的 AdminRoute 同一套规则的兜底：重定向落地前的那一帧不放出越权面板。
   const roleSections = ROLE_SECTIONS[admin?.role] || new Set();
-  const roleHome = admin?.role === "reviewer" ? "review" : HOME_SECTION;
+  const roleHome = HOME_SECTION;
   const active = matched && !roleSections.has(matched)
     ? roleHome
     : matched;

@@ -25,7 +25,7 @@ export const HOME_SECTION = "chat";
 export const ROLE_SECTIONS = {
   admin: new Set(SECTIONS.map((section) => section.key)),
   user: new Set(["chat", "library", "tasks", "reports", "models"]),
-  reviewer: new Set(["review"]),
+  reviewer: new Set(["chat", "review"]),
 };
 
 /**
