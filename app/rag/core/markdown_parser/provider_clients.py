@@ -114,7 +114,8 @@ def _load_image_bytes(image_url: str, source_file: str | None) -> tuple[bytes, s
 
     if parsed.scheme in {"http", "https"}:
         settings = _get_settings()
-        with urlopen(image_url, timeout=max(settings.MINERU_TIMEOUT, 30)) as response:
+        timeout_seconds = max(settings.MARKDOWN_PARSER_LLM_TIMEOUT_MS / 1000, 30)
+        with urlopen(image_url, timeout=timeout_seconds) as response:
             content_type = response.headers.get_content_type() or "image/jpeg"
             return response.read(), content_type
 

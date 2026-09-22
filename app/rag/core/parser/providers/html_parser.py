@@ -23,7 +23,7 @@ class HtmlParser(BaseParser):
         self.service = HtmlParseService(self.options)
 
     def parse(self, source: Path | None) -> str:
-        # HTML 解析不支持 MinerU URL 旁路，必须有本地源文件路径。
+        # HTML 解析必须有本地源文件路径。
         if source is None:
             raise ValueError("HTML 解析需要本地源文件路径")
         self.validate_source(source)

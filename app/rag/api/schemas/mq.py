@@ -33,7 +33,7 @@ class SendParseTaskRequest(BaseModel):
     pdf_parser_backend: str = Field(
         "opendataloader",
         title="PDF解析器",
-        description="可选 PDF 解析器: mineru/opendataloader/naive",
+        description="可选本地 PDF 解析器: opendataloader/naive",
         validation_alias=AliasChoices("pdf_parser_backend", "parser_backend"),
         serialization_alias="pdf_parser_backend",
     )

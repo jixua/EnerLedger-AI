@@ -38,8 +38,7 @@ class DatasetParseConfigRepository:
             sparse_embedding_config_id=row.sparse_embedding_config_id,
             dense_embedding_config_id=row.dense_embedding_config_id,
             enhancement_chat_config_id=None,
-            # 当前最小 schema 将 PDF OCR/视觉兜底模型直接绑定
-            # 在 dataset 行，并复用 LinkRag 执行面的 vision 绑定槽位。
+            # 基础文件解析保持本地；该绑定仅用于可选的视觉模型增强与 OCR 兜底。
             enhancement_vision_config_id=row.vision_config_id,
             rerank_config_id=None,
             chunking_config={},

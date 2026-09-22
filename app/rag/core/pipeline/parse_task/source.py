@@ -62,15 +62,8 @@ class ParseSourceIO:
             content_type="text/markdown; charset=utf-8",
         )
 
-    def build_source_file_url(self, payload: ParseTaskPayload) -> str:
-        """供 MinerU 等需要远端 URL 拉取的解析后端拼接源文件 URL。"""
-        return self._storage.build_object_url(
-            bucket=payload.source_bucket,
-            object_key=payload.source_object_key,
-        )
-
     @staticmethod
     def should_skip_source_download(payload: ParseTaskPayload) -> bool:
-        """MinerU 签名上传需要本地源文件，不再跳过对象存储下载。"""
+        """本地解析始终需要先下载源文件。"""
         _ = payload
         return False

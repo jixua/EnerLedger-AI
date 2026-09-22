@@ -704,8 +704,8 @@ class Settings(BaseSettings):
     # MINIO_ENDPOINT.
     MINIO_PUBLIC_ENDPOINT: Optional[str] = None
     PDF_PARSER_BACKEND: str = "opendataloader"
-    PDF_PARSER_FALLBACKS: str = "mineru"
-    # OpenDataLoader 作为默认本地解析器，MinerU 作为解析失败时的远程兜底。
+    PDF_PARSER_FALLBACKS: str = ""
+    # 文件解析仅允许本地 backend；OpenDataLoader 是生产主解析器。
     PDF_QUALITY_MIN_EFFECTIVE_TEXT_CHARS: int = Field(default=20, ge=1, le=1000)
     PDF_QUALITY_IMAGE_ONLY_MAX_TEXT_CHARS: int = Field(default=8, ge=0, le=200)
     PDF_QUALITY_IMAGE_ONLY_MIN_COVERAGE_RATIO: float = Field(default=0.6, ge=0, le=1)
@@ -766,12 +766,6 @@ class Settings(BaseSettings):
     WORD_LEGACY_CONVERTER_BINARY: str = "soffice"
     WORD_LEGACY_CONVERTER_TIMEOUT_SECONDS: float = Field(default=120, gt=0)
     WORD_MAX_CONCURRENCY: int = Field(default=2, ge=1, le=32)
-    MINERU_API_URL: str = "https://mineru.net/api/v4/extract/task"
-    # 精准解析 V4 官方鉴权是 Bearer Token，不是 Access/Secret 签名。
-    MINERU_API_TOKEN: str | None = None
-    MINERU_API_KEY: str | None = None  # 兼容旧部署变量，新部署使用 TOKEN
-    MINERU_TIMEOUT: int = 300  # MinerU API 请求超时（秒）
-    MINERU_MODEL_VERSION: str = "vlm"  # pipeline / vlm / MinerU-HTML
 
     @model_validator(mode="after")
     def validate_document_queue_settings(self) -> "Settings":

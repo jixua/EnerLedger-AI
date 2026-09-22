@@ -2043,11 +2043,8 @@ class SimpleDocumentIngestionService:
             **parser_kwargs,
         )
         metadata = output.get("metadata") or {}
-        if identity.file_type == "pdf" and metadata.get("pdf_parser_backend") not in {
-            "mineru",
-            "opendataloader",
-        }:
-            raise DocumentIngestionError("PDF 未由 MinerU 或 OpenDataLoader 完成解析")
+        if identity.file_type == "pdf" and metadata.get("pdf_parser_backend") != "opendataloader":
+            raise DocumentIngestionError("PDF 未由本地 OpenDataLoader 完成解析")
         return output
 
     async def _upload_markdown(self, bucket: str, object_key: str, markdown: str) -> None:

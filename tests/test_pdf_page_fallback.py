@@ -309,6 +309,29 @@ async def test_missing_providers_preserve_odl_page_markdown_with_warnings(
 
 
 @pytest.mark.asyncio
+async def test_local_ocr_handles_chart_page_when_vision_provider_is_absent(
+    tmp_path: Path,
+) -> None:
+    pdf_path = tmp_path / "mixed.pdf"
+    _write_mixed_pdf(pdf_path)
+    markdown = _mixed_markdown()
+    quality = _quality_analyzer().analyze(pdf_path, markdown)
+    ocr_provider = _FakeOcrProvider()
+
+    fallback = await PdfPageFallbackProcessor(
+        ocr_provider=ocr_provider,
+        vision_provider=None,
+    ).process(pdf_path, markdown, quality)
+
+    assert [result.method for result in fallback.results] == [
+        PageFallbackMethod.OCR,
+        PageFallbackMethod.OCR,
+    ]
+    assert "LOCAL_VISUAL_OCR_ONLY" in fallback.results[1].warnings
+    assert len(ocr_provider.calls) == 2
+
+
+@pytest.mark.asyncio
 async def test_text_only_page_is_not_rendered_or_sent_to_providers(tmp_path: Path) -> None:
     pdf_path = tmp_path / "text.pdf"
     _write_text_pdf(pdf_path)

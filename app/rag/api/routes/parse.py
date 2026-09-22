@@ -36,8 +36,6 @@ async def extract_sync(
     docling_force_ocr: bool = Form(False),
     image_bucket: str | None = Form(None),
     image_prefix: str | None = Form(None),
-    source_file_url: str | None = Form(None),
-    mineru_model_version: str = Form("vlm"),
 ):
     """同步解析文档"""
     # multipart upload 接到 bytes 后，统一落到 PARSE_TEMP_DIR 转成 Path 喂给协议化的
@@ -48,8 +46,6 @@ async def extract_sync(
         if file_type.lower() == "pdf":
             parser_kwargs["backend"] = pdf_parser_backend
             parser_kwargs["docling_force_ocr"] = docling_force_ocr
-            parser_kwargs["source_file_url"] = source_file_url
-            parser_kwargs["mineru_model_version"] = mineru_model_version
             if image_bucket and image_prefix:
                 parser_kwargs["image_bucket"] = image_bucket
                 parser_kwargs["image_prefix"] = image_prefix

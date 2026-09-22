@@ -821,7 +821,15 @@ class PdfPageFallbackProcessor:
                 page_quality,
                 page_slice.body,
             ):
-                method = PageFallbackMethod.VISION
+                if self._vision_provider is not None:
+                    method = PageFallbackMethod.VISION
+                elif self._ocr_provider is not None:
+                    # 纯本地模式下用 OCR 至少保留图表的标签、数值和单位。
+                    # 趋势、箭头和实体关系无法由 OCR 可靠推断，由质量报告保留诊断。
+                    method = PageFallbackMethod.OCR
+                    target_warnings.append("LOCAL_VISUAL_OCR_ONLY")
+                else:
+                    method = PageFallbackMethod.VISION
             else:
                 continue
             targets.append(
