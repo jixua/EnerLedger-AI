@@ -33,11 +33,15 @@ from app.api.report_agent_internal import router as report_agent_internal_router
 from app.api.reports import router as reports_router
 from app.api.structured_data import router as structured_data_router
 from app.api.system import router as system_router
+from app.api.users import router as users_router
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_database()
+    from app.domain.auth import ensure_bootstrap_accounts
+
+    await ensure_bootstrap_accounts()
     from app.rag.application.recall_pipeline_provider import (
         prewarm_recall_pipeline,
     )
@@ -106,6 +110,7 @@ app.include_router(rag_router)
 app.include_router(report_agent_internal_router)
 app.include_router(system_router)
 app.include_router(structured_data_router)
+app.include_router(users_router)
 
 
 @app.get("/health/live", tags=["系统"])

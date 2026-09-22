@@ -8,7 +8,7 @@ from sqlalchemy import func, select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.domain.auth import get_shared_owner_user_id, get_user_id
+from app.domain.auth import get_user_id, get_workspace_owner_user_id
 from app.domain.models import Dataset, Document, DocumentFolder
 from app.domain.schemas import (
     DatasetCreate,
@@ -378,7 +378,7 @@ async def create_dataset(
 
 @router.get("", response_model=list[DatasetRead])
 async def list_datasets(
-    user_id: Annotated[int, Depends(get_shared_owner_user_id)],
+    user_id: Annotated[int, Depends(get_workspace_owner_user_id)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> list[DatasetRead]:
     datasets = (

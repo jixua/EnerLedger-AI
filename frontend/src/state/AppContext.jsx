@@ -152,7 +152,10 @@ export function AppProvider({ children }) {
         .catch((error) => { if (mounted.current) setLastError(normalizeMessage(error)); });
       await Promise.all([
         applyResult(listDatasets(), setDatasets),
-        applyResult(listModelConfigs({ includeInactive: !isReviewer }), setModels),
+        applyResult(
+          isReviewer ? Promise.resolve([]) : listModelConfigs({ includeInactive: true }),
+          setModels,
+        ),
         applyResult(
           isReviewer ? Promise.resolve([]) : listAllDocuments(),
           (documents) => setDocuments(groupDocuments(documents)),

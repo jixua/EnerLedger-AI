@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useLocation } from "react-router-dom";
-import { Bot, Database, FileChartColumn, Menu, ShieldCheck, Workflow } from "lucide-react";
+import { Bot, Database, FileChartColumn, Menu, ShieldCheck, UserRoundCog, Workflow } from "lucide-react";
 
 import { SECTIONS, sectionForPath } from "../lib/workspace-sections";
 import { useApp } from "../state/AppContext";
@@ -14,11 +14,12 @@ import { WorkspaceRail } from "./WorkspaceRail";
  * 分区里的对话内容则由 WorkspacePanes 常驻渲染。
  */
 const navigation = [
-  { to: "/datasets", label: "资料库", icon: Database },
-  { to: "/tasks", label: "解析队列", icon: Workflow },
-  { to: "/crawler/review", label: "资料审核", icon: ShieldCheck },
-  { to: "/reports", label: "报告中心", icon: FileChartColumn },
-  { to: "/models", label: "模型配置", icon: Bot },
+  { to: "/datasets", label: "资料库", icon: Database, roles: ["admin", "user"] },
+  { to: "/tasks", label: "解析队列", icon: Workflow, roles: ["admin", "user"] },
+  { to: "/crawler/review", label: "资料审核", icon: ShieldCheck, roles: ["admin", "reviewer"] },
+  { to: "/reports", label: "报告中心", icon: FileChartColumn, roles: ["admin", "user"] },
+  { to: "/models", label: "模型配置", icon: Bot, roles: ["admin", "user"] },
+  { to: "/users", label: "用户管理", icon: UserRoundCog, roles: ["admin"] },
 ];
 
 /** 左栏收起的记忆位。默认展开：收起态只剩图标，「最近对话」整段没了，
@@ -34,9 +35,7 @@ export function AppShell() {
   const { apiReachable, isDemo, lastError } = useApp();
   const { admin } = useAuth();
 
-  const visibleNavigation = admin?.role === "reviewer"
-    ? navigation.filter(({ to }) => to === "/crawler/review")
-    : navigation;
+  const visibleNavigation = navigation.filter(({ roles }) => roles.includes(admin?.role));
 
   const sectionKey = sectionForPath(location.pathname);
   const mobileTitle = SECTIONS.find((section) => section.key === sectionKey)?.label || "详情";

@@ -1,5 +1,5 @@
 /**
- * 工作台的六个常驻分区。
+ * 工作台的常驻分区。
  *
  * 分区页不再由路由渲染，而是由 WorkspaceLayout 自己渲染并常驻（切按钮不卸载，
  * 筛选、表单、滚动位置都留着）。路由只剩三件事：URL、守卫、详情页。
@@ -16,13 +16,17 @@ export const SECTIONS = [
   { key: "review", path: "/crawler/review", label: "资料审核" },
   { key: "reports", path: "/reports", label: "报告中心" },
   { key: "models", path: "/models", label: "模型配置" },
+  { key: "users", path: "/users", label: "用户管理" },
 ];
 
 /** 默认落在对话分区：一进项目就是对话界面。 */
 export const HOME_SECTION = "chat";
 
-/** 审核员只放行对话与资料审核，与路由层的 AdminRoute 是同一套规则的兜底。 */
-export const REVIEWER_SECTIONS = new Set(["chat", "review"]);
+export const ROLE_SECTIONS = {
+  admin: new Set(SECTIONS.map((section) => section.key)),
+  user: new Set(["chat", "library", "tasks", "reports", "models"]),
+  reviewer: new Set(["review"]),
+};
 
 /**
  * 命中某个分区返回其 key，否则返回 null。

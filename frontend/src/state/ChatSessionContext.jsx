@@ -19,6 +19,7 @@ import {
   threadKeyForSubmit,
 } from "../lib/chat-threads";
 import { useApp } from "./AppContext";
+import { useAuth } from "./AuthContext";
 
 /**
  * 对话会话状态活在路由之上。
@@ -125,6 +126,8 @@ async function mockAgentAttachment(file) {
 }
 
 export function ChatSessionProvider({ children }) {
+  const { admin } = useAuth();
+  const chatEnabled = admin?.role !== "reviewer";
   const location = useLocation();
   const {
     datasets = [],
@@ -165,12 +168,16 @@ export function ChatSessionProvider({ children }) {
   useEffect(() => () => { abortRef.current?.abort(); }, []);
 
   const refreshConversations = useCallback(async () => {
+    if (!chatEnabled) {
+      setConversations([]);
+      return;
+    }
     try {
       setConversations(await listAgentConversations());
     } catch {
       setConversations([]);
     }
-  }, []);
+  }, [chatEnabled]);
 
   useEffect(() => {
     void refreshConversations();

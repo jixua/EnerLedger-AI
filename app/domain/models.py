@@ -26,6 +26,39 @@ from app.rag.models.db_models import Base
 UnsignedBigInteger = BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
+class UserAccount(Base):
+    """Interactive account; business resources remain in the shared root workspace."""
+
+    __tablename__ = "user_account"
+    __table_args__ = (
+        UniqueConstraint("username", name="uk_user_account_username"),
+        Index("idx_user_account_role_status", "role", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="ACTIVE", server_default="ACTIVE"
+    )
+    auth_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    created_by_user_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+
+
 class Dataset(Base):
     """知识数据集；模型绑定直接内聚在本表。"""
 

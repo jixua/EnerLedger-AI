@@ -41,6 +41,8 @@ export function WorkspaceRail({ navigation, admin, collapsed, mobileOpen, onColl
   } = useChatSession();
 
   const isCompact = collapsed && !mobileOpen;
+  const canChat = admin?.role !== "reviewer";
+  const homePath = canChat ? "/" : "/crawler/review";
 
   async function handleOpenConversation(id) {
     await openConversation(id);
@@ -56,7 +58,7 @@ export function WorkspaceRail({ navigation, admin, collapsed, mobileOpen, onColl
         className={`workspace-rail ${isCompact ? "workspace-rail--collapsed" : ""} ${mobileOpen ? "workspace-rail--mobile-open" : ""}`}
       >
         <div className="workspace-rail__brand">
-          <button className="brand-button" onClick={() => navigate("/")} aria-label="返回能碳会计 AI 智能体对话">
+          <button className="brand-button" onClick={() => navigate(homePath)} aria-label="返回工作台首页">
             <span className={`brand-word${isCompact ? " brand-word--compact" : ""}`} aria-hidden="true">
               {isCompact ? <span className="brand-word__compact">AI</span> : (
                 <>
@@ -74,7 +76,7 @@ export function WorkspaceRail({ navigation, admin, collapsed, mobileOpen, onColl
           </div>
         </div>
 
-        <button
+        {canChat ? <button
           type="button"
           className="rail-new-chat"
           // 走 `?new=` 而不是直接调 startNewConversation()：那条路上还会中止正在跑的
@@ -83,7 +85,7 @@ export function WorkspaceRail({ navigation, admin, collapsed, mobileOpen, onColl
         >
           <Plus size={16} strokeWidth={2} />
           {isCompact ? null : <span>新建对话</span>}
-        </button>
+        </button> : null}
 
         <nav className="rail-nav" aria-label="功能">
           {navigation.map(({ to, label, icon: Icon }) => (
@@ -100,7 +102,7 @@ export function WorkspaceRail({ navigation, admin, collapsed, mobileOpen, onColl
           ))}
         </nav>
 
-        {isCompact ? null : (
+        {isCompact || !canChat ? null : (
           <section className="rail-conversations" aria-label="最近对话">
             <header className="rail-conversations__header"><span>最近对话</span></header>
             <div className="rail-conversations__list">
@@ -139,7 +141,7 @@ export function WorkspaceRail({ navigation, admin, collapsed, mobileOpen, onColl
           {isCompact ? null : (
             <div className="rail-profile" title="当前账号">
               <span className="rail-profile__avatar">{String(admin?.username || "A").slice(0, 1).toUpperCase()}</span>
-              <span><strong>{admin?.username || "用户"}</strong><small>{admin?.role === "reviewer" ? "资料审核员" : "管理员"}</small></span>
+              <span><strong>{admin?.username || "用户"}</strong><small>{admin?.role === "reviewer" ? "资料审核员" : admin?.role === "user" ? "普通账号" : "管理员"}</small></span>
             </div>
           )}
           <IconButton label="退出登录" onClick={logout}><LogOut size={17} /></IconButton>

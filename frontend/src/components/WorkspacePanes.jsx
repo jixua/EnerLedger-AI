@@ -1,7 +1,7 @@
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { useLocation, useOutlet } from "react-router-dom";
 
-import { HOME_SECTION, REVIEWER_SECTIONS, sectionForPath } from "../lib/workspace-sections";
+import { HOME_SECTION, ROLE_SECTIONS, sectionForPath } from "../lib/workspace-sections";
 import { useAuth } from "../state/AuthContext";
 import { PageLoader } from "./ui";
 
@@ -12,6 +12,7 @@ const PANES = {
   review: lazy(() => import("../pages/CrawlerReviewPage").then((module) => ({ default: module.CrawlerReviewPage }))),
   reports: lazy(() => import("../pages/ReportsPage").then((module) => ({ default: module.ReportsPage }))),
   models: lazy(() => import("../pages/ModelsPage").then((module) => ({ default: module.ModelsPage }))),
+  users: lazy(() => import("../pages/UsersPage").then((module) => ({ default: module.UsersPage }))),
 };
 
 /**
@@ -33,12 +34,14 @@ export function WorkspacePanes() {
 
   const matched = sectionForPath(location.pathname);
   // 与路由层的 AdminRoute 同一套规则的兜底：重定向落地前的那一帧不放出越权面板。
-  const active = matched && admin?.role === "reviewer" && !REVIEWER_SECTIONS.has(matched)
-    ? HOME_SECTION
+  const roleSections = ROLE_SECTIONS[admin?.role] || new Set();
+  const roleHome = admin?.role === "reviewer" ? "review" : HOME_SECTION;
+  const active = matched && !roleSections.has(matched)
+    ? roleHome
     : matched;
   const detailActive = active === null;
 
-  const [visited, setVisited] = useState(() => new Set([HOME_SECTION, ...(active ? [active] : [])]));
+  const [visited, setVisited] = useState(() => new Set([roleHome, ...(active ? [active] : [])]));
   const paneRefs = useRef({});
   const previousActive = useRef(active);
 

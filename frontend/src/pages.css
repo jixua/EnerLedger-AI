@@ -54,6 +54,21 @@
 .panel { padding: 24px; }
 .panel--flush { padding: 0; overflow: hidden; }
 
+.page--users { max-width: 1180px; margin: 0 auto; }
+.user-management { margin-top: 22px; }
+.user-management__header { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid var(--hairline); color: var(--muted); font-size: 12px; }
+.user-management__header strong { color: var(--ink); }
+.user-management__loading { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 180px; color: var(--muted); font-size: 12px; }
+.user-table { min-width: 940px; }
+.user-table td:first-child strong { display: block; color: var(--ink); font-size: 12px; }
+.user-table td:first-child small { color: var(--muted); font-size: 9px; }
+.user-table select { min-width: 116px; min-height: 32px; padding: 0 28px 0 9px; border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface); color: var(--body); font-size: 11px; }
+.user-table__actions { display: flex; gap: 6px; }
+.user-status { display: inline-flex; padding: 4px 8px; border-radius: 999px; font-size: 10px; font-weight: 650; }
+.user-status--active { background: var(--success-soft); color: var(--success); }
+.user-status--disabled { background: var(--surface-soft); color: var(--muted); }
+.user-dialog { width: min(500px, 100%); }
+
 .primary-button,
 .secondary-button {
   min-height: 38px;

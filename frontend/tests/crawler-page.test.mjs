@@ -33,12 +33,12 @@ test("crawler review gates parsing behind an explicit approval action", () => {
   assert.match(crawlerReviewPageSource, /datasetId: targetDatasetId/);
 });
 
-test("reviewer navigation only exposes chat and document review", () => {
-  assert.match(appShellSource, /admin\?\.role === "reviewer"/);
-  // 对话已从导航数组里拿掉（改成左栏顶层那个「新建对话」动作，人人都有），
-  // 所以审核员剩下的白名单条目就只有资料审核这一条。
-  assert.match(appShellSource, /to === "\/crawler\/review"/);
+test("reviewer navigation only exposes document review", () => {
+  assert.match(appShellSource, /roles: \["admin", "reviewer"\]/);
+  assert.match(appShellSource, /roles\.includes\(admin\?\.role\)/);
   assert.match(appSource, /function AdminRoute/);
+  assert.match(appSource, /admin\?\.role === "reviewer"/);
+  assert.match(appSource, /Navigate to="\/crawler\/review"/);
 });
 
 test("review preview renders PDF and Markdown without parsing Word before approval", () => {

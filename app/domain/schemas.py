@@ -52,7 +52,7 @@ class AuthToken(UtcTimestampModel):
 class CurrentAdmin(BaseModel):
     user_id: int
     username: str
-    role: Literal["admin", "reviewer"]
+    role: Literal["admin", "user", "reviewer"]
 
 
 class DatasetCreate(BaseModel):
