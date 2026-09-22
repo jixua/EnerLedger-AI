@@ -38,7 +38,7 @@ class DatasetParseConfigRepository:
             sparse_embedding_config_id=row.sparse_embedding_config_id,
             dense_embedding_config_id=row.dense_embedding_config_id,
             enhancement_chat_config_id=None,
-            # 保留历史绑定字段用于 API/数据兼容；纯本地文件解析不会解析或调用它。
+            # 基础文件解析保持本地；该绑定仅用于可选的视觉模型增强与 OCR 兜底。
             enhancement_vision_config_id=row.vision_config_id,
             rerank_config_id=None,
             chunking_config={},

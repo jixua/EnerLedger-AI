@@ -45,6 +45,7 @@ from app.rag.core.parser.pdf.image_asset_policy import (
     StructuredVisualDescription,
 )
 from app.rag.core.parser.pdf.page_fallback import (
+    AnalyzeImagePageProviderAdapter,
     PageFallbackMethod,
     PdfPageFallbackProcessor,
     QualityGatedOcrPageProvider,
@@ -673,17 +674,23 @@ class SimpleDocumentIngestionService:
 
     def _build_pdf_fallback_processor(
         self,
-        _resolved_vision: Any | None,
+        resolved_vision: Any | None,
     ) -> PdfPageFallbackProcessor:
+        vision_provider = None
+        if resolved_vision is not None:
+            vision_provider = AnalyzeImagePageProviderAdapter(
+                resolved_vision.provider,
+                model_name=resolved_vision.model_name,
+            )
         ocr_provider = QualityGatedOcrPageProvider(
             self._rapidocr_provider,
-            None,
+            vision_provider,
             min_effective_text_chars=settings.PDF_QUALITY_MIN_EFFECTIVE_TEXT_CHARS,
             min_confidence=settings.PDF_QUALITY_MIN_OCR_CONFIDENCE,
         )
         return PdfPageFallbackProcessor(
             ocr_provider=ocr_provider,
-            vision_provider=None,
+            vision_provider=vision_provider,
             dpi=settings.PDF_FALLBACK_RENDER_DPI,
             min_chart_image_coverage_ratio=(
                 settings.PDF_FALLBACK_MIN_CHART_IMAGE_COVERAGE_RATIO

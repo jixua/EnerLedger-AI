@@ -79,9 +79,12 @@ class DatasetExecutionContextLoader:
                         "CHAT",
                     )
                 )
-            # 当前数据集投影固定关闭外部表格/图片/标题增强。历史 Vision
-            # 绑定不再因 PDF OCR 而被解析；扫描页统一使用本地 RapidOCR。
-            if config.enhancement.enable_image_enhancement:
+            # PDF 基础解析仍在本地完成；数据集绑定的 Vision 仅用于本地 OCR
+            # 低置信兜底和图表语义增强，因此绑定存在时也要解析执行快照。
+            if (
+                config.enhancement.enable_image_enhancement
+                or bindings.enhancement_vision_config_id is not None
+            ):
                 required.append(
                     (
                         "enhancement_vision_config_id",

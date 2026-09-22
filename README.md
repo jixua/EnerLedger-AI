@@ -190,8 +190,9 @@ uv run python scripts/evaluate_pdf_acceptance.py \
 ## 模型配置与调用顺序
 
 Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。开始解析前，需要分别创建
-`EMBEDDING` 和 `SPARSE_EMBEDDING` 配置；使用 SSE 对话还需要 `CHAT` 配置。文件内容提取本身不调用
-外部解析或 Vision 服务：PDF 使用本地 OpenDataLoader，扫描页和图表文字使用本地 RapidOCR。
+`EMBEDDING` 和 `SPARSE_EMBEDDING` 配置；使用 SSE 对话还需要 `CHAT` 配置。PDF、Word、HTML
+等基础文件解析不调用外部解析服务；可选的 Vision/Chat 模型仍可用于 OCR 低置信兜底、
+图表语义和 Markdown 增强。
 
 - 最终 `EMBEDDING` 输出维度必须等于 `DENSE_VECTOR_DIMENSION`，默认 2048；语义切片模型不受该维度约束。
 - `SPARSE_EMBEDDING` 可使用 `bge_m3` 或 `doubao_vision` 等已迁入协议。
@@ -351,9 +352,9 @@ RabbitMQ 确认前后崩溃都能恢复；极端窗口可能重复投递，但�
 随后强制核对原页数与 `ODL_PAGE` 页序，统计正文/图片覆盖、旋转和 OCR 置信度。
 对可靠文本层同时使用顺序敏感的 source recall 和 output precision 门禁，
 两者默认均不低于 97%，避免截断、乱序或重复正文进入索引。扫描页按
-`250–300 DPI`（默认 280）整页使用本地 RapidOCR；图表页同样使用本地 OCR 保留标签、
-数值和单位，不再把页图发送给 Vision 模型。OCR 无法可靠推断的趋势、箭头和实体关系会在
-质量报告中保留 `LOCAL_VISUAL_OCR_ONLY` 诊断，不会伪造结构化语义。质量报告直接
+`250–300 DPI`（默认 280）整页优先使用本地 RapidOCR；低置信时允许使用数据集绑定的
+Vision 模型兜底。图表页绑定 Vision 时补充趋势、箭头和实体关系；未绑定时仅用本地 OCR
+保留标签、数值和单位，并在质量报告中记录 `LOCAL_VISUAL_OCR_ONLY`。质量报告直接
 保存在 `document.parse_quality_status/parse_quality`，没有新增业务表。
 独立 OpenDataLoader 进程同时受输出目录、文件数和日志容量硬限制：默认最多
 `10000` 个输出文件（`PDF_MAX_OUTPUT_FILES`），stdout/stderr 合计最多 `16 MiB`
@@ -416,5 +417,5 @@ curl -fsS http://127.0.0.1:9308/
 本地 Docker 整栈、真实 Dense/Sparse/Chat 模型、HTML 解析、RabbitMQ 主动解析队列、
 MinIO/Qdrant/Manticore 写读、三路召回和 SSE 流式对话已于 2026-08-10 完成联调验证。
 本轮另用真实 4 页正文 PDF 验证 ODL 页序与表格 A/B，并用真实 4 页扫描 PDF 验证全部页面
-进入 280 DPI 本地 RapidOCR 门禁。字符、公式和图表文字准确率仍必须通过上述人工金标工具
+进入 280 DPI 本地 RapidOCR 门禁。Vision 增强以及字符、公式和图表文字准确率仍必须通过上述人工金标工具
 验收；单元测试或结构门禁通过不能替代准确率金标。
