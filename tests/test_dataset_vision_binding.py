@@ -43,7 +43,7 @@ def test_dataset_projection_maps_vision_binding_to_linkrag_execution_slot() -> N
 
 
 @pytest.mark.asyncio
-async def test_parse_context_resolves_bound_vision_when_image_enhancement_is_disabled(
+async def test_parse_context_does_not_resolve_bound_vision_when_image_enhancement_is_disabled(
     monkeypatch,
 ) -> None:
     config = DatasetParseConfigBundle(
@@ -79,7 +79,5 @@ async def test_parse_context_resolves_bound_vision_when_image_enhancement_is_dis
     assert resolved_calls == [
         (101, "EMBEDDING"),
         (102, "SPARSE_EMBEDDING"),
-        (104, "VISION"),
     ]
-    assert context.enhancement_vision is not None
-    assert context.enhancement_vision.config_id == 104
+    assert context.enhancement_vision is None

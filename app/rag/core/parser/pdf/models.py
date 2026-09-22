@@ -49,12 +49,7 @@ class PdfParseOptions:
     image_prefix: str | None = None
     image_upload_async: bool = True
     storage: BaseObjectStorage | None = None
-    source_file_url: str | None = None
     docling_force_ocr: bool = False
-    mineru_api_url: str | None = None
-    mineru_api_key: str | None = None
-    mineru_timeout: int = 300
-    mineru_model_version: str = "vlm"
     opendataloader_table_method: Literal["default", "cluster"] = "default"
     opendataloader_markdown_with_html: bool = False
     # ``None`` keeps the deployment-wide default.  A per-run override is useful for

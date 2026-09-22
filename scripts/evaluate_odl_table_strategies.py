@@ -261,7 +261,7 @@ class OpenDataLoaderTableAbRunner:
     ) -> PdfParser:
         # Explicit backend selection keeps this path inside the repository's ODL
         # implementation.  ``_run_strategy`` additionally rejects any deployment
-        # fallback result, so Naive/MinerU output can never enter the comparison.
+        # fallback result, so Naive output can never enter the comparison.
         return PdfParser(
             backend="opendataloader",
             opendataloader_table_method=strategy,

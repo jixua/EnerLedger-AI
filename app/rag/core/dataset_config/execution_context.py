@@ -79,13 +79,9 @@ class DatasetExecutionContextLoader:
                         "CHAT",
                     )
                 )
-            # dataset.vision_config_id 同时承担 PDF 页级 OCR/视觉兜底。
-            # 因此只要已绑定，即使普通图像增强关闭，PARSE 也必须
-            # 预先解析出可执行快照。
-            if (
-                config.enhancement.enable_image_enhancement
-                or bindings.enhancement_vision_config_id is not None
-            ):
+            # 当前数据集投影固定关闭外部表格/图片/标题增强。历史 Vision
+            # 绑定不再因 PDF OCR 而被解析；扫描页统一使用本地 RapidOCR。
+            if config.enhancement.enable_image_enhancement:
                 required.append(
                     (
                         "enhancement_vision_config_id",

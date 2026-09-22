@@ -77,9 +77,7 @@ class PdfParserService:
     def parse(self, source: Path | None, options: PdfParseOptions) -> tuple[str, dict]:
         """根据 backend 链路解析 PDF。
 
-        ``source is None`` 仅在 MinerU URL 旁路下合法：此时 backends 不读取本地文件，
-        仅依赖 ``options.source_file_url`` 调云端 API。其他 backend 接到 ``None`` 会
-        在自己的逻辑里返回空字符串触发 fallback。
+        所有 backend 只在本地文件上工作；``source is None`` 仅作为防御性输入保留。
         """
         metadata: dict = {
             "pdf_parser_requested_backend": options.backend,
@@ -113,15 +111,7 @@ class PdfParserService:
                     **scan_report.to_dict(),
                 }
                 if scan_report.is_scanned_document:
-                    available_backends = set(self._registry.available_backends())
-                    if "mineru" in available_backends:
-                        backend_order = [
-                            "mineru",
-                            *(name for name in backend_order if name != "mineru"),
-                        ]
-                        metadata["pdf_parser_route"] = "scanned_document_mineru"
-                    else:
-                        metadata["pdf_parser_route"] = "scanned_document_mineru_unavailable"
+                    metadata["pdf_parser_route"] = "scanned_document_local"
                 else:
                     metadata["pdf_parser_route"] = "configured_backend_order"
 
@@ -288,7 +278,7 @@ class PdfParserService:
                 binary_assets,
             )
 
-        # MinerU URL API 场景不携带本地 PDF；此时只能依赖云端 ZIP 中已返回的图片资产。
+        # 防御性兼容空路径；生产解析在 parser 入口已要求本地文件。
         if source is None:
             return []
 
@@ -773,12 +763,12 @@ class PdfParserService:
             return markdown
 
         remaining = list(image_assets)
-        if backend in {"opendataloader", "mineru"}:
+        if backend == "opendataloader":
             markdown = self._replace_existing_image_urls(
                 markdown,
                 remaining,
-                allow_filename_fallback=backend != "opendataloader",
-                reuse_exact_source=backend == "opendataloader",
+                allow_filename_fallback=False,
+                reuse_exact_source=True,
             )
         if backend == "opendataloader":
             # ODL assets absent from its Markdown cannot be placed at a trustworthy page.
@@ -822,7 +812,7 @@ class PdfParserService:
         # produces one binary asset for that file, so consuming the asset on the first
         # match leaves later references broken.  Resolve exact ODL paths from a stable
         # pool, record the asset as consumed once, and reuse its object URL for every
-        # occurrence.  MinerU keeps the historical one-to-one/fallback behavior.
+        # occurrence.
         reusable_assets = tuple(remaining)
         consumed_asset_ids: set[int] = set()
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pymupdf
+import pytest
 
 from app.rag.core.parser.pdf.base import BasePdfBackend
 from app.rag.core.parser.pdf.models import PdfParseOptions
@@ -68,14 +69,9 @@ class _RecordingBackend(BasePdfBackend):
 def _registry(
     calls: list[str],
     *,
-    mineru_markdown: str = "MinerU parsed",
     opendataloader_markdown: str = "OpenDataLoader parsed",
 ) -> PdfBackendRegistry:
-    registry = PdfBackendRegistry(default_backend="opendataloader", fallbacks="mineru")
-    registry.register(
-        "mineru",
-        lambda _options: _RecordingBackend("mineru", calls, mineru_markdown),
-    )
+    registry = PdfBackendRegistry(default_backend="opendataloader", fallbacks="")
     registry.register(
         "opendataloader",
         lambda _options: _RecordingBackend(
@@ -87,7 +83,7 @@ def _registry(
     return registry
 
 
-def test_scanned_pdf_uses_mineru_before_configured_backend(tmp_path: Path) -> None:
+def test_scanned_pdf_keeps_local_backend(tmp_path: Path) -> None:
     source = tmp_path / "scan.pdf"
     _write_scan_pdf(source)
     calls: list[str] = []
@@ -97,11 +93,11 @@ def test_scanned_pdf_uses_mineru_before_configured_backend(tmp_path: Path) -> No
         PdfParseOptions(backend="opendataloader"),
     )
 
-    assert markdown == "MinerU parsed"
-    assert calls == ["mineru"]
-    assert metadata["pdf_parser_backend"] == "mineru"
-    assert metadata["pdf_parser_backend_order"] == ["mineru", "opendataloader"]
-    assert metadata["pdf_parser_route"] == "scanned_document_mineru"
+    assert markdown == "OpenDataLoader parsed"
+    assert calls == ["opendataloader"]
+    assert metadata["pdf_parser_backend"] == "opendataloader"
+    assert metadata["pdf_parser_backend_order"] == ["opendataloader"]
+    assert metadata["pdf_parser_route"] == "scanned_document_local"
     assert metadata["pdf_scan_detection"]["is_scanned_document"] is True
 
 
@@ -117,12 +113,12 @@ def test_born_digital_pdf_keeps_configured_backend_order(tmp_path: Path) -> None
 
     assert markdown == "OpenDataLoader parsed"
     assert calls == ["opendataloader"]
-    assert metadata["pdf_parser_backend_order"] == ["opendataloader", "mineru"]
+    assert metadata["pdf_parser_backend_order"] == ["opendataloader"]
     assert metadata["pdf_parser_route"] == "configured_backend_order"
     assert metadata["pdf_scan_detection"]["is_scanned_document"] is False
 
 
-def test_scan_dominant_pdf_uses_mineru_at_configured_ratio(tmp_path: Path) -> None:
+def test_scan_dominant_pdf_uses_local_backend_at_configured_ratio(tmp_path: Path) -> None:
     source = tmp_path / "scan-dominant.pdf"
     _write_scan_dominant_pdf(source)
     calls: list[str] = []
@@ -132,33 +128,39 @@ def test_scan_dominant_pdf_uses_mineru_at_configured_ratio(tmp_path: Path) -> No
         PdfParseOptions(backend="opendataloader"),
     )
 
-    assert markdown == "MinerU parsed"
-    assert calls == ["mineru"]
-    assert metadata["pdf_parser_route"] == "scanned_document_mineru"
+    assert markdown == "OpenDataLoader parsed"
+    assert calls == ["opendataloader"]
+    assert metadata["pdf_parser_route"] == "scanned_document_local"
     assert metadata["pdf_scan_detection"]["scanned_page_ratio"] == 0.8
     assert metadata["pdf_scan_detection"]["min_scanned_page_ratio"] == 0.8
 
 
-def test_scanned_pdf_falls_back_when_mineru_is_unavailable(tmp_path: Path) -> None:
+def test_scanned_pdf_reports_local_backend_failure(tmp_path: Path) -> None:
     source = tmp_path / "scan.pdf"
     _write_scan_pdf(source)
     calls: list[str] = []
 
     markdown, metadata = PdfParserService(
-        _registry(calls, mineru_markdown="")
+        _registry(calls, opendataloader_markdown="")
     ).parse(
         source,
         PdfParseOptions(backend="opendataloader"),
     )
 
-    assert markdown == "OpenDataLoader parsed"
-    assert calls == ["mineru", "opendataloader"]
-    assert metadata["pdf_parser_backend"] == "opendataloader"
+    assert markdown == ""
+    assert calls == ["opendataloader"]
+    assert metadata["pdf_parser_backend"] is None
     assert metadata["pdf_parser_attempts"] == [
         {
-            "backend": "mineru",
+            "backend": "opendataloader",
             "success": False,
-            "reason": "mineru unavailable",
+            "reason": "opendataloader unavailable",
         },
-        {"backend": "opendataloader", "success": True},
     ]
+
+
+def test_remote_pdf_backend_is_rejected() -> None:
+    registry = _registry([])
+
+    with pytest.raises(ValueError, match="不支持的 PDF 解析器"):
+        registry.resolve_order("mineru")

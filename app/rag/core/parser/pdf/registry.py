@@ -3,7 +3,6 @@ from __future__ import annotations
 from collections.abc import Callable
 
 from app.rag.config import settings
-from app.rag.core.parser.pdf.backends.mineru_backend import MinerUBackend
 from app.rag.core.parser.pdf.backends.naive_backend import NaivePdfBackend
 from app.rag.core.parser.pdf.backends.opendataloader_backend import OpenDataLoaderBackend
 from app.rag.core.parser.pdf.base import BasePdfBackend
@@ -25,7 +24,7 @@ class PdfBackendRegistry:
     不需要修改解析编排流程。
     """
 
-    AUTO_BACKEND_ORDER = ("mineru", "opendataloader", "naive")
+    AUTO_BACKEND_ORDER = ("opendataloader", "naive")
 
     def __init__(
         self,
@@ -63,9 +62,11 @@ class PdfBackendRegistry:
         requested = (backend or self.default_backend).lower()
         if requested == "auto":
             return [name for name in self.AUTO_BACKEND_ORDER if name in self._factories]
+        if requested not in self._factories:
+            available = ", ".join(self.available_backends())
+            raise ValueError(f"不支持的 PDF 解析器: {requested}; 可选: {available}")
 
-        primary = requested if requested in self._factories else self.default_backend
-        order = [primary]
+        order = [requested]
         for item in (self.fallbacks or "").split(","):
             fallback = item.strip().lower()
             if fallback in self._factories and fallback not in order:
@@ -78,7 +79,6 @@ class PdfBackendRegistry:
 
 def create_default_pdf_backend_registry() -> PdfBackendRegistry:
     registry = PdfBackendRegistry()
-    registry.register(MinerUBackend.name, _create_mineru_backend)
     registry.register(OpenDataLoaderBackend.name, _create_opendataloader_backend)
     registry.register(NaivePdfBackend.name, NaivePdfBackend)
     for name, factory in _EXTRA_BACKEND_FACTORIES.items():
@@ -98,31 +98,6 @@ def register_pdf_backend(
     if not backend_name:
         raise ValueError("PDF 解析器名称不可为空")
     _EXTRA_BACKEND_FACTORIES[backend_name] = factory
-
-
-def _create_mineru_backend(options: PdfParseOptions) -> MinerUBackend | None:
-    api_url = getattr(options, "mineru_api_url", None) or ""
-    if not api_url:
-        return None
-    limits = PdfReliabilityLimits(
-        max_pages=settings.PDF_MAX_PAGES,
-        max_images=settings.PDF_MAX_IMAGES,
-        max_single_image_pixels=settings.PDF_MAX_SINGLE_IMAGE_PIXELS,
-        max_total_image_pixels=settings.PDF_MAX_TOTAL_IMAGE_PIXELS,
-        max_total_decoded_image_bytes=settings.PDF_MAX_TOTAL_DECODED_IMAGE_BYTES,
-        max_single_image_bytes=settings.PDF_MAX_SINGLE_IMAGE_BYTES,
-        max_single_output_image_bytes=settings.PDF_MAX_SINGLE_OUTPUT_IMAGE_BYTES,
-        max_total_image_bytes=settings.PDF_MAX_TOTAL_IMAGE_BYTES,
-        max_output_files=settings.PDF_MAX_OUTPUT_FILES,
-        max_output_dir_bytes=settings.PDF_MAX_OUTPUT_DIR_BYTES,
-        max_log_bytes=settings.OPENDATALOADER_MAX_LOG_BYTES,
-    )
-    return MinerUBackend(
-        api_url=api_url,
-        api_key=getattr(options, "mineru_api_key", None),
-        timeout=getattr(options, "mineru_timeout", 300),
-        limits=limits,
-    )
 
 
 def _create_opendataloader_backend(options: PdfParseOptions) -> OpenDataLoaderBackend:

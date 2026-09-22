@@ -169,7 +169,7 @@ uv run python scripts/evaluate_odl_table_strategies.py \
 目录默认递归扫描，可用 `--no-recursive` 关闭。`--markdown-with-html` 同时
 影响两组，`--default-markdown-with-html` 和 `--cluster-markdown-with-html` 可分别
 覆盖。报告保留每组耗时、解析元数据、错误码、可重试标记、表格结构指标和
-推荐策略；任一策略失败时进程返回码为 `1`，且不会用 Naive/MinerU
+推荐策略；任一策略失败时进程返回码为 `1`，且不会用 Naive
 的降级结果冒充 OpenDataLoader 样本。
 
 ### PDF 金标验收
@@ -190,8 +190,8 @@ uv run python scripts/evaluate_pdf_acceptance.py \
 ## 模型配置与调用顺序
 
 Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。开始解析前，需要分别创建
-`EMBEDDING` 和 `SPARSE_EMBEDDING` 配置；使用 SSE 对话还需要 `CHAT` 配置。包含扫描页、
-图表或流程图的 PDF 应在数据集绑定可选 `VISION` 配置，供页级 OCR/视觉兜底使用。
+`EMBEDDING` 和 `SPARSE_EMBEDDING` 配置；使用 SSE 对话还需要 `CHAT` 配置。文件内容提取本身不调用
+外部解析或 Vision 服务：PDF 使用本地 OpenDataLoader，扫描页和图表文字使用本地 RapidOCR。
 
 - 最终 `EMBEDDING` 输出维度必须等于 `DENSE_VECTOR_DIMENSION`，默认 2048；语义切片模型不受该维度约束。
 - `SPARSE_EMBEDDING` 可使用 `bge_m3` 或 `doubao_vision` 等已迁入协议。
@@ -350,16 +350,15 @@ RabbitMQ 确认前后崩溃都能恢复；极端窗口可能重复投递，但�
 均分块落盘，不会把 100 MiB 文件整体读入内存。PDF 仍以 OpenDataLoader 结构解析为主，
 随后强制核对原页数与 `ODL_PAGE` 页序，统计正文/图片覆盖、旋转和 OCR 置信度。
 对可靠文本层同时使用顺序敏感的 source recall 和 output precision 门禁，
-两者默认均不低于 97%，避免截断、乱序、重复正文或追加幻觉文本进入索引。扫描页按
-`250–300 DPI`（默认 280）整页送数据集绑定的 Vision 模型做 OCR；图表页补充结构化实体、
-数值和箭头关系，再按原页码合并。页数不一致、OCR 未完成/低置信、视觉结构未完成或
-表格/图片/公式专项验证失败都只会进入 `FAILED`，不会写入可检索 `READY`。质量报告直接
+两者默认均不低于 97%，避免截断、乱序或重复正文进入索引。扫描页按
+`250–300 DPI`（默认 280）整页使用本地 RapidOCR；图表页同样使用本地 OCR 保留标签、
+数值和单位，不再把页图发送给 Vision 模型。OCR 无法可靠推断的趋势、箭头和实体关系会在
+质量报告中保留 `LOCAL_VISUAL_OCR_ONLY` 诊断，不会伪造结构化语义。质量报告直接
 保存在 `document.parse_quality_status/parse_quality`，没有新增业务表。
 独立 OpenDataLoader 进程同时受输出目录、文件数和日志容量硬限制：默认最多
 `10000` 个输出文件（`PDF_MAX_OUTPUT_FILES`），stdout/stderr 合计最多 `16 MiB`
 （`OPENDATALOADER_MAX_LOG_BYTES`）。运行中超限会终止整个进程组，并以确定性资源错误结束，
-不会重试同一份输入。单页模型结构字段只保留白名单且最多 `64 KiB`，整份文档默认
-最多 `4 MiB`（`PDF_FALLBACK_MAX_STRUCTURED_REPORT_BYTES`）；OCR 正文不会在质量 JSON 中重复持久化。
+不会重试同一份输入。OCR 正文不会在质量 JSON 中重复持久化。
 
 ## 分片实现与查看
 
@@ -417,5 +416,5 @@ curl -fsS http://127.0.0.1:9308/
 本地 Docker 整栈、真实 Dense/Sparse/Chat 模型、HTML 解析、RabbitMQ 主动解析队列、
 MinIO/Qdrant/Manticore 写读、三路召回和 SSE 流式对话已于 2026-08-10 完成联调验证。
 本轮另用真实 4 页正文 PDF 验证 ODL 页序与表格 A/B，并用真实 4 页扫描 PDF 验证全部页面
-进入 280 DPI OCR 门禁。真实 Vision 模型的字符/公式/图表准确率仍必须通过上述人工金标工具
+进入 280 DPI 本地 RapidOCR 门禁。字符、公式和图表文字准确率仍必须通过上述人工金标工具
 验收；单元测试或结构门禁通过不能替代准确率金标。

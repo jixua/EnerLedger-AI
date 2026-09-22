@@ -18,7 +18,6 @@ class NaivePdfBackend(BasePdfBackend):
     )
 
     def parse(self, source: Path | None, options=None) -> tuple[str, list[PdfBinaryAsset]]:
-        # ``source is None`` 仅在 MinerU 旁路出现，且本 backend 不会被旁路选中调用；
         # 防御性返回空，让上层 fallback 决策。
         if source is None:
             return "", []

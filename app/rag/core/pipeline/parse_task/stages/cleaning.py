@@ -54,7 +54,7 @@ class CleaningStage(Stage):
         try:
             if self._services.source_io.should_skip_source_download(payload):
                 logger.info(
-                    "[ParseTask] source_download_skipped {} reason=mineru_url_api",
+                    "[ParseTask] source_download_skipped {} reason=source_policy",
                     task_log_context(payload),
                 )
             else:

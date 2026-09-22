@@ -20,8 +20,8 @@ if TYPE_CHECKING:
 class ParseTaskService:
     """Core service: parse source files and orchestrate markdown enhancement.
 
-    入参形态：``source_path: Path | None``。``None`` 仅在 MinerU URL 旁路下出现，由具体
-    parser 透传到云端 API。所有 provider 已经按路径打开，无需在本服务层把文件读成 bytes。
+    入参形态：``source_path: Path | None``。生产解析必须传入本地路径；所有
+    provider 按路径打开，无需在本服务层把文件读成 bytes。
     """
 
     _PDF_PAGE_MARKER = re.compile(r"^<!--\s*ODL_PAGE:(\d+)\s*-->$")
