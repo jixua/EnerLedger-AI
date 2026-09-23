@@ -302,7 +302,7 @@ async def recall_event_stream(
             else {}
         )
 
-        routes = _ltr_routes(response.route_hits, ltr_candidate_hits, contents)
+        routes = build_ltr_routes(response.route_hits, ltr_candidate_hits, contents)
         ranker = get_initialized_ltr_ranker() if ltr_mode == "active" else None
         ranking_diagnostics = None
 
@@ -516,7 +516,7 @@ def _sample_ltr_shadow(request_id: str) -> bool:
     return bucket < rate
 
 
-def _ltr_routes(
+def build_ltr_routes(
     route_hits: dict[str, list[RetrieverHit]],
     candidate_hits: list[RecallHit],
     contents: dict[str, str],
@@ -668,7 +668,7 @@ async def _run_ltr_shadow(
     contents = await fetch_chunk_contents(
         [hit.chunk_id for hit in candidate_hits], recall_req.user_id
     )
-    routes = _ltr_routes(response.route_hits, candidate_hits, contents)
+    routes = build_ltr_routes(response.route_hits, candidate_hits, contents)
     if not routes:
         raise RuntimeError("LambdaMART shadow has no candidates with content")
     return await ranker.rank(query=recall_req.query, routes=routes, candidate_contents=contents)

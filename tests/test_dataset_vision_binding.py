@@ -13,6 +13,7 @@ from app.rag.core.dataset_config.models import (
     DatasetModelBindingConfig,
     DatasetParseConfigBundle,
     EnhancementConfig,
+    RecallConfig,
 )
 from app.rag.core.dataset_config.repository import DatasetParseConfigRepository
 
@@ -83,3 +84,35 @@ async def test_parse_context_resolves_bound_vision_when_image_enhancement_is_dis
     ]
     assert context.enhancement_vision is not None
     assert context.enhancement_vision.config_id == 104
+
+
+@pytest.mark.asyncio
+async def test_agent_recall_does_not_resolve_optional_remote_reranker(monkeypatch) -> None:
+    config = DatasetParseConfigBundle(
+        recall=RecallConfig(enable_rerank=True),
+        model_bindings=DatasetModelBindingConfig(
+            dense_embedding_config_id=101,
+            sparse_embedding_config_id=102,
+            rerank_config_id=None,
+        ),
+    )
+    resolved_calls: list[tuple[int, str]] = []
+
+    async def fake_resolve_model(*, config_id: int, capability: str, **_kwargs):
+        resolved_calls.append((config_id, capability))
+        return SimpleNamespace(config_id=config_id, provider=object())
+
+    monkeypatch.setattr(
+        "app.rag.core.dataset_config.execution_context.aresolve_model",
+        fake_resolve_model,
+    )
+    loader = DatasetExecutionContextLoader(
+        db=object(),
+        config_service=_ConfigService(config),
+        repository=object(),
+    )
+
+    context = await loader.load(11, 7, DatasetExecutionPurpose.AGENT_RECALL)
+
+    assert resolved_calls == [(101, "EMBEDDING"), (102, "SPARSE_EMBEDDING")]
+    assert context.rerank is None
