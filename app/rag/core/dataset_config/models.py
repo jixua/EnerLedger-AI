@@ -197,7 +197,7 @@ class RecallConfig(BaseModel):
     fusion_bm25_weight: float = 0.15
     fusion_sparse_weight: float = 0.15
     fusion_dense_weight: float = 0.70
-    rerank_top_n: int = 10
+    rerank_top_n: int = 12
     enable_rerank: bool = False
     recall_strict: bool = False
 

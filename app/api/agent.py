@@ -26,6 +26,7 @@ from app.rag.application.recall_pipeline_provider import (
     aresolve_recall_execution,
     build_recall_request_from_config,
     get_recall_pipeline,
+    get_reranker,
 )
 from app.rag.application.recall_serialization import serialize_hits
 from app.rag.config import settings
@@ -42,6 +43,8 @@ from app.rag.core.llm.user_model_resolver import aresolve_model
 from app.rag.core.parser.exceptions import ParseBaseException
 from app.rag.core.pipeline.chunk_content import fetch_chunk_sources
 from app.rag.core.pipeline.recall.generation import assemble_context
+from app.rag.core.pipeline.recall.models import RecallResponse
+from app.rag.core.pipeline.rerank import RerankRequest
 from app.rag.core.prompts import (
     REPORT_CLARIFICATION_FALLBACK,
     REPORT_CLARIFICATION_MAX_OUTPUT_TOKENS,
@@ -744,17 +747,43 @@ async def internal_agent_recall(
             get_recall_pipeline().execute(recall_request),
             timeout=settings.RECALL_STREAM_TIMEOUT_MS / 1000,
         )
+        # Agent 一轮可多次调用 hybrid_recall。每次工具先把融合候选窗口
+        # 硬限制在 64（默认），供前端解释展示；再对这些候选做 Dataset 级
+        # rerank，只把重排后 Top-N（默认 12）交给上下文组装。
+        candidate_hits = response.hits[: settings.AGENT_RECALL_DISPLAY_LIMIT]
         sources = await fetch_chunk_sources(
-            [hit.chunk_id for hit in response.hits], context.user_id
+            [hit.chunk_id for hit in candidate_hits], context.user_id
+        )
+        contents = {chunk_id: source.content for chunk_id, source in sources.items()}
+        rerank_response = await asyncio.wait_for(
+            get_reranker().rerank(
+                RerankRequest(
+                    query=body.query,
+                    user_id=context.user_id,
+                    hits=candidate_hits,
+                    top_n=recall_config.rerank_top_n,
+                    contents=contents,
+                    dataset_contexts=execution_contexts,
+                )
+            ),
+            timeout=settings.RECALL_STREAM_TIMEOUT_MS / 1000,
         )
         assembled = assemble_context(
-            response.hits,
-            {chunk_id: source.content for chunk_id, source in sources.items()},
+            rerank_response.hits,
+            contents,
             settings.RECALL_GENERATION_CONTEXT_TOKEN_BUDGET,
         )
         selected_chunk_ids = {block.chunk_id for block in assembled.blocks}
         evidence_by_chunk = {}
-        for hit in response.hits:
+        candidate_by_chunk = {str(hit.chunk_id): hit for hit in candidate_hits}
+
+        # 先按真正注入 prompt 的重排顺序分配 [片段N]，保证 Agent 看到的
+        # 上下文编号、回答中的引用和前端抽屉三者一致。其余展示候选只登记
+        # evidence_id，不分配 citation_index。
+        for block in assembled.blocks:
+            hit = candidate_by_chunk.get(str(block.chunk_id))
+            if hit is None:
+                continue
             source = sources.get(hit.chunk_id)
             if source is None:
                 continue
@@ -764,7 +793,24 @@ async def internal_agent_recall(
                 dataset_id=hit.dataset_id,
                 doc_id=hit.doc_id,
                 document_version=str(source.document_version),
-                selected_for_context=hit.chunk_id in selected_chunk_ids,
+                selected_for_context=True,
+            )
+            if evidence is not None:
+                evidence_by_chunk[str(hit.chunk_id)] = evidence
+
+        for hit in candidate_hits:
+            if str(hit.chunk_id) in evidence_by_chunk:
+                continue
+            source = sources.get(hit.chunk_id)
+            if source is None:
+                continue
+            evidence = await agent_run_registry.register_evidence(
+                run_id,
+                chunk_id=str(hit.chunk_id),
+                dataset_id=hit.dataset_id,
+                doc_id=hit.doc_id,
+                document_version=str(source.document_version),
+                selected_for_context=False,
             )
             if evidence is not None:
                 evidence_by_chunk[str(hit.chunk_id)] = evidence
@@ -775,17 +821,29 @@ async def internal_agent_recall(
             if evidence.citation_index is not None
         }
         hits = serialize_hits(
-            response,
+            RecallResponse(
+                query=response.query,
+                hits=candidate_hits,
+                per_source_counts=response.per_source_counts,
+                failed_sources=response.failed_sources,
+                elapsed_ms=response.elapsed_ms,
+                fusion_weights=response.fusion_weights,
+                recall_diagnostics=response.recall_diagnostics,
+            ),
             sources=sources,
             citation_indexes=citation_indexes,
             include_content=True,
             include_score_explanations=True,
         )
+        reranked_by_chunk = {str(hit.chunk_id): hit for hit in rerank_response.hits}
         for hit in hits:
             evidence = evidence_by_chunk.get(str(hit["chunk_id"]))
             dataset = datasets.get(hit["dataset_id"])
+            reranked = reranked_by_chunk.get(str(hit["chunk_id"]))
             hit["evidence_id"] = evidence.evidence_id if evidence else None
             hit["selected_for_context"] = str(hit["chunk_id"]) in selected_chunk_ids
+            hit["rerank_score"] = reranked.rerank_score if reranked else None
+            hit["rerank_rank"] = reranked.rerank_rank if reranked else None
             hit["knowledge_base_ref"] = context.knowledge_base_ref_for(hit["dataset_id"])
             hit["knowledge_base_name"] = dataset.name if dataset else None
 
@@ -834,7 +892,7 @@ async def internal_agent_recall(
                 "per_source_counts": response.per_source_counts,
                 "candidate_count": len(hits),
                 "context_count": len(evidence_blocks),
-                "rerank_applied": False,
+                "rerank_applied": rerank_response.rerank_applied,
                 "degraded": bool(response.failed_sources)
                 or bool(failed_dataset_ids)
                 or bool(diagnostics and diagnostics.degraded),

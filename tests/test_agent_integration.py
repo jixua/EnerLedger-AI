@@ -13,12 +13,16 @@ from app.rag.core.dataset_config.models import RecallConfig
 from app.rag.core.llm.exceptions import ConfigurationException
 from app.rag.core.pipeline.chunk_content import ChunkSource
 from app.rag.core.pipeline.recall.models import RecallHit, RecallResponse
+from app.rag.core.pipeline.rerank import reranked_from_recall
 from app.services.agent_runs import AgentRunRegistry
 
 
 def test_agent_is_disabled_by_default() -> None:
     assert Settings.model_fields["AGENT_ENABLED"].default is False
     assert Settings.model_fields["PI_SERVICE_BASE_URL"].default == "http://127.0.0.1:8010"
+    assert Settings.model_fields["AGENT_RECALL_DISPLAY_LIMIT"].default == 64
+    assert Settings.model_fields["RERANK_DEFAULT_TOP_N"].default == 12
+    assert RecallConfig().rerank_top_n == 12
 
 
 def test_internal_agent_auth_requires_exact_bearer_token(
@@ -136,14 +140,15 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
         query="锅炉核算",
         hits=[
             RecallHit(
-                chunk_id="chunk-1",
-                doc_id=21,
-                dataset_id=11,
-                fused_score=0.8,
+                chunk_id=f"chunk-{index}",
+                doc_id=20 + index,
+                dataset_id=11 if index % 2 else 12,
+                fused_score=1 - index / 100,
                 scores={"bm25": 4.0, "sparse": 0.5, "dense": 0.9},
                 normalized_scores={"bm25": 1.0, "sparse": 0.5, "dense": 0.8},
                 weighted_contributions={"bm25": 0.15, "sparse": 0.075, "dense": 0.56},
             )
+            for index in range(1, 71)
         ],
         per_source_counts={"bm25": 1, "sparse": 1, "dense": 1},
         failed_sources=[],
@@ -158,19 +163,32 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
     async def fake_resolve(_user_id, _dataset_ids):
         return RecallConfig.from_settings(), {11: object(), 12: object()}, []
 
-    async def fake_sources(_chunk_ids, _user_id):
+    async def fake_sources(chunk_ids, _user_id):
         return {
-            "chunk-1": ChunkSource(
+            chunk_id: ChunkSource(
                 content="燃料消耗量乘以适用排放因子。",
                 filename="锅炉指南.pdf",
                 chunk_index=3,
                 document_version=2,
                 page=9,
             )
+            for chunk_id in chunk_ids
         }
+
+    rerank_requests = []
+
+    class FakeReranker:
+        async def rerank(self, request):
+            rerank_requests.append(request)
+            ranked = [
+                reranked_from_recall(hit, rerank_score=1 - index / 100, rerank_rank=index)
+                for index, hit in enumerate(reversed(request.hits[:12]), start=1)
+            ]
+            return SimpleNamespace(hits=ranked, rerank_applied=True)
 
     monkeypatch.setattr(agent_module, "_resolve_agent_recall_execution", fake_resolve)
     monkeypatch.setattr(agent_module, "get_recall_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(agent_module, "get_reranker", lambda: FakeReranker())
     monkeypatch.setattr(agent_module, "fetch_chunk_sources", fake_sources)
     monkeypatch.setattr(
         agent_module, "aclose_dataset_execution_contexts", lambda _contexts: _async_none()
@@ -200,11 +218,24 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
         await agent_module.agent_run_registry.release(context.run_id)
 
     hit = result["ranked_hits"][0]
+    assert len(result["ranked_hits"]) == 64
+    assert len(result["evidence_blocks"]) == 12
+    assert result["retrieval"]["candidate_count"] == 64
+    assert result["retrieval"]["context_count"] == 12
+    assert result["retrieval"]["rerank_applied"] is True
+    assert len(rerank_requests) == 2
+    assert all(len(request.hits) == 64 for request in rerank_requests)
+    assert all(request.top_n == 12 for request in rerank_requests)
     assert hit["result_rank"] == 1
     assert hit["knowledge_base_name"] == "政策库"
     assert hit["normalized_scores"]["dense"] == 0.8
     assert hit["weighted_contributions"]["dense"] == 0.56
     assert hit["selected_for_context"] is True
+    assert hit["rerank_rank"] == 12
+    assert hit["citation_index"] == 12
+    assert [block["citation_index"] for block in result["evidence_blocks"]] == list(
+        range(1, 13)
+    )
     assert result["retrieval"]["weights"]["dense"] == 0.7
     assert result["scope"] == {
         "mode": "all_accessible",
