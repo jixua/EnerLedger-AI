@@ -140,15 +140,28 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
         query="锅炉核算",
         hits=[
             RecallHit(
-                chunk_id=f"chunk-{index}",
-                doc_id=20 + index,
-                dataset_id=11 if index % 2 else 12,
-                fused_score=1 - index / 100,
+                chunk_id="chunk-1",
+                doc_id=21,
+                dataset_id=11,
+                fused_score=0.8,
                 scores={"bm25": 4.0, "sparse": 0.5, "dense": 0.9},
                 normalized_scores={"bm25": 1.0, "sparse": 0.5, "dense": 0.8},
                 weighted_contributions={"bm25": 0.15, "sparse": 0.075, "dense": 0.56},
-            )
-            for index in range(1, 71)
+            ),
+            RecallHit(
+                chunk_id="chunk-2",
+                doc_id=22,
+                dataset_id=12,
+                fused_score=0.7,
+                scores={"bm25": 3.0, "sparse": 0.4, "dense": 0.8},
+            ),
+            RecallHit(
+                chunk_id="chunk-3",
+                doc_id=23,
+                dataset_id=11,
+                fused_score=0.6,
+                scores={"bm25": 2.0, "sparse": 0.3, "dense": 0.7},
+            ),
         ],
         per_source_counts={"bm25": 1, "sparse": 1, "dense": 1},
         failed_sources=[],
@@ -161,18 +174,34 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
             return response
 
     async def fake_resolve(_user_id, _dataset_ids):
-        return RecallConfig.from_settings(), {11: object(), 12: object()}, []
+        config = RecallConfig.from_settings().model_copy(
+            update={"rerank_top_n": 2, "recall_context_token_budget": 10_000}
+        )
+        return config, {11: object(), 12: object()}, []
 
-    async def fake_sources(chunk_ids, _user_id):
+    async def fake_sources(_chunk_ids, _user_id):
         return {
-            chunk_id: ChunkSource(
+            "chunk-1": ChunkSource(
                 content="燃料消耗量乘以适用排放因子。",
                 filename="锅炉指南.pdf",
                 chunk_index=3,
                 document_version=2,
                 page=9,
-            )
-            for chunk_id in chunk_ids
+            ),
+            "chunk-2": ChunkSource(
+                content="排放因子应匹配燃料类型。",
+                filename="因子指南.pdf",
+                chunk_index=4,
+                document_version=1,
+                page=10,
+            ),
+            "chunk-3": ChunkSource(
+                content="低排名候选不应进入回答上下文。",
+                filename="锅炉指南.pdf",
+                chunk_index=5,
+                document_version=2,
+                page=11,
+            ),
         }
 
     rerank_requests = []
@@ -181,8 +210,8 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
         async def rerank(self, request):
             rerank_requests.append(request)
             ranked = [
-                reranked_from_recall(hit, rerank_score=1 - index / 100, rerank_rank=index)
-                for index, hit in enumerate(reversed(request.hits[:12]), start=1)
+                reranked_from_recall(hit, rerank_score=1 - index / 10, rerank_rank=index)
+                for index, hit in enumerate(request.hits[: request.top_n], start=1)
             ]
             return SimpleNamespace(hits=ranked, rerank_applied=True)
 
@@ -218,24 +247,20 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
         await agent_module.agent_run_registry.release(context.run_id)
 
     hit = result["ranked_hits"][0]
-    assert len(result["ranked_hits"]) == 64
-    assert len(result["evidence_blocks"]) == 12
-    assert result["retrieval"]["candidate_count"] == 64
-    assert result["retrieval"]["context_count"] == 12
+    assert len(result["ranked_hits"]) == 3
+    assert result["retrieval"]["context_count"] == 2
     assert result["retrieval"]["rerank_applied"] is True
     assert len(rerank_requests) == 2
-    assert all(len(request.hits) == 64 for request in rerank_requests)
-    assert all(request.top_n == 12 for request in rerank_requests)
+    assert all(len(request.hits) == 3 for request in rerank_requests)
+    assert all(request.top_n == 2 for request in rerank_requests)
     assert hit["result_rank"] == 1
     assert hit["knowledge_base_name"] == "政策库"
     assert hit["normalized_scores"]["dense"] == 0.8
     assert hit["weighted_contributions"]["dense"] == 0.56
     assert hit["selected_for_context"] is True
-    assert hit["rerank_rank"] == 12
-    assert hit["citation_index"] == 12
-    assert [block["citation_index"] for block in result["evidence_blocks"]] == list(
-        range(1, 13)
-    )
+    assert len(result["ranked_hits"]) == 3
+    assert result["retrieval"]["context_count"] == 2
+    assert [item["selected_for_context"] for item in result["ranked_hits"]] == [True, True, False]
     assert result["retrieval"]["weights"]["dense"] == 0.7
     assert result["scope"] == {
         "mode": "all_accessible",

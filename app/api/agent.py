@@ -751,10 +751,6 @@ async def internal_agent_recall(
         # 硬限制在 64（默认），供前端解释展示；再对这些候选做 Dataset 级
         # rerank，只把重排后 Top-N（默认 12）交给上下文组装。
         candidate_hits = response.hits[: settings.AGENT_RECALL_DISPLAY_LIMIT]
-        sources = await fetch_chunk_sources(
-            [hit.chunk_id for hit in candidate_hits], context.user_id
-        )
-        contents = {chunk_id: source.content for chunk_id, source in sources.items()}
         rerank_response = await asyncio.wait_for(
             get_reranker().rerank(
                 RerankRequest(
@@ -762,18 +758,27 @@ async def internal_agent_recall(
                     user_id=context.user_id,
                     hits=candidate_hits,
                     top_n=recall_config.rerank_top_n,
-                    contents=contents,
                     dataset_contexts=execution_contexts,
                 )
             ),
             timeout=settings.RECALL_STREAM_TIMEOUT_MS / 1000,
         )
-        # 与普通 RAG 生成链路保持一致：只允许重排后的 final TopN 进入
-        # 生成上下文；rerank 未启用或失败时，reranker 已按融合顺序软降级。
-        context_hits = rerank_response.hits
+        # 把重排 TopN 放到候选窗口前端，既保留 Dev 已验收的统一 TopN 组装逻辑，
+        # 又保留其余融合候选供前端解释展示。
+        reranked_ids = {hit.chunk_id for hit in rerank_response.hits}
+        response.hits = [
+            *rerank_response.hits,
+            *(hit for hit in candidate_hits if hit.chunk_id not in reranked_ids),
+        ]
+        sources = await fetch_chunk_sources(
+            [hit.chunk_id for hit in response.hits], context.user_id
+        )
+        # 与普通 RAG 生成链路保持一致：即使 rerank 未启用，也只允许融合排序后的
+        # final TopN 进入生成上下文，不能把整个融合候选池都交给 Agent。
+        context_hits = response.hits[: recall_config.rerank_top_n]
         assembled = assemble_context(
             context_hits,
-            contents,
+            {chunk_id: source.content for chunk_id, source in sources.items()},
             recall_config.recall_context_token_budget,
         )
         selected_chunk_ids = {block.chunk_id for block in assembled.blocks}
