@@ -117,6 +117,9 @@ class Settings(BaseSettings):
     ENERLEDGER_INTERNAL_AGENT_TOKEN: str = ""
     AGENT_RUN_TIMEOUT_SECONDS: int = Field(default=120, ge=10, le=900)
     AGENT_TOOL_TIMEOUT_SECONDS: int = Field(default=30, ge=1, le=120)
+    # Agent 单轮可向前端展示的融合候选上限。Pi 可在同一轮多次调用
+    # 检索工具，此上限同时在内部工具和前端累积处兜底，避免抽屉无界增长。
+    AGENT_RECALL_DISPLAY_LIMIT: int = Field(default=64, ge=1, le=500)
     # 对话直传附件：小文件不解析不入库，直接提取文本喂给模型分析。超过任一阈值
     # 一律提示"文件过大，请先导入知识库"。字符上限同时保护 prompt 与 pi-service 1MB 请求体。
     AGENT_DIRECT_ATTACHMENT_MAX_BYTES: int = Field(default=2 * 1024 * 1024, ge=1024)
@@ -270,8 +273,8 @@ class Settings(BaseSettings):
     # 召回后重排 (Post-Recall Rerank / LINK-130)
     # ==========================================
     # 重排模块输出的候选条数兜底默认值。调用方未显式传 top_n 时生效；
-    # 调用方传入则以传入为准；默认 Top10 与 Blind v5 评测口径一致。
-    RERANK_DEFAULT_TOP_N: int = 10
+    # 调用方传入则以传入为准；默认最多取 12 个重排候选进入生成上下文。
+    RERANK_DEFAULT_TOP_N: int = 12
 
     # ==========================================
     # 精确 LLM runtime cache

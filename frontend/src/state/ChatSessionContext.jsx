@@ -34,6 +34,7 @@ const ChatSessionContext = createContext(null);
 
 /** 仍在流式推进的状态。对话框与对话页共用这一份判定，避免两处各写一套。 */
 const STREAMING_STATUSES = new Set(["recalling", "generating"]);
+const MAX_RECALL_HITS_PER_TURN = 64;
 export const isStreamingMessage = (message) => STREAMING_STATUSES.has(message.status);
 
 function normalizeEvent(eventOrName, maybePayload) {
@@ -54,7 +55,18 @@ function mergeRecallHits(current, incoming) {
     const key = hit.evidence_id || hit.chunk_id || `${hit.dataset_id}:${hit.doc_id}:${hit.result_rank}`;
     merged.set(key, hit);
   }
-  return [...merged.values()];
+  return limitRecallHits([...merged.values()]);
+}
+
+function limitRecallHits(hits) {
+  const values = hits || [];
+  // Pi 在同一轮可多次检索。封顶 64 时先保留真正进入上下文的
+  // 片段，避免后续检索产生的有效 [片段N] 被早期未使用候选挤出抽屉。
+  const selected = values.filter((hit) => hit.selected_for_context || hit.citation_index != null);
+  const candidates = values.filter(
+    (hit) => !hit.selected_for_context && hit.citation_index == null,
+  );
+  return [...selected, ...candidates].slice(0, MAX_RECALL_HITS_PER_TURN);
 }
 
 function flattenDocuments(documents) {
@@ -477,7 +489,7 @@ export function ChatSessionProvider({ children }) {
             return {
               ...message,
               content: data.answer ?? message.content,
-              hits: data.hits ?? message.hits,
+              hits: limitRecallHits(data.hits ?? message.hits),
               failedSources: data.failed_sources ?? message.failedSources,
               retrievalScope: data.scope ?? message.retrievalScope,
               retrievalDetails: data.retrieval ?? message.retrievalDetails,

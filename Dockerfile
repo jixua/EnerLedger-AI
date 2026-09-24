@@ -91,6 +91,7 @@ RUN mkdir -p "${NLTK_DATA}/tokenizers" "${NLTK_DATA}/corpora" \
 
 COPY README.md ./
 COPY app ./app
+COPY models ./models
 COPY reporting ./reporting
 
 RUN --mount=type=cache,id=enerledger-uv,target=/root/.cache/uv,sharing=locked \

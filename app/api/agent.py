@@ -22,12 +22,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.reports import ReportCreateRequest, create_report
 from app.domain.auth import get_actor_user_id, get_shared_owner_user_id
 from app.domain.models import AgentConversationTurn, Dataset, Document, ReportMaterial
+from app.rag.application.ltr_provider import get_initialized_agent_ltr_ranker
 from app.rag.application.recall_pipeline_provider import (
-    aresolve_recall_execution,
     build_recall_request_from_config,
     get_recall_pipeline,
 )
 from app.rag.application.recall_serialization import serialize_hits
+from app.rag.application.recall_stream_runtime import build_ltr_routes
 from app.rag.config import settings
 from app.rag.core.dataset_config.execution_context import (
     DatasetExecutionContextLoader,
@@ -41,7 +42,10 @@ from app.rag.core.llm.runtime_repository import RuntimeConfigRepository
 from app.rag.core.llm.user_model_resolver import aresolve_model
 from app.rag.core.parser.exceptions import ParseBaseException
 from app.rag.core.pipeline.chunk_content import fetch_chunk_sources
+from app.rag.core.pipeline.ltr import LambdaMartRankingRequiredError
 from app.rag.core.pipeline.recall.generation import assemble_context
+from app.rag.core.pipeline.recall.models import RecallResponse
+from app.rag.core.pipeline.rerank import reranked_from_recall
 from app.rag.core.prompts import (
     REPORT_CLARIFICATION_FALLBACK,
     REPORT_CLARIFICATION_MAX_OUTPUT_TOKENS,
@@ -577,11 +581,7 @@ def _knowledge_base_payload(context, datasets: dict[int, Dataset]) -> list[dict]
 async def _resolve_agent_recall_execution(
     user_id: int, dataset_ids: list[int]
 ) -> tuple[RecallConfig, dict, list[int]]:
-    """多库模式按库解析执行上下文，配置坏库降级；单库仍严格失败。"""
-    if len(dataset_ids) <= 1:
-        recall_config, contexts = await aresolve_recall_execution(user_id, dataset_ids)
-        return recall_config, contexts, []
-
+    """Agent 只解析三路召回绑定，不消费数据集的远程 RERANK 绑定。"""
     contexts = {}
     failed_dataset_ids: list[int] = []
     async with get_db_context() as db:
@@ -589,13 +589,20 @@ async def _resolve_agent_recall_execution(
         for dataset_id in dataset_ids:
             try:
                 contexts[dataset_id] = await loader.load(
-                    user_id, dataset_id, DatasetExecutionPurpose.RECALL
+                    user_id, dataset_id, DatasetExecutionPurpose.AGENT_RECALL
                 )
             except ConfigurationException:
+                if len(dataset_ids) == 1:
+                    raise
                 failed_dataset_ids.append(dataset_id)
     if not contexts:
         raise HTTPException(status_code=503, detail={"code": "RECALL_UNAVAILABLE"})
-    return RecallConfig.from_settings(), contexts, failed_dataset_ids
+    recall_config = (
+        contexts[dataset_ids[0]].config.recall
+        if len(dataset_ids) == 1
+        else RecallConfig.from_settings()
+    )
+    return recall_config, contexts, failed_dataset_ids
 
 
 def _model_payload(runtime_config) -> dict[str, str]:
@@ -611,7 +618,11 @@ def _model_payload(runtime_config) -> dict[str, str]:
 
 @router.get("/api/v1/agent/readiness")
 async def agent_readiness() -> dict[str, bool]:
-    if not settings.AGENT_ENABLED or not await pi_agent_readiness():
+    if (
+        not settings.AGENT_ENABLED
+        or get_initialized_agent_ltr_ranker() is None
+        or not await pi_agent_readiness()
+    ):
         raise HTTPException(status_code=503, detail={"code": "AGENT_NOT_READY"})
     return {"ready": True}
 
@@ -622,6 +633,11 @@ async def internal_agent_readiness(
 ) -> dict[str, bool]:
     if not _internal_authorized(authorization):
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="unauthorized")
+    if get_initialized_agent_ltr_ranker() is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"code": "LAMBDA_MART_RERANK_UNAVAILABLE"},
+        )
     return {"ready": True}
 
 
@@ -738,23 +754,95 @@ async def internal_agent_recall(
             doc_ids=list(context.doc_ids) if context.doc_ids else None,
             recall_cfg=recall_config,
             dataset_contexts=execution_contexts,
-            apply_ltr_serving_contract=False,
+            # Agent 工具固定使用与 LambdaMART 训练/校验一致的候选契约。
+            apply_ltr_serving_contract=True,
         )
         response = await asyncio.wait_for(
             get_recall_pipeline().execute(recall_request),
             timeout=settings.RECALL_STREAM_TIMEOUT_MS / 1000,
         )
+        # LambdaMART 消费冻结候选契约下的完整三路候选；排序完成后只展示
+        # Top64，其中 TopN（默认 12）才有资格进入回答上下文。任何模型回退都不能
+        # 以 weighted-score / 融合顺序继续回答。
+        ltr_candidate_hits = response.candidate_hits or response.hits
         sources = await fetch_chunk_sources(
-            [hit.chunk_id for hit in response.hits], context.user_id
+            [hit.chunk_id for hit in ltr_candidate_hits], context.user_id
         )
+        contents = {chunk_id: source.content for chunk_id, source in sources.items()}
+        reranked_hits = []
+        ranking_diagnostics = None
+        if ltr_candidate_hits:
+            ranker = get_initialized_agent_ltr_ranker()
+            if ranker is None:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "LAMBDA_MART_RERANK_UNAVAILABLE"},
+                )
+            routes = build_ltr_routes(response.route_hits, ltr_candidate_hits, contents)
+            try:
+                ranking = await asyncio.wait_for(
+                    ranker.rank(
+                        query=body.query,
+                        routes=routes,
+                        candidate_contents=contents,
+                        allow_fallback=False,
+                    ),
+                    timeout=settings.RECALL_STREAM_TIMEOUT_MS / 1000,
+                )
+                if ranking.mode != "ltr":
+                    raise LambdaMartRankingRequiredError(
+                        f"LambdaMART returned fallback mode: {ranking.mode}"
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.warning("Agent LambdaMART rerank failed: %s", type(exc).__name__)
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "LAMBDA_MART_RERANK_FAILED"},
+                ) from exc
+            hits_by_chunk_id = {
+                hit.chunk_id: hit for hit in ltr_candidate_hits if contents.get(hit.chunk_id)
+            }
+            reranked_hits = [
+                reranked_from_recall(hits_by_chunk_id[chunk_id], rerank_rank=rank)
+                for rank, chunk_id in enumerate(ranking.ranked_chunk_ids, start=1)
+                if chunk_id in hits_by_chunk_id
+            ]
+            if not reranked_hits:
+                raise HTTPException(
+                    status_code=503,
+                    detail={"code": "LAMBDA_MART_RERANK_FAILED"},
+                )
+            ranking_diagnostics = {
+                "strategy": "lambdamart",
+                "mode": ranking.mode,
+                "model_version": ranking.model_version,
+                "candidate_contract_version": recall_request.candidate_contract_version,
+                "candidate_count": len(ltr_candidate_hits),
+                "ranked_count": len(reranked_hits),
+                "duration_ms": round(ranking.elapsed_ms, 3),
+            }
+
+        candidate_hits = reranked_hits[: settings.AGENT_RECALL_DISPLAY_LIMIT]
+        response.hits = candidate_hits
+        context_hits = candidate_hits[: recall_config.rerank_top_n]
         assembled = assemble_context(
-            response.hits,
+            context_hits,
             {chunk_id: source.content for chunk_id, source in sources.items()},
-            settings.RECALL_GENERATION_CONTEXT_TOKEN_BUDGET,
+            recall_config.recall_context_token_budget,
         )
         selected_chunk_ids = {block.chunk_id for block in assembled.blocks}
         evidence_by_chunk = {}
-        for hit in response.hits:
+        candidate_by_chunk = {str(hit.chunk_id): hit for hit in candidate_hits}
+
+        # 先按真正注入 prompt 的重排顺序分配 [片段N]，保证 Agent 看到的
+        # 上下文编号、回答中的引用和前端抽屉三者一致。其余展示候选只登记
+        # evidence_id，不分配 citation_index。
+        for block in assembled.blocks:
+            hit = candidate_by_chunk.get(str(block.chunk_id))
+            if hit is None:
+                continue
             source = sources.get(hit.chunk_id)
             if source is None:
                 continue
@@ -764,7 +852,24 @@ async def internal_agent_recall(
                 dataset_id=hit.dataset_id,
                 doc_id=hit.doc_id,
                 document_version=str(source.document_version),
-                selected_for_context=hit.chunk_id in selected_chunk_ids,
+                selected_for_context=True,
+            )
+            if evidence is not None:
+                evidence_by_chunk[str(hit.chunk_id)] = evidence
+
+        for hit in candidate_hits:
+            if str(hit.chunk_id) in evidence_by_chunk:
+                continue
+            source = sources.get(hit.chunk_id)
+            if source is None:
+                continue
+            evidence = await agent_run_registry.register_evidence(
+                run_id,
+                chunk_id=str(hit.chunk_id),
+                dataset_id=hit.dataset_id,
+                doc_id=hit.doc_id,
+                document_version=str(source.document_version),
+                selected_for_context=False,
             )
             if evidence is not None:
                 evidence_by_chunk[str(hit.chunk_id)] = evidence
@@ -775,17 +880,29 @@ async def internal_agent_recall(
             if evidence.citation_index is not None
         }
         hits = serialize_hits(
-            response,
+            RecallResponse(
+                query=response.query,
+                hits=candidate_hits,
+                per_source_counts=response.per_source_counts,
+                failed_sources=response.failed_sources,
+                elapsed_ms=response.elapsed_ms,
+                fusion_weights=response.fusion_weights,
+                recall_diagnostics=response.recall_diagnostics,
+            ),
             sources=sources,
             citation_indexes=citation_indexes,
             include_content=True,
             include_score_explanations=True,
         )
+        reranked_by_chunk = {str(hit.chunk_id): hit for hit in reranked_hits}
         for hit in hits:
             evidence = evidence_by_chunk.get(str(hit["chunk_id"]))
             dataset = datasets.get(hit["dataset_id"])
+            reranked = reranked_by_chunk.get(str(hit["chunk_id"]))
             hit["evidence_id"] = evidence.evidence_id if evidence else None
             hit["selected_for_context"] = str(hit["chunk_id"]) in selected_chunk_ids
+            hit["rerank_score"] = reranked.rerank_score if reranked else None
+            hit["rerank_rank"] = reranked.rerank_rank if reranked else None
             hit["knowledge_base_ref"] = context.knowledge_base_ref_for(hit["dataset_id"])
             hit["knowledge_base_name"] = dataset.name if dataset else None
 
@@ -828,13 +945,14 @@ async def internal_agent_recall(
                 "policy": "system_cross_kb_v1" if len(datasets) > 1 else "dataset",
             },
             "retrieval": {
-                "strategy": "bm25_sparse_dense",
+                "strategy": "bm25_sparse_dense_lambdamart",
                 "active_sources": list(response.per_source_counts),
                 "weights": response.fusion_weights,
                 "per_source_counts": response.per_source_counts,
                 "candidate_count": len(hits),
                 "context_count": len(evidence_blocks),
-                "rerank_applied": False,
+                "rerank_applied": bool(reranked_hits),
+                "ranking_diagnostics": ranking_diagnostics,
                 "degraded": bool(response.failed_sources)
                 or bool(failed_dataset_ids)
                 or bool(diagnostics and diagnostics.degraded),

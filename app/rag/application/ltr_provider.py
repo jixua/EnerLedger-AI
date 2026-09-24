@@ -21,7 +21,9 @@ _preload_completed = False
 def get_ltr_ranker() -> LambdaMartRanker | None:
     """加载并缓存模型；仅供构建校验与应用启动预加载调用。"""
     global _last_load_error, _loaded_ranker
-    if settings.RECALL_LTR_MODE in {"off", "baseline"}:
+    # 普通 RAG 仍由 RECALL_LTR_MODE 控制；Agent hybrid_recall 则把
+    # LambdaMART 作为必选工具步骤，因此开启 Agent 时也必须预加载。
+    if settings.RECALL_LTR_MODE in {"off", "baseline"} and not settings.AGENT_ENABLED:
         return None
     try:
         model_dir = Path(settings.RECALL_LTR_MODEL_DIR)
@@ -68,6 +70,12 @@ def get_initialized_ltr_ranker() -> LambdaMartRanker | None:
     """请求期只读 startup 结果，绝不触发文件读取、LightGBM 导入或模型构造。"""
     if settings.RECALL_LTR_MODE in {"off", "baseline"}:
         return None
+    return _loaded_ranker
+
+
+def get_initialized_agent_ltr_ranker() -> LambdaMartRanker | None:
+    """Agent 工具专用：只返回启动期已验证的 LambdaMART 实例。"""
+
     return _loaded_ranker
 
 

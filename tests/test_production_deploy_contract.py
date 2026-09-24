@@ -3,6 +3,14 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def test_production_api_image_includes_lambdamart_models() -> None:
+    dockerfile = (ROOT / "Dockerfile").read_text()
+    pipeline = (ROOT / "deploy/jenkins/Jenkinsfile.production").read_text()
+
+    assert "COPY models ./models" in dockerfile
+    assert "models/" in pipeline
+
+
 def test_production_deploy_recreates_only_changed_application_services() -> None:
     script = (ROOT / "deploy/production/scripts/deploy.sh").read_text()
 
