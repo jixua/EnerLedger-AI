@@ -42,6 +42,41 @@ async def test_required_lambdamart_rejects_short_query_weighted_fallback() -> No
 
 
 @pytest.mark.asyncio
+async def test_required_lambdamart_allows_calibrated_short_query_fallback() -> None:
+    ranker = _fake_ranker(confidence=0.0)
+    try:
+        result = await ranker.rank(
+            query="产品碳足迹怎么做",
+            routes={},
+            candidate_contents={"chunk-1": "候选正文"},
+            allow_fallback=False,
+            allow_short_query_fallback=True,
+        )
+    finally:
+        ranker.close()
+
+    assert result.mode == "hybrid_short_low_confidence"
+    assert result.ranked_chunk_ids == ["chunk-1"]
+
+
+@pytest.mark.asyncio
+async def test_short_query_policy_does_not_mask_inference_failures() -> None:
+    ranker = _fake_ranker(confidence=0.0)
+    ranker._predict = lambda *_args: (_ for _ in ()).throw(RuntimeError("broken model"))
+    try:
+        with pytest.raises(LambdaMartRankingRequiredError, match="inference failed"):
+            await ranker.rank(
+                query="产品碳足迹怎么做",
+                routes={},
+                candidate_contents={"chunk-1": "候选正文"},
+                allow_fallback=False,
+                allow_short_query_fallback=True,
+            )
+    finally:
+        ranker.close()
+
+
+@pytest.mark.asyncio
 async def test_required_lambdamart_returns_only_model_ranking_mode() -> None:
     ranker = _fake_ranker(confidence=0.5)
     try:

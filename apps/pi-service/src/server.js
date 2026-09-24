@@ -3,6 +3,7 @@ import { configureHttpDispatcher } from "../../../third_party/pi/packages/coding
 
 import { bearerToken, tokensEqual } from "./auth.js";
 import { loadConfig } from "./config.js";
+import { logAgentFailure, publicAgentErrorCode } from "./error-reporting.js";
 import { executeAgentRun } from "./runtime/agent.js";
 import { executeReportAgentRun } from "./runtime/report-agent.js";
 import { createEnerLedgerClient } from "./tools/enerledger-client.js";
@@ -179,14 +180,9 @@ const server = createServer(async (request, response) => {
       });
     } catch (error) {
       const timedOut = controller.signal.aborted && controller.signal.reason === "timeout";
-      const safeCodes = new Set([
-        "AGENT_MODEL_UNSUPPORTED",
-        "AGENT_MODEL_REQUEST_FAILED",
-        "AGENT_EMPTY_RESPONSE",
-        "WORKFLOW_SKILL_REQUIRED",
-      ]);
+      logAgentFailure({ runId: payload.runId, error, timedOut });
       writeEvent(response, "error", {
-        code: timedOut ? "AGENT_TIMEOUT" : safeCodes.has(error?.message) ? error.message : "AGENT_EXECUTION_FAILED",
+        code: publicAgentErrorCode(error, timedOut),
         message: timedOut ? "Agent 执行超时" : "Agent 执行失败",
       });
     } finally {

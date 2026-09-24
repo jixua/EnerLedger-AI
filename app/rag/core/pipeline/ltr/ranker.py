@@ -95,6 +95,7 @@ class LambdaMartRanker:
         routes: dict[str, list[RetrieverHit]],
         candidate_contents: dict[str, str],
         allow_fallback: bool = True,
+        allow_short_query_fallback: bool = False,
     ) -> LtrRankResult:
         started = time.perf_counter()
         fallback = weighted_baseline_order(routes)
@@ -144,7 +145,7 @@ class LambdaMartRanker:
                 ranked = fallback
                 mode = "fallback_budget_exceeded"
             elif short_fallback:
-                if not allow_fallback:
+                if not allow_fallback and not allow_short_query_fallback:
                     raise LambdaMartRankingRequiredError(
                         "LambdaMART rejected a low-confidence short query"
                     )
@@ -156,7 +157,7 @@ class LambdaMartRanker:
             return LtrRankResult(ranked, mode, self.model_version, elapsed_ms)
         except asyncio.CancelledError:
             raise
-        except Exception as exc:  # 本地模型失败必须降级，不能击穿问答流
+        except Exception as exc:  # 非强制场景下，本地模型失败降级而不击穿问答流。
             if not allow_fallback:
                 if isinstance(exc, LambdaMartRankingRequiredError):
                     raise

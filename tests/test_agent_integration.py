@@ -217,7 +217,7 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
             rank_requests.append(request)
             return SimpleNamespace(
                 ranked_chunk_ids=["chunk-1", "chunk-2", "chunk-3"],
-                mode="ltr",
+                mode="hybrid_short_low_confidence",
                 model_version="test-lambdamart",
                 elapsed_ms=1.25,
             )
@@ -261,6 +261,7 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
     assert result["retrieval"]["rerank_applied"] is True
     assert len(rank_requests) == 2
     assert all(request["allow_fallback"] is False for request in rank_requests)
+    assert all(request["allow_short_query_fallback"] is True for request in rank_requests)
     assert all(
         set(request["candidate_contents"]) == {"chunk-1", "chunk-2", "chunk-3"}
         for request in rank_requests
@@ -276,6 +277,7 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
     assert result["retrieval"]["weights"]["dense"] == 0.7
     assert result["retrieval"]["strategy"] == "bm25_sparse_dense_lambdamart"
     assert result["retrieval"]["ranking_diagnostics"]["model_version"] == "test-lambdamart"
+    assert result["retrieval"]["ranking_diagnostics"]["mode"] == "hybrid_short_low_confidence"
     assert result["scope"] == {
         "mode": "all_accessible",
         "knowledge_base_count": 2,

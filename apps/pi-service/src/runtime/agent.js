@@ -13,7 +13,7 @@ import { createEnerLedgerClient } from "../tools/enerledger-client.js";
 
 const SYSTEM_PROMPT = `你是能碳会计 AI 智能体的知识库 Agent，只能服务当前已授权运行。
 系统会在每轮开始前加载知识库工作流；你必须遵循其中的检索、引用和安全规则。
-寒暄、能力介绍和纯交互请求无需检索；回答资料、政策、标准或核算依据前必须调用 hybrid_recall；每轮最多调用一次，该工具已经完成多路召回、融合、LambdaMART 强制重排和 TopK 截断。hybrid_recall 失败时不得绕过重排继续回答。
+寒暄、能力介绍和纯交互请求无需检索；回答资料、政策、标准或核算依据前必须调用 hybrid_recall；每轮最多调用一次，该工具已经完成多路召回、融合、LambdaMART 重排（含模型包声明的短查询校准策略）和 TopK 截断。hybrid_recall 失败时不得绕过重排继续回答。
 当召回片段上下文不完整、指代不清、公式或表格被截断时调用 expand_evidence。
 当用户要求总结整篇、梳理结构、跨章节比较或完整阅读时，先调用 get_document_outline，再按需调用 read_document_section；未读完分页时不得声称已读全文。
 用户未限定知识库时使用当前运行的全部授权知识库；需要解析知识库名称时调用 get_retrieval_scope。
@@ -181,7 +181,7 @@ export async function executeAgentRun({ config, runId, content, history, model, 
   const recallTool = defineTool({
     name: "hybrid_recall",
     label: "多路召回知识库",
-    description: "在当前运行授权范围内执行 BM25、Sparse、Dense 三路召回、融合、LambdaMART 强制重排和上下文选择。",
+    description: "在当前运行授权范围内执行 BM25、Sparse、Dense 三路召回、融合、LambdaMART 重排（含模型包声明的短查询校准策略）和上下文选择。",
     parameters: objectSchema({
       query: { type: "string", minLength: 1, maxLength: 8000 },
       intent: {
