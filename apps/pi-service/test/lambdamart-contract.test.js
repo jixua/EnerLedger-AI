@@ -8,6 +8,7 @@ test("hybrid_recall requires LambdaMART and suppresses answers after recall fail
   const source = await readFile(agentSourceUrl, "utf8");
 
   assert.match(source, /LambdaMART 强制重排/);
+  assert.match(source, /短查询低置信度只记录诊断，仍使用模型排序/);
   assert.match(source, /hybrid_recall 失败时不得绕过重排继续回答/);
   assert.match(source, /recallFailure = error/);
   assert.match(source, /if \(delta && !recallFailure\)/);

@@ -217,9 +217,10 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
             rank_requests.append(request)
             return SimpleNamespace(
                 ranked_chunk_ids=["chunk-1", "chunk-2", "chunk-3"],
-                mode="ltr",
+                mode="ltr_short_low_confidence",
                 model_version="test-lambdamart",
                 elapsed_ms=1.25,
+                reason="low_confidence_short_query",
             )
 
     monkeypatch.setattr(agent_module, "_resolve_agent_recall_execution", fake_resolve)
@@ -276,6 +277,10 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
     assert result["retrieval"]["weights"]["dense"] == 0.7
     assert result["retrieval"]["strategy"] == "bm25_sparse_dense_lambdamart"
     assert result["retrieval"]["ranking_diagnostics"]["model_version"] == "test-lambdamart"
+    assert result["retrieval"]["ranking_diagnostics"]["mode"] == "ltr_short_low_confidence"
+    assert result["retrieval"]["ranking_diagnostics"]["reason"] == (
+        "low_confidence_short_query"
+    )
     assert result["scope"] == {
         "mode": "all_accessible",
         "knowledge_base_count": 2,
