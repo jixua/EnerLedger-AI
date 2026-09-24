@@ -95,7 +95,6 @@ class LambdaMartRanker:
         routes: dict[str, list[RetrieverHit]],
         candidate_contents: dict[str, str],
         allow_fallback: bool = True,
-        allow_short_query_fallback: bool = False,
     ) -> LtrRankResult:
         started = time.perf_counter()
         fallback = weighted_baseline_order(routes)
@@ -145,16 +144,23 @@ class LambdaMartRanker:
                 ranked = fallback
                 mode = "fallback_budget_exceeded"
             elif short_fallback:
-                if not allow_fallback and not allow_short_query_fallback:
-                    raise LambdaMartRankingRequiredError(
-                        "LambdaMART rejected a low-confidence short query"
-                    )
-                ranked = fallback
-                mode = "hybrid_short_low_confidence"
+                if allow_fallback:
+                    ranked = fallback
+                    mode = "hybrid_short_low_confidence"
+                else:
+                    # 低置信度是排序质量信号，不是模型执行失败。强制模型场景继续
+                    # 使用 LambdaMART 顺序，并通过 mode/reason 暴露诊断信息。
+                    mode = "ltr_short_low_confidence"
             else:
                 mode = "ltr"
             self.monitor.record(mode, elapsed_ms)
-            return LtrRankResult(ranked, mode, self.model_version, elapsed_ms)
+            return LtrRankResult(
+                ranked,
+                mode,
+                self.model_version,
+                elapsed_ms,
+                reason="low_confidence_short_query" if short_fallback else None,
+            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # 非强制场景下，本地模型失败降级而不击穿问答流。

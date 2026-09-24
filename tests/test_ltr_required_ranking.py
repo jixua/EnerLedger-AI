@@ -27,36 +27,49 @@ def _fake_ranker(*, confidence: float) -> LambdaMartRanker:
 
 
 @pytest.mark.asyncio
-async def test_required_lambdamart_rejects_short_query_weighted_fallback() -> None:
+async def test_required_lambdamart_keeps_model_order_for_short_query() -> None:
     ranker = _fake_ranker(confidence=0.0)
-    try:
-        with pytest.raises(LambdaMartRankingRequiredError):
-            await ranker.rank(
-                query="短问题",
-                routes={},
-                candidate_contents={"chunk-1": "候选正文"},
-                allow_fallback=False,
-            )
-    finally:
-        ranker.close()
-
-
-@pytest.mark.asyncio
-async def test_required_lambdamart_allows_calibrated_short_query_fallback() -> None:
-    ranker = _fake_ranker(confidence=0.0)
+    ranker._predict = lambda *_args: (
+        ["chunk-1", "chunk-2"],
+        ["chunk-2", "chunk-1"],
+        ["chunk-1", "chunk-2"],
+        0.0,
+    )
     try:
         result = await ranker.rank(
             query="产品碳足迹怎么做",
             routes={},
-            candidate_contents={"chunk-1": "候选正文"},
+            candidate_contents={"chunk-1": "候选一", "chunk-2": "候选二"},
             allow_fallback=False,
-            allow_short_query_fallback=True,
+        )
+    finally:
+        ranker.close()
+
+    assert result.mode == "ltr_short_low_confidence"
+    assert result.reason == "low_confidence_short_query"
+    assert result.ranked_chunk_ids == ["chunk-2", "chunk-1"]
+
+
+@pytest.mark.asyncio
+async def test_optional_lambdamart_keeps_calibrated_short_query_fallback() -> None:
+    ranker = _fake_ranker(confidence=0.0)
+    ranker._predict = lambda *_args: (
+        ["chunk-1", "chunk-2"],
+        ["chunk-2", "chunk-1"],
+        ["chunk-1", "chunk-2"],
+        0.0,
+    )
+    try:
+        result = await ranker.rank(
+            query="产品碳足迹怎么做",
+            routes={},
+            candidate_contents={"chunk-1": "候选一", "chunk-2": "候选二"},
         )
     finally:
         ranker.close()
 
     assert result.mode == "hybrid_short_low_confidence"
-    assert result.ranked_chunk_ids == ["chunk-1"]
+    assert result.ranked_chunk_ids == ["chunk-1", "chunk-2"]
 
 
 @pytest.mark.asyncio
@@ -70,7 +83,6 @@ async def test_short_query_policy_does_not_mask_inference_failures() -> None:
                 routes={},
                 candidate_contents={"chunk-1": "候选正文"},
                 allow_fallback=False,
-                allow_short_query_fallback=True,
             )
     finally:
         ranker.close()

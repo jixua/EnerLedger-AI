@@ -762,8 +762,8 @@ async def internal_agent_recall(
             timeout=settings.RECALL_STREAM_TIMEOUT_MS / 1000,
         )
         # LambdaMART 消费冻结候选契约下的完整三路候选；排序完成后只展示
-        # Top64，其中 TopN（默认 12）才有资格进入回答上下文。只有模型包声明的
-        # 短查询低置信度校准策略可以使用混合排序；超时、异常等运行故障不得绕过。
+        # Top64，其中 TopN（默认 12）才有资格进入回答上下文。短查询低置信度
+        # 只作为诊断信号，仍使用模型排序；超时、异常等运行故障不得绕过。
         ltr_candidate_hits = response.candidate_hits or response.hits
         sources = await fetch_chunk_sources(
             [hit.chunk_id for hit in ltr_candidate_hits], context.user_id
@@ -786,11 +786,10 @@ async def internal_agent_recall(
                         routes=routes,
                         candidate_contents=contents,
                         allow_fallback=False,
-                        allow_short_query_fallback=True,
                     ),
                     timeout=settings.RECALL_STREAM_TIMEOUT_MS / 1000,
                 )
-                if ranking.mode not in {"ltr", "hybrid_short_low_confidence"}:
+                if ranking.mode not in {"ltr", "ltr_short_low_confidence"}:
                     raise LambdaMartRankingRequiredError(
                         f"LambdaMART returned fallback mode: {ranking.mode}"
                     )
@@ -830,6 +829,7 @@ async def internal_agent_recall(
                 "candidate_count": len(ltr_candidate_hits),
                 "ranked_count": len(reranked_hits),
                 "duration_ms": round(ranking.elapsed_ms, 3),
+                "reason": ranking.reason,
             }
 
         candidate_hits = reranked_hits[: settings.AGENT_RECALL_DISPLAY_LIMIT]
