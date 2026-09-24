@@ -179,6 +179,11 @@ class Settings(BaseSettings):
     RECALL_LTR_SHADOW_TIMEOUT_MS: int = 5000
     RECALL_LTR_SHADOW_SHUTDOWN_TIMEOUT_MS: int = 3000
     RECALL_LTR_INFERENCE_MAX_CONCURRENCY: int = 4
+    # Agent 强制重排消费完整冻结候选池（短查询最多 625 条），
+    # 不能沿用评测小样本的 250/350ms 预算，否则正常模型推理会被
+    # 误判为故障。非强制 RAG 路径仍使用模型 manifest 中的原始预算。
+    AGENT_LTR_LATENCY_BUDGET_MS: int = Field(default=5000, ge=250, le=30000)
+    AGENT_LTR_TIMEOUT_MS: int = Field(default=10000, ge=350, le=30000)
 
     @field_validator("WIKI_SEARCH_PAGE_SIZE", "WIKI_BM25_TOP_K_PER_DATASET")
     @classmethod

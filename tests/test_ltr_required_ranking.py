@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from concurrent.futures import ThreadPoolExecutor
 
 import pytest
 
+from app.rag.config import settings
 from app.rag.core.pipeline.ltr import LambdaMartRanker, LambdaMartRankingRequiredError
 from app.rag.core.pipeline.ltr.ranker import RankerMonitor
 
@@ -94,6 +96,35 @@ async def test_required_lambdamart_returns_only_model_ranking_mode() -> None:
     try:
         result = await ranker.rank(
             query="这是一个足够长的 LambdaMART 模型重排问题",
+            routes={},
+            candidate_contents={"chunk-1": "候选正文"},
+            allow_fallback=False,
+        )
+    finally:
+        ranker.close()
+
+    assert result.mode == "ltr"
+    assert result.ranked_chunk_ids == ["chunk-1"]
+
+
+@pytest.mark.asyncio
+async def test_required_lambdamart_uses_agent_candidate_pool_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ranker = _fake_ranker(confidence=0.5)
+    ranker.manifest["timeout_ms"] = 50
+    ranker.manifest["latency_budget_ms"] = 50
+    monkeypatch.setattr(settings, "AGENT_LTR_TIMEOUT_MS", 1_000)
+    monkeypatch.setattr(settings, "AGENT_LTR_LATENCY_BUDGET_MS", 1_000)
+
+    def slow_prediction(*_args):
+        time.sleep(0.1)
+        return ["chunk-1"], ["chunk-1"], ["chunk-1"], 0.5
+
+    ranker._predict = slow_prediction
+    try:
+        result = await ranker.rank(
+            query="产品碳足迹怎么做",
             routes={},
             candidate_contents={"chunk-1": "候选正文"},
             allow_fallback=False,

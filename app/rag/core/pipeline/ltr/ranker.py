@@ -99,7 +99,20 @@ class LambdaMartRanker:
         started = time.perf_counter()
         fallback = weighted_baseline_order(routes)
         try:
-            timeout_seconds = self.timeout_ms / 1000
+            timeout_ms = (
+                max(
+                    settings.AGENT_LTR_TIMEOUT_MS,
+                    settings.AGENT_LTR_LATENCY_BUDGET_MS,
+                )
+                if not allow_fallback
+                else self.timeout_ms
+            )
+            latency_budget_ms = (
+                settings.AGENT_LTR_LATENCY_BUDGET_MS
+                if not allow_fallback
+                else self.latency_budget_ms
+            )
+            timeout_seconds = timeout_ms / 1000
             await asyncio.wait_for(self._inference_slots.acquire(), timeout=timeout_seconds)
             slot_acquired_at = time.perf_counter()
             remaining = timeout_seconds - (slot_acquired_at - started)
@@ -138,7 +151,7 @@ class LambdaMartRanker:
                 self.short_fallback["max_query_chars"]
             ) and confidence < float(self.short_fallback["confidence_threshold"])
             elapsed_ms = (time.perf_counter() - started) * 1000
-            if elapsed_ms > self.latency_budget_ms:
+            if elapsed_ms > latency_budget_ms:
                 if not allow_fallback:
                     raise LambdaMartRankingRequiredError("LambdaMART latency budget exceeded")
                 ranked = fallback
