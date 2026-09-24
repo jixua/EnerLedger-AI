@@ -121,7 +121,10 @@ def _normalized(hits: list[RetrieverHit], source: str) -> dict[str, float]:
     low, high = min(values), max(values)
     if high == low:
         return {hit.chunk_id: 1.0 for hit in hits}
-    return {hit.chunk_id: (score - low) / (high - low) for hit, score in zip(hits, values)}
+    return {
+        hit.chunk_id: (score - low) / (high - low)
+        for hit, score in zip(hits, values, strict=True)
+    }
 
 
 def _top12_margin(hits: list[RetrieverHit], source: str) -> float:
@@ -150,6 +153,34 @@ def _weighted_baseline(
             scores[hit.chunk_id] += normalized[source][hit.chunk_id] * weight
     ordered = sorted(scores, key=lambda chunk_id: (-scores[chunk_id], chunk_id))
     return dict(scores), {chunk_id: rank for rank, chunk_id in enumerate(ordered)}
+
+
+def _same_doc_max_bigram_similarities(
+    candidate_bigrams: dict[str, set[str]],
+    chunks_by_doc: dict[int, list[str]],
+) -> dict[str, float]:
+    """计算每个 chunk 与同文档其他 chunk 的最大 Jaccard 相似度。
+
+    旧实现在每个候选上重新遍历全部 peer，同一对 chunk 会计算
+    两次，且每次都构造一个完整的 union set。生产短查询候选池可达
+    625 条，该路径会超过模型 350ms 超时。此处对无序对只计算一次，
+    并用 ``|A| + |B| - |A∩B|`` 得到 union 大小，保持特征数值完全等价。
+    """
+
+    maxima = {chunk_id: 0.0 for chunk_id in candidate_bigrams}
+    for chunk_ids in chunks_by_doc.values():
+        for left_index, left_id in enumerate(chunk_ids):
+            left = candidate_bigrams[left_id]
+            for right_id in chunk_ids[left_index + 1 :]:
+                right = candidate_bigrams[right_id]
+                intersection_size = len(left.intersection(right))
+                union_size = len(left) + len(right) - intersection_size
+                similarity = intersection_size / union_size if union_size else 0.0
+                if similarity > maxima[left_id]:
+                    maxima[left_id] = similarity
+                if similarity > maxima[right_id]:
+                    maxima[right_id] = similarity
+    return maxima
 
 
 def build_online_features(
@@ -192,6 +223,10 @@ def build_online_features(
     chunks_by_doc: dict[int, list[str]] = defaultdict(list)
     for chunk_id in chunk_ids:
         chunks_by_doc[doc_by_chunk[chunk_id]].append(chunk_id)
+    same_doc_max_similarities = _same_doc_max_bigram_similarities(
+        candidate_bigrams,
+        chunks_by_doc,
+    )
     top12_margins = {source: _top12_margin(route_hits[source], source) for source in ROUTES}
 
     features: list[list[float]] = []
@@ -202,17 +237,6 @@ def build_online_features(
         content = candidate_contents[chunk_id]
         content_negations = {token for token in _NEGATIONS if token in content}
         same_doc_chunks = chunks_by_doc[doc_by_chunk[chunk_id]]
-        same_doc_similarities = []
-        for peer_id in same_doc_chunks:
-            if peer_id == chunk_id:
-                continue
-            union = candidate_bigrams[chunk_id].union(candidate_bigrams[peer_id])
-            same_doc_similarities.append(
-                len(candidate_bigrams[chunk_id].intersection(candidate_bigrams[peer_id]))
-                / len(union)
-                if union
-                else 0.0
-            )
         distinctive_query_grams = {
             gram
             for gram in query_bigrams.intersection(candidate_bigrams[chunk_id])
@@ -276,7 +300,7 @@ def build_online_features(
                 _condition_coverage(query, content),
                 len(distinctive_query_grams) / len(query_bigrams) if query_bigrams else 0.0,
                 float(len(same_doc_chunks) - 1),
-                max(same_doc_similarities, default=0.0),
+                same_doc_max_similarities[chunk_id],
                 math.log1p(len(content)),
             ]
         )
@@ -292,7 +316,7 @@ def weighted_fallback_order(chunk_ids: list[str], features: np.ndarray) -> list[
     return [
         item[0]
         for item in sorted(
-            zip(chunk_ids, features[:, score_index], features[:, rank_index]),
+            zip(chunk_ids, features[:, score_index], features[:, rank_index], strict=True),
             key=lambda item: (-float(item[1]), -float(item[2]), item[0]),
         )
     ]
