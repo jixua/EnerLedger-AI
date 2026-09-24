@@ -5,6 +5,7 @@ import {
   cancelReportRun,
   configureApi,
   createDataset,
+  createUser,
   createDocumentReport,
   createDocumentFolder,
   deleteDocumentFolder,
@@ -17,17 +18,22 @@ import {
   getSystemStatus,
   listAgentConversations,
   listAgentConversationTurns,
+  deleteAgentConversation,
   listAllDocuments,
   listDocumentFolders,
   listDocumentReportRuns,
   listCrawlerSubmissions,
   listReportTemplates,
+  listUsers,
+  resetUserPassword,
   retryReportRun,
   confirmAgentTemplateSelection,
   reviewCrawlerSubmission,
   updateDocument,
   updateDocumentFolder,
   updateDataset,
+  updateUser,
+  uploadAgentMaterial,
   uploadDocument,
 } from "../src/lib/api.js";
 import { streamAgent } from "../src/lib/sse.js";
@@ -45,6 +51,33 @@ function jsonResponse(payload, status = 200) {
     headers: { "Content-Type": "application/json" },
   });
 }
+
+test("user management uses administrator account endpoints", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init) => {
+    requests.push({ url, init });
+    return jsonResponse(init.method === "GET" ? [] : {
+      id: 8,
+      username: "auditor",
+      role: "reviewer",
+      status: "ACTIVE",
+    }, init.method === "POST" && url === "/api/v1/users" ? 201 : 200);
+  };
+
+  await listUsers();
+  await createUser({ username: "auditor", password: "password-123", role: "reviewer" });
+  await updateUser(8, { status: "DISABLED" });
+  await resetUserPassword(8, "next-password-123");
+
+  assert.deepEqual(requests.map(({ url, init }) => [url, init.method]), [
+    ["/api/v1/users", "GET"],
+    ["/api/v1/users", "POST"],
+    ["/api/v1/users/8", "PATCH"],
+    ["/api/v1/users/8/reset-password", "POST"],
+  ]);
+  assert.deepEqual(JSON.parse(requests[2].init.body), { status: "DISABLED" });
+  assert.deepEqual(JSON.parse(requests[3].init.body), { password: "next-password-123" });
+});
 
 test("document queue list uses real global endpoint and bearer token", async () => {
   configureApi({ baseUrl: "http://api.local", accessToken: "token-7" });
@@ -427,6 +460,45 @@ test("Pi Agent stream sends the durable conversation id and report attachments",
   assert.equal(result.turnId, "turn-1");
 });
 
+test("direct attachments carry the staged material id instead of the full text", async () => {
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return new Response(
+      'event: answer_done\ndata: {"request_id":"turn-1","answer":"已读完文件"}\n\n',
+      { status: 200, headers: { "Content-Type": "text/event-stream" } },
+    );
+  };
+
+  await streamAgent({
+    query: "这份文件讲了什么？",
+    attachments: [{ filename: "说明.md", material_id: "m-1" }],
+  });
+
+  assert.equal(captured.url, "/api/v1/agent/stream");
+  assert.deepEqual(JSON.parse(captured.init.body).attachments, [
+    { filename: "说明.md", material_id: "m-1" },
+  ]);
+});
+
+test("agent attachment upload stages the file server-side and returns a material id", async () => {
+  let captured;
+  globalThis.fetch = async (url, init) => {
+    captured = { url, init };
+    return jsonResponse({ material_id: "m-1", filename: "说明.md", char_count: 4 });
+  };
+
+  const file = new File(["# 标题"], "说明.md", { type: "text/markdown" });
+  const result = await uploadAgentMaterial(file);
+
+  assert.equal(captured.url, "/api/v1/agent/materials");
+  assert.equal(captured.init.method, "POST");
+  assert.ok(captured.init.body instanceof FormData);
+  // 正文留在服务端，回给前端的只有 id 与元数据
+  assert.equal(result.material_id, "m-1");
+  assert.equal(result.content, undefined);
+});
+
 test("conversation history and template confirmation use durable agent routes", async () => {
   const requests = [];
   globalThis.fetch = async (url, init = {}) => {
@@ -449,6 +521,20 @@ test("conversation history and template confirmation use durable agent routes", 
   );
   assert.equal(requests[2].init.method, "POST");
   assert.deepEqual(JSON.parse(requests[2].init.body), { report_type: "R3" });
+});
+
+test("删除整段对话走 DELETE 并接受 204 空响应", async () => {
+  const requests = [];
+  globalThis.fetch = async (url, init = {}) => {
+    requests.push({ url, init });
+    return new Response(null, { status: 204 });
+  };
+
+  const result = await deleteAgentConversation("conversation-1");
+
+  assert.equal(requests[0].url, "/api/v1/agent/conversations/conversation-1");
+  assert.equal(requests[0].init.method, "DELETE");
+  assert.equal(result, null);
 });
 
 test("Pi Agent stream keeps an empty dataset list as the all-knowledge-base scope", async () => {

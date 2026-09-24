@@ -19,7 +19,7 @@
 - MySQL 保留 `dataset`、`document_folder`、`document`、`document_chunk`、`llm_config` 五张业务表；单管理员身份由部署配置提供，不新增用户表，也不提供注册接口。
 - 不建立解析日志、阶段流水线、会话、消息、用量日志、厂商目录或模型目录表。
 - `document.status` 使用 `QUEUED`、`PROCESSING`、`READY`、`FAILED`。只有 `READY` 文档可以参与检索。
-- `POST /api/v1/documents/{document_id}/analysis` 读取文档当前版本的全部主体分片，分批调用 Chat 模型提取证据，生成 Markdown 分析报告并保存到 MinIO；`GET` 同路径读取当前版本最近一次成功报告。
+- `POST /api/v1/documents/{document_id}/reports` 冻结文档、模板和模型版本后创建报告任务，经 outbox 投递到 RabbitMQ 交给独立 `report-worker`；生成过程可提问、可取消、可重试，产物为 Markdown、DOCX 与 HTML。
 - `POST /api/v1/rag/stream` 在一次请求中完成三路召回、上下文拼装和 LLM SSE 输出；当前不持久化会话或回答历史。
 - `POST /api/v1/agent/stream` 由 FastAPI 鉴权并代理独立 Pi Agent；Pi 只能调用当前运行范围内的受控知识库检索工具。前端历史仍仅存在当前页面，不冒充服务端会话。
 
@@ -169,7 +169,7 @@ uv run python scripts/evaluate_odl_table_strategies.py \
 目录默认递归扫描，可用 `--no-recursive` 关闭。`--markdown-with-html` 同时
 影响两组，`--default-markdown-with-html` 和 `--cluster-markdown-with-html` 可分别
 覆盖。报告保留每组耗时、解析元数据、错误码、可重试标记、表格结构指标和
-推荐策略；任一策略失败时进程返回码为 `1`，且不会用 Naive/MinerU
+推荐策略；任一策略失败时进程返回码为 `1`，且不会用 Naive
 的降级结果冒充 OpenDataLoader 样本。
 
 ### PDF 金标验收
@@ -190,8 +190,9 @@ uv run python scripts/evaluate_pdf_acceptance.py \
 ## 模型配置与调用顺序
 
 Dense 与 Sparse 使用真实模型服务，不存在本地哈希向量兜底。开始解析前，需要分别创建
-`EMBEDDING` 和 `SPARSE_EMBEDDING` 配置；使用 SSE 对话还需要 `CHAT` 配置。包含扫描页、
-图表或流程图的 PDF 应在数据集绑定可选 `VISION` 配置，供页级 OCR/视觉兜底使用。
+`EMBEDDING` 和 `SPARSE_EMBEDDING` 配置；使用 SSE 对话还需要 `CHAT` 配置。PDF、Word、HTML
+等基础文件解析不调用外部解析服务；可选的 Vision/Chat 模型仍可用于 OCR 低置信兜底、
+图表语义和 Markdown 增强。
 
 - 最终 `EMBEDDING` 输出维度必须等于 `DENSE_VECTOR_DIMENSION`，默认 2048；语义切片模型不受该维度约束。
 - `SPARSE_EMBEDDING` 可使用 `bge_m3` 或 `doubao_vision` 等已迁入协议。
@@ -221,8 +222,8 @@ Codex CLI，因此该模式默认面向本机直接启动的 API，不能把宿�
 | 8 | `GET /api/v1/documents/{document_id}/preview/map` | 一次读取当前版本的主体分片边界图 |
 | 9 | `GET /api/v1/documents/{document_id}/preview/versions/{version}/assets/{asset_ref}` | 租户校验后流式读取 Markdown 内的私有图片 |
 | 10 | `GET /api/v1/documents/{document_id}/chunks` | 按当前文档版本分页查看分片正文、顺序、类型与来源信息 |
-| 11 | `GET /api/v1/documents/{document_id}/analysis` | 从 MinIO 读取当前版本最近一次成功的分析报告 |
-| 12 | `POST /api/v1/documents/{document_id}/analysis` | 分析当前版本全文，持久化并返回 Markdown 报告与引用映射 |
+| 11 | `POST /api/v1/documents/{document_id}/reports` | 创建 R1–R7 报告任务，冻结文档、模板与模型版本并投递队列 |
+| 12 | `GET /api/v1/report-runs` | 汇总当前用户跨文档的报告任务、状态与可下载产物 |
 | 13 | `GET /api/v1/documents` | 按用户查询全局解析队列，可按数据集和状态筛选 |
 | 14 | `POST /api/v1/recall` | 仅执行三路召回与融合 |
 | 15 | `POST /api/v1/rag/stream` | 混合检索后用 Chat 模型流式生成回复 |
@@ -233,7 +234,7 @@ Codex CLI，因此该模式默认面向本机直接启动的 API，不能把宿�
 Pi Agent 的信任边界、模型兼容、离线构建和服务令牌要求见
 [`docs/pi-agent.md`](docs/pi-agent.md)。
 
-除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。当前产品支持一个管理员和一个受限资料审核员，不提供注册入口；密码只以 scrypt 哈希保存在部署环境中。可用以下命令分别生成 `ADMIN_PASSWORD_HASH` 或 `REVIEWER_PASSWORD_HASH`：
+除存活检查和登录外，所有业务接口都要求 `Authorization: Bearer <token>`。账号保存在 `user_account` 表中，不提供注册入口；密码只保存 scrypt 哈希。首次升级后，服务会使用 `ADMIN_USERNAME` 和 `ADMIN_PASSWORD_HASH` 创建固定 ID 为 1 的 root 管理员。可用以下命令生成首次引导密码哈希：
 
 ```bash
 uv run python -c 'from app.domain.auth import hash_admin_password; print(hash_admin_password("replace-me"))'
@@ -253,37 +254,41 @@ curl -N http://127.0.0.1:8000/api/v1/rag/stream \
 
 可能返回的事件包括 `stream_started`、`recall_done`、`answer_delta`、`answer_done` 和 `error`；没有可用检索上下文时仍会依次返回 `recall_done`、固定说明文本和 `answer_done`，不会调用 Chat 模型。
 
-### 企业文档分析
+### 报告任务（R1–R7）
 
-只有当前租户的 `READY` 文档可以发起分析。默认使用数据集绑定的 Chat 模型，也可以在请求体中用 `llm_config_id` 指定当前租户可用的 Chat 配置：
+只有当前租户的 `READY` 文档可以发起报告任务。报告类型由 `reporting/templates/registry.json` 注册，R1–R7 覆盖产品碳足迹、组织温室气体清单、ESG/可持续性、能源审计、CBAM、SBTi 目标核定和核查声明：
 
 ```bash
-curl -X POST http://127.0.0.1:8000/api/v1/documents/123/analysis \
+curl -X POST http://127.0.0.1:8000/api/v1/documents/123/reports \
   -H 'Authorization: Bearer <登录接口返回的 access_token>' \
   -H 'Content-Type: application/json' \
-  -d '{}'
+  -d '{"report_type":"R1","llm_config_id":1,"reporting_year":2025,"output_formats":["ONLINE","DOCX","HTML"]}'
 ```
 
-服务会按顺序读取文档当前版本的全部主体分片，排除解析产生的派生元素，并采用“分批证据提取 → 汇总成文”的两阶段模型调用。输入超过 `DOCUMENT_ANALYSIS_MAX_INPUT_TOKENS` 时返回明确错误，不会静默截断。报告结构参考产品碳足迹评价报告，包含以下固定 Markdown 章节：
+任务创建时冻结文档版本、模板版本和模型配置，写入 `report_run` 后经 outbox 投递到 RabbitMQ，由独立 `report-worker` 领取并驱动 Pi report-agent 生成。Pi 侧按模板要求的证据、字段台账和章节逐块落库，缺失关键信息时任务转入 `NEEDS_INPUT` 并通过 `GET /api/v1/report-runs/{run_id}/questions` 提问，作答后继续，澄清轮次不消耗重试预算。
 
-1. 报告摘要；
-2. 评价对象和目标；
-3. 评价方法和工具；
-4. 评价边界界定；
-5. 功能单位或核算口径；
-6. 生命周期与活动数据清单分析；
-7. 碳足迹核算及评价；
-8. 量化数据质量与可靠性；
-9. 不确定性分析；
-10. 文档规范性检查；
-11. 资料缺口与整改建议；
-12. 结论与分析限制。
+报告正文以 ReportIR（结构化中间表示）为真值，`GET /api/v1/report-runs/{run_id}/report` 返回该结构用于在线预览。完成后按 `output_formats` 渲染产物上传对象存储，并写入 `report_artifact` 记录；`GET /api/v1/report-runs/{run_id}/artifacts/{artifact_id}` 提供下载。渲染不重新调用模型。
 
-报告中的事实性发现使用 `[文档片段N]` 标注来源，响应同时返回编号、分片 ID、页码和内容摘要的映射。当前阶段仅以被分析文档为事实依据，尚未把外部标准知识库纳入判定，因此通用检查维度不能视为具体标准条款，报告也不能替代正式审查或认证。
+`output_formats` 可取值 `ONLINE`（仅在线预览，不落盘）、`MARKDOWN`、`DOCX`、`HTML`，默认 `["ONLINE", "DOCX", "HTML"]`。三种产物都直接从 ReportIR 渲染，不经过中间格式：块的读法（列名、分项、平行数组的别名）集中在 `app/services/report_blocks.py`，四个渲染器共用，因此同一份报告在页面与三种导出件里内容一致。Word 里的表格是真表格（表头加底色、数值列右对齐、跨页重复表头），图表用单元格底色画成条形与占比条，页码走 Word 域、打开时刷新；HTML 产物是单文件：样式内联、不引用外部资源、不加载脚本，正文全部转义并附带禁止外部加载的 CSP，可直接双击打开或打印成 PDF。
 
-生成成功后，Markdown 以不可变内容哈希文件保存到当前解析版本目录下的 `analysis/`，`latest.json` 保存引用映射、模型、用量、生成时间和 Markdown 对象指针，并在最后更新作为提交标记。页面刷新后通过 `GET` 接口复用已保存报告；重新生成会切换指针并尽力清理旧报告。分析期间若文档版本或解析产物发生变化，本次结果不会持久化。重新解析与删除文档沿用解析目录前缀清理，可一并清除对应版本的分析产物。
+上下文预算在创建时和 worker 预检两处把关：文档正文加结构提示超出模型窗口时返回 `REPORT_DOCUMENT_TOO_LARGE`，不会静默截断。
 
-前端可直接预览报告、下载 Markdown，或调用 `GET /api/v1/documents/{document_id}/analysis/docx` 将当前已持久化报告导出为 DOCX。DOCX 导出不重新调用大模型。
+报告来源有两种，由 `report_run.source_kind` 区分：
+
+- `DOCUMENT`：路径上的 `document_id`，即已入库解析的知识库文档。
+- `INLINE`：对话里直传的材料。文件经 `POST /api/v1/agent/materials` 就地提取文本后在服务端暂存（**不进知识库**——不建文档记录、不切块入库、不建索引、不进召回），返回 `material_id`；创建报告时只传这个 id，正文不再回传浏览器。材料超过大小/页数/字符阈值时返回 413，提示先导入知识库。
+
+`INLINE` 来源在内部会被切成报告专用的分片并冻结在该任务上（分片 ID 形如 `M-1`），agent 照旧按游标读完、提交时附带覆盖清单供服务端逐项核对——对用户是「没入库」，对链路是「该有的都有」，防伪造的覆盖校验一行没放松。因此 `report_run` 上 `document_id` / `document_version` / `dataset_id` 三个字段对 `INLINE` 为空，判断来源一律看 `source_kind`。
+
+**版式模板同样支持直传**，走 `template_material_id`：文件和来源材料一样暂存在服务端、切成 `M-` 分片后冻结在任务的 `custom_template_manifest` 里（用 `source_kind` 区分知识库模板与内联模板），agent 通过 `read_custom_template_chunks` 读它。模板只控制章节标题、顺序、内容表达与版式，改不了业务字段、公式、证据与免责声明。
+
+一轮对话最多带两份文件，**材料与模板都挂在对话上**（不随发送清空、重开对话时按最后一轮带附件的那一轮恢复），因此后续几轮可以继续用同一份材料或模板。角色由模型判定（`decide_material_roles`）：判不出来时回落规则——报告特征更明显的那份当模板；只有一份且像一份成型的报告时，认成模板而不是来源，此时若用户直接要报告，会明确提示缺少来源材料。问答链路只把**本轮新增**的附件正文交代给模型，挂着的历史附件不重复注入，避免几轮下来把上下文吃光。
+
+一轮里判出多份来源时不静默只取一份，而是明确拒绝并说明（`REPORT_SOURCE_AMBIGUOUS`）。报告类型不唯一时沿用确认卡片（`TEMPLATE_SELECTION`），卡片同时带上材料与文档两套引用。
+
+**对话里可以 `@` 一份知识库文档**（输入框打 `@` 弹出候选，一次一份，候选只列当前知识库范围内已解析到可检索状态的文档）。引用写成文本里的 `@文件名`——模型据此知道「这份文件」指哪一份，用户回头读这句话也读得懂；结构化身份另走附件的 `document_id`，并显式声明 `role: SOURCE`，免得一份长得像报告模板的文档被当成版式模板。之后两条路都通：说「用 @X 生成报告」走报告任务，来源为 `DOCUMENT` 并冻结该文档的版本（产物里带「来源文档」链接）；直接问它就只是提问，检索范围会被收窄到这一份文档（`scoped_doc_ids`），需要通读时模型再按目录与章节读取全文。与挂在对话上的材料不同，**`@` 引用只对当前这一轮有效**，下一轮要用再 `@` 一次。
+
+前端在对话页和文档详情页都能发起报告任务；「报告中心」（`GET /api/v1/report-runs`）汇总当前用户跨文档的全部任务、状态和可下载产物，其中「来源」列对 `INLINE` 任务显示上传时的原文件名。
 
 ## 文档状态
 
@@ -319,13 +324,13 @@ curl -X POST http://127.0.0.1:8000/api/v1/document-submissions \
 并创建待投递 outbox，随后才发送 RabbitMQ 解析消息。待审核和已拒绝资料不会出现在普通文档
 列表或解析队列中。
 
-受限资料审核员账号通过 `REVIEWER_USERNAME` 和 `REVIEWER_PASSWORD_HASH` 配置。
-密码哈希的生成方式与管理员一致；`REVIEWER_PASSWORD_HASH` 留空时该账号禁用。审核员仅可：
+管理员可以在“用户管理”中创建普通账号、审核账号或其他管理员，并执行停用、启用和密码重置。`REVIEWER_USERNAME` 和 `REVIEWER_PASSWORD_HASH` 仅用于升级时迁移旧审核员；新账号不再通过部署变量维护。审核员仅可：
 
+- 使用 AI 对话、查看自己的历史会话，并上传对话所需的临时材料；
 - 读取待审资料、查看原文件、通过或拒绝，并在通过时选择入库数据集；
-- 读取对话所需的数据集可用状态和脱敏模型摘要，使用 AI 对话。
+- 读取对话和审核所需的数据集名称及启用模型摘要，但不能管理数据集、文档或模型配置。
 
-数据集、文档、模型和系统配置的其他管理接口仍仅限管理员。
+普通账号可以使用对话、资料库、解析队列、报告、模型和系统状态，但不能审核资料或管理账号；管理员拥有全部权限。
 
 RabbitMQ 负责主动投递，MySQL `document` 行同时保存解析 lease 和 outbox 投递状态。
 文档状态与待投递标记在一次事务内提交；API 随后尝试发布，后台补偿器会用
@@ -346,16 +351,15 @@ RabbitMQ 确认前后崩溃都能恢复；极端窗口可能重复投递，但�
 均分块落盘，不会把 100 MiB 文件整体读入内存。PDF 仍以 OpenDataLoader 结构解析为主，
 随后强制核对原页数与 `ODL_PAGE` 页序，统计正文/图片覆盖、旋转和 OCR 置信度。
 对可靠文本层同时使用顺序敏感的 source recall 和 output precision 门禁，
-两者默认均不低于 97%，避免截断、乱序、重复正文或追加幻觉文本进入索引。扫描页按
-`250–300 DPI`（默认 280）整页送数据集绑定的 Vision 模型做 OCR；图表页补充结构化实体、
-数值和箭头关系，再按原页码合并。页数不一致、OCR 未完成/低置信、视觉结构未完成或
-表格/图片/公式专项验证失败都只会进入 `FAILED`，不会写入可检索 `READY`。质量报告直接
+两者默认均不低于 97%，避免截断、乱序或重复正文进入索引。扫描页按
+`250–300 DPI`（默认 280）整页优先使用本地 RapidOCR；低置信时允许使用数据集绑定的
+Vision 模型兜底。图表页绑定 Vision 时补充趋势、箭头和实体关系；未绑定时仅用本地 OCR
+保留标签、数值和单位，并在质量报告中记录 `LOCAL_VISUAL_OCR_ONLY`。质量报告直接
 保存在 `document.parse_quality_status/parse_quality`，没有新增业务表。
 独立 OpenDataLoader 进程同时受输出目录、文件数和日志容量硬限制：默认最多
 `10000` 个输出文件（`PDF_MAX_OUTPUT_FILES`），stdout/stderr 合计最多 `16 MiB`
 （`OPENDATALOADER_MAX_LOG_BYTES`）。运行中超限会终止整个进程组，并以确定性资源错误结束，
-不会重试同一份输入。单页模型结构字段只保留白名单且最多 `64 KiB`，整份文档默认
-最多 `4 MiB`（`PDF_FALLBACK_MAX_STRUCTURED_REPORT_BYTES`）；OCR 正文不会在质量 JSON 中重复持久化。
+不会重试同一份输入。OCR 正文不会在质量 JSON 中重复持久化。
 
 ## 分片实现与查看
 
@@ -413,5 +417,5 @@ curl -fsS http://127.0.0.1:9308/
 本地 Docker 整栈、真实 Dense/Sparse/Chat 模型、HTML 解析、RabbitMQ 主动解析队列、
 MinIO/Qdrant/Manticore 写读、三路召回和 SSE 流式对话已于 2026-08-10 完成联调验证。
 本轮另用真实 4 页正文 PDF 验证 ODL 页序与表格 A/B，并用真实 4 页扫描 PDF 验证全部页面
-进入 280 DPI OCR 门禁。真实 Vision 模型的字符/公式/图表准确率仍必须通过上述人工金标工具
+进入 280 DPI 本地 RapidOCR 门禁。Vision 增强以及字符、公式和图表文字准确率仍必须通过上述人工金标工具
 验收；单元测试或结构门禁通过不能替代准确率金标。

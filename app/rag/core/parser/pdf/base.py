@@ -14,4 +14,4 @@ class BasePdfBackend(ABC):
 
     @abstractmethod
     def parse(self, source: Path | None, options):
-        """将本地 PDF 文件（或 None，仅 MinerU URL 旁路）解析为 Markdown。"""
+        """将本地 PDF 文件解析为 Markdown。"""

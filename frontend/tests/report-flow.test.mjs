@@ -1,0 +1,116 @@
+import assert from "node:assert/strict";
+import test from "node:test";
+import { readFile } from "node:fs/promises";
+
+const read = (path) => readFile(new URL(`../src/${path}`, import.meta.url), "utf8");
+
+const [reportRun, reportsPage, detailPage, chatCard, dialog, appShell, app] = await Promise.all([
+  read("lib/reportRun.js"),
+  read("pages/ReportsPage.jsx"),
+  read("pages/ReportDetailPage.jsx"),
+  read("components/ChatReportCard.jsx"),
+  read("components/ReportGenerationDialog.jsx"),
+  read("components/AppShell.jsx"),
+  read("App.jsx"),
+]);
+test("报告状态文案只有一份来源", async () => {
+  const consumers = [reportsPage, detailPage, chatCard, dialog];
+  for (const source of consumers) {
+    assert.doesNotMatch(source, /const (STATE_LABELS|RUN_LABELS|REPORT_STATE_LABELS)\s*=/, "状态文案不应在组件里另起一份");
+    assert.match(source, /from "\.\.\/lib\/reportRun"/);
+  }
+  assert.match(reportRun, /export const REPORT_STATE_LABELS/);
+  assert.match(reportRun, /export const REPORT_STATE_TONES/);
+});
+
+test("报告正文有独立路由，生成入口不再内嵌预览", async () => {
+  assert.match(app, /path="reports"/);
+  assert.match(app, /path="reports\/:runId"/);
+  assert.match(app, /path="analysis-reports" element=\{<Navigate to="\/reports" replace \/>\}/);
+  assert.match(appShell, /to: "\/reports"/);
+
+  // 详情页是唯一渲染报告正文的地方
+  assert.match(detailPage, /<ReportIrView/);
+  assert.doesNotMatch(dialog, /ReportIrView|report-online-preview/);
+});
+
+test("列表与对话卡片都指向报告详情页", async () => {
+  assert.match(reportsPage, /reportRunPath\(/);
+  assert.match(chatCard, /reportRunPath\(/);
+  assert.match(reportRun, /return `\/reports\/\$\{encodeURIComponent\(runId\)\}`/);
+});
+
+test("产物下载收敛到共享组件，且只在报告语境里出现", async () => {
+  // 列表只做索引；下载归详情页，对话卡片保留一处就近入口
+  assert.doesNotMatch(reportsPage, /ReportArtifactButtons|URL\.createObjectURL/);
+  for (const source of [detailPage, chatCard]) {
+    assert.match(source, /from "(\.\/|\.\.\/components\/)ReportArtifactButtons"/);
+    assert.doesNotMatch(source, /URL\.createObjectURL/, "下载实现只应存在于 ReportArtifactButtons");
+  }
+});
+
+test("离线图表不落成 JSON：块类型逐一渲染", async () => {
+  const irView = await read("components/ReportIrView.jsx");
+  for (const type of ["paragraph", "heading", "callout", "list", "metric_cards", "table"]) {
+    assert.match(irView, new RegExp(`case "${type}"`), `缺少 ${type} 的分支`);
+  }
+  // 含负值时不能画成占比，也不能画成零宽的普通条
+  assert.match(irView, /hasNegative/);
+  assert.match(irView, /report-diverge/);
+});
+
+test("界面只讲报告类型名称，不暴露 R1–R7 内部编号", async () => {
+  const playground = await read("pages/PlaygroundPage.jsx");
+  const leakPatterns = [
+    /\{run\.report_type\}/,
+    /\{item\.report_type\}/,
+    /\{created\.report_type\}/,
+    /\$\{run\.report_type\}/,
+    /report_type\} ·/,
+    /"R[1-7] · /,
+    /R1–R7|R1-R7/,
+  ];
+  for (const [name, source] of Object.entries({
+    reportsPage,
+    detailPage,
+    chatCard,
+    dialog,
+    playground,
+  })) {
+    for (const pattern of leakPatterns) {
+      assert.doesNotMatch(source, pattern, `${name} 把内部编号渲染给了用户`);
+    }
+  }
+  // 展示名称统一走 helper，取值来自接口的 report_type_name
+  for (const source of [reportsPage, detailPage, chatCard, dialog]) {
+    assert.match(source, /reportTypeName\(/);
+  }
+  assert.match(reportRun, /export function reportTypeName/);
+  assert.match(reportRun, /run\?\.report_type_name/);
+});
+
+test("对话上传只做直传分析：不要求选知识库，也没有模板角色", async () => {
+  const playground = await read("pages/PlaygroundPage.jsx");
+  // 附件上传与发送后的清空属于会话状态，随对话状态一起放在 provider 里。
+  const chatSession = await read("state/ChatSessionContext.jsx");
+  const sse = await read("lib/sse.js");
+  // 一个入口按钮，不再有「来源文档 / 报告模板」的角色菜单
+  assert.match(playground, /aria-label="上传文件"/);
+  assert.doesNotMatch(playground, /pickUploadFile|composer-selector__panel--upload/);
+  // 份数上限仍在
+  assert.match(chatSession, /attachments\.length >= 2/);
+  // 文件正文暂存在服务端，前端只持有 material_id
+  assert.match(chatSession, /uploadAgentMaterial/);
+  assert.doesNotMatch(chatSession, /uploadDocuments/);
+  assert.doesNotMatch(chatSession, /上传对话资料前，请只选择一个知识库/);
+  // 报告模板角色已从对话上传里移除
+  assert.doesNotMatch(playground, /toggleTemplateRole|allowRoleToggle/);
+  assert.doesNotMatch(chatSession, /toggleTemplateRole|allowRoleToggle/);
+  // 附件挂在对话上、跨轮有效：发送后不清空，重开对话时从上一轮恢复
+  assert.match(chatSession, /setQuestion\(""\);/);
+  assert.doesNotMatch(chatSession, /setQuestion\(""\);\s*\n\s*setAttachments\(\[\]\);/);
+  assert.match(chatSession, /carriedAttachments\(turns\)/);
+  // 直传附件只把材料 id 发给服务端；知识库附件仍按 document_id 引用
+  assert.match(sse, /material_id: attachment\.material_id \?\? attachment\.materialId/);
+  assert.match(sse, /\.\.\.\(attachment\.role \? \{ role: attachment\.role \} : \{\}\)/);
+});

@@ -1,4 +1,6 @@
-import { X } from "lucide-react";
+import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
+import { Check, ChevronDown, X } from "lucide-react";
 
 export function Button({ variant = "primary", size = "md", className = "", children, ...props }) {
   return (
@@ -62,6 +64,139 @@ export function Field({ label, hint, error, children, className = "" }) {
   );
 }
 
+export function Select({
+  value,
+  onChange,
+  options = [],
+  placeholder = "请选择",
+  disabled = false,
+  className = "",
+  ariaLabel,
+  title,
+}) {
+  const id = useId();
+  const triggerRef = useRef(null);
+  const menuRef = useRef(null);
+  const [open, setOpen] = useState(false);
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [menuStyle, setMenuStyle] = useState({});
+  const selectedIndex = useMemo(
+    () => options.findIndex((option) => String(option.value) === String(value ?? "")),
+    [options, value],
+  );
+  const selected = selectedIndex >= 0 ? options[selectedIndex] : null;
+
+  useEffect(() => {
+    if (!open) return undefined;
+    setActiveIndex(selectedIndex >= 0 ? selectedIndex : 0);
+    const close = (event) => {
+      if (!triggerRef.current?.contains(event.target) && !menuRef.current?.contains(event.target)) setOpen(false);
+    };
+    const closeOnViewportChange = () => setOpen(false);
+    document.addEventListener("pointerdown", close);
+    window.addEventListener("resize", closeOnViewportChange);
+    window.addEventListener("scroll", closeOnViewportChange, true);
+    return () => {
+      document.removeEventListener("pointerdown", close);
+      window.removeEventListener("resize", closeOnViewportChange);
+      window.removeEventListener("scroll", closeOnViewportChange, true);
+    };
+  }, [open, selectedIndex]);
+
+  useLayoutEffect(() => {
+    if (!open || !triggerRef.current) return;
+    const rect = triggerRef.current.getBoundingClientRect();
+    const maxHeight = Math.min(288, Math.max(160, window.innerHeight - 24));
+    const openAbove = window.innerHeight - rect.bottom < Math.min(maxHeight, options.length * 42 + 12)
+      && rect.top > window.innerHeight - rect.bottom;
+    setMenuStyle({
+      left: Math.max(12, Math.min(rect.left, window.innerWidth - rect.width - 12)),
+      minWidth: rect.width,
+      maxWidth: Math.min(420, window.innerWidth - 24),
+      maxHeight,
+      ...(openAbove ? { bottom: window.innerHeight - rect.top + 6 } : { top: rect.bottom + 6 }),
+    });
+  }, [open, options.length]);
+
+  function choose(option) {
+    if (option.disabled) return;
+    onChange?.(String(option.value));
+    setOpen(false);
+    triggerRef.current?.focus();
+  }
+
+  function handleKeyDown(event) {
+    if (disabled) return;
+    if (event.key === "Escape") {
+      setOpen(false);
+      return;
+    }
+    if (["ArrowDown", "ArrowUp", "Home", "End"].includes(event.key)) {
+      event.preventDefault();
+      if (!open) setOpen(true);
+      const last = Math.max(0, options.length - 1);
+      if (event.key === "Home") setActiveIndex(0);
+      else if (event.key === "End") setActiveIndex(last);
+      else setActiveIndex((current) => event.key === "ArrowDown" ? Math.min(last, current + 1) : Math.max(0, current - 1));
+      return;
+    }
+    if ((event.key === "Enter" || event.key === " ") && open) {
+      event.preventDefault();
+      if (options[activeIndex]) choose(options[activeIndex]);
+    }
+  }
+
+  const menu = open ? createPortal(
+    <div ref={menuRef} id={`${id}-listbox`} className="custom-select__menu" role="listbox" aria-label={ariaLabel} style={menuStyle}>
+      {options.map((option, index) => {
+        const isSelected = String(option.value) === String(value ?? "");
+        return (
+          <button
+            id={`${id}-option-${index}`}
+            className={`custom-select__option${isSelected ? " is-selected" : ""}${index === activeIndex ? " is-active" : ""}`}
+            type="button"
+            role="option"
+            aria-selected={isSelected}
+            disabled={option.disabled}
+            key={`${option.value}-${index}`}
+            onPointerMove={() => setActiveIndex(index)}
+            onClick={() => choose(option)}
+          >
+            <span><strong>{option.label}</strong>{option.description ? <small>{option.description}</small> : null}</span>
+            {isSelected ? <Check size={16} /> : null}
+          </button>
+        );
+      })}
+      {!options.length ? <p className="custom-select__empty">暂无可选项</p> : null}
+    </div>,
+    document.body,
+  ) : null;
+
+  return (
+    <div className={`custom-select ${open ? "is-open" : ""} ${className}`.trim()}>
+      <button
+        ref={triggerRef}
+        className="custom-select__trigger"
+        type="button"
+        role="combobox"
+        aria-label={ariaLabel}
+        aria-controls={`${id}-listbox`}
+        aria-expanded={open}
+        aria-haspopup="listbox"
+        aria-activedescendant={open ? `${id}-option-${activeIndex}` : undefined}
+        disabled={disabled}
+        title={title}
+        onClick={() => setOpen((current) => !current)}
+        onKeyDown={handleKeyDown}
+      >
+        <span className={selected ? "" : "is-placeholder"}>{selected?.label || placeholder}</span>
+        <ChevronDown size={16} aria-hidden="true" />
+      </button>
+      {menu}
+    </div>
+  );
+}
+
 export function Modal({ open, title, description, onClose, children, footer, width = "640px" }) {
   if (!open) return null;
   return (
@@ -83,6 +218,17 @@ export function Modal({ open, title, description, onClose, children, footer, wid
 
 export function Skeleton({ width = "100%", height = 16 }) {
   return <span className="skeleton" style={{ width, height }} aria-hidden="true" />;
+}
+
+/** 懒加载页面与工作台面板共用的骨架屏。 */
+export function PageLoader() {
+  return (
+    <div className="route-loader">
+      <span className="skeleton" />
+      <span className="skeleton" />
+      <span className="skeleton" />
+    </div>
+  );
 }
 
 export function formatDate(value, withTime = false) {

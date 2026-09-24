@@ -17,12 +17,24 @@ from app.domain.time import utc_now
 from app.rag.config import settings
 from app.rag.database import get_db
 from app.rag.models.chunk_record import ChunkRecordDB
+from app.rag.services.storage.factory import StorageFactory
 from app.services.report_agent_tokens import (
     ReportAgentTokenError,
     verify_report_agent_token,
 )
+from app.services.report_budget import STRUCTURE_HINT_CHARS_PER_CHUNK
 from app.services.report_calculations import ReportCalculationError, execute_registered_formula
-from app.services.report_ir import validate_report_ir
+from app.services.report_inline_source import (
+    SOURCE_KIND_INLINE,
+    payload_chunks,
+    read_inline_source,
+)
+from app.services.report_ir import (
+    ReportIRPatchError,
+    apply_report_ir_patch,
+    report_ir_contract_schema,
+    validate_report_ir,
+)
 from app.services.report_source_context import (
     load_report_source_context,
     validate_chunk_coverage,
@@ -78,8 +90,34 @@ class ReportIRRequest(BaseModel):
     report_ir: dict[str, Any]
 
 
-class ReportIRSubmitRequest(ReportIRRequest):
+class ReportIRValidateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    # 不带 report_ir 时校验已落库的草稿（save_report_ir_draft 写入）。
+    report_ir: dict[str, Any] | None = None
+
+
+class ReportIRSubmitRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
     coverage: dict[str, Any]
+    # 兼容旧契约：不带 report_ir 时提交已落库的草稿。
+    report_ir: dict[str, Any] | None = None
+
+
+class ReportIRPatchRequest(BaseModel):
+    """增量修补草稿：只带发生变化的部分条目。"""
+
+    model_config = ConfigDict(extra="forbid")
+    upsert_evidence: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
+    delete_evidence: list[str] = Field(default_factory=list, max_length=2000)
+    upsert_field_ledger: list[dict[str, Any]] = Field(default_factory=list, max_length=2000)
+    delete_field_ledger: list[str] = Field(default_factory=list, max_length=2000)
+    upsert_sections: list[dict[str, Any]] = Field(default_factory=list, max_length=500)
+    delete_sections: list[str] = Field(default_factory=list, max_length=500)
+    calculations: list[dict[str, Any]] | None = None
+    meta: dict[str, Any] | None = None
+    warnings: list[str] | None = None
+    limitations: list[str] | None = None
+    render_profile: str | None = None
 
 
 def _answer_content_hash(answer: dict[str, Any] | None) -> str | None:
@@ -89,6 +127,105 @@ def _answer_content_hash(answer: dict[str, Any] | None) -> str | None:
         answer.get("value"), ensure_ascii=False, sort_keys=True, separators=(",", ":")
     )
     return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+
+_STRUCTURE_HINT_KEYS = (
+    "chunk_role",
+    "element_types",
+    "split_strategy",
+    "oversized",
+    "oversized_reason",
+)
+_TABLE_HINT_KEYS = ("title", "row_count", "column_count", "header_row_count", "source_pages")
+
+# 单次校验回传给模型的最大错误/警告条数。
+MAX_VALIDATION_ITEMS = 40
+
+
+def _trim_validation_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    """限制回传给模型的校验错误条数。
+
+    一次严重不完整的 ReportIR 可能触发成百上千条错误，逐条回传会把这些文本
+    永久留在模型上下文里（并挤掉后续修复所需的空间）。
+    """
+    trimmed = dict(payload)
+    for key in ("errors", "warnings"):
+        items = payload.get(key) or []
+        if len(items) > MAX_VALIDATION_ITEMS:
+            trimmed[key] = [
+                *items[:MAX_VALIDATION_ITEMS],
+                f"（其余 {len(items) - MAX_VALIDATION_ITEMS} 条同类信息已省略）",
+            ]
+    return trimmed
+
+
+def _require_report_ir(payload_ir: dict[str, Any] | None, run: ReportRun) -> dict[str, Any]:
+    """取本次要校验/提交的 ReportIR：请求体优先，否则用已落库的草稿。"""
+    candidate = payload_ir if payload_ir is not None else run.report_ir_draft
+    if not isinstance(candidate, dict):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "REPORT_IR_DRAFT_MISSING",
+                "message": "尚未落库候选 ReportIR，请先调用 save_report_ir_draft",
+            },
+        )
+    return candidate
+
+
+def _draft_receipt(report_ir: dict[str, Any]) -> dict[str, Any]:
+    """草稿回执：只回版本号与规模，不回整份 IR（否则又把大对象塞回上下文）。"""
+    encoded = json.dumps(
+        report_ir, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+    ).encode("utf-8")
+    evidence = report_ir.get("evidence")
+    ledger = report_ir.get("field_ledger")
+    sections = report_ir.get("sections")
+    return {
+        "saved": True,
+        "revision": hashlib.sha256(encoded).hexdigest()[:12],
+        "evidence_count": len(evidence) if isinstance(evidence, list) else 0,
+        "field_ledger_count": len(ledger) if isinstance(ledger, list) else 0,
+        "section_count": len(sections) if isinstance(sections, list) else 0,
+    }
+
+
+def _structure_hint(raw: Any) -> dict[str, Any]:
+    """把分片的结构元数据裁剪成「轻量提示」再交给报告 Agent。
+
+    原始结构元数据整篇可达正文的 6 倍以上（表格的 cells/text_matrix/cell_reference_matrix
+    逐格序列化，单条上限 4 万字符），而这些内容在分片正文里已经存在：原样下发会让
+    一次 read_document_chunks 就返回几十万字符，把模型上下文窗口吃满。这里只保留
+    定位与类型提示，表格只留行列数与标题。
+    """
+    if not isinstance(raw, dict):
+        return {}
+    hint = {key: raw[key] for key in _STRUCTURE_HINT_KEYS if raw.get(key) is not None}
+    trail = raw.get("heading_trail")
+    if isinstance(trail, list) and trail:
+        hint["heading_trail"] = trail[-2:]
+    table = raw.get("table_structure")
+    if isinstance(table, dict):
+        hint["table"] = {key: table[key] for key in _TABLE_HINT_KEYS if table.get(key) is not None}
+    return hint
+
+
+def _chunk_page(rows: list[Any], *, page_limit: int) -> tuple[list[Any], bool]:
+    """按字符预算截取一页分片，返回 (本页分片, 是否还有后续)。
+
+    分片正文长度差异极大（实测单条最长 1.7 万字符），只按条数分页会让一次返回达到
+    几十万字符、把模型上下文一次性吃满。至少返回 1 条，保证游标一定能前进。
+    """
+    budget = settings.REPORT_AGENT_CHUNK_PAGE_MAX_CHARS
+    selected: list[Any] = []
+    used = 0
+    for row in rows[:page_limit]:
+        cost = len(row.content or "") + STRUCTURE_HINT_CHARS_PER_CHUNK
+        if selected and used + cost > budget:
+            break
+        selected.append(row)
+        used += cost
+    return selected, len(rows) > len(selected)
 
 
 def _verify_service_token(authorization: Annotated[str | None, Header()] = None) -> None:
@@ -161,6 +298,10 @@ async def get_analysis_context(run: Annotated[ReportRun, Depends(_authorized_run
         "dataset_id": run.dataset_id,
         "document_id": run.document_id,
         "document_version": run.document_version,
+        # 直传材料的来源就是用户上传的那个文件，把它一并告诉 agent，
+        # 免得正文里提到「本报告」时它无从指名来源。
+        "source_kind": run.source_kind,
+        "source_filename": run.inline_source_filename,
         "report_type": run.report_type,
         "template_id": run.template_id,
         "template_version": run.template_version,
@@ -224,6 +365,8 @@ async def get_template_definition(
         "template_id": template.template_id,
         "template_version": template.version,
         "definition": template.definition,
+        # 与校验器同源的 ReportIR JSON Schema：Agent 必须按其中的字段名/枚举构造 IR。
+        "ir_schema": report_ir_contract_schema(),
         "common_skill": template.common_skill,
         "report_skill": template.report_skill,
     }
@@ -235,25 +378,27 @@ async def read_document_chunks(
     run: Annotated[ReportRun, Depends(_authorized_run)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
+    """按游标读来源分片。两种来源产出同一份形状，agent 侧不必区分。"""
     offset = int(payload.cursor or 0)
-    rows = (
-        await db.scalars(
-            select(ChunkRecordDB)
-            .where(
-                ChunkRecordDB.doc_id == run.document_id,
-                ChunkRecordDB.document_version == run.document_version,
-                ChunkRecordDB.user_id == run.user_id,
-                ChunkRecordDB.set_id == run.dataset_id,
+    if run.source_kind == SOURCE_KIND_INLINE:
+        items, has_more = await _inline_chunk_page(run, offset=offset, limit=payload.limit)
+    else:
+        rows = (
+            await db.scalars(
+                select(ChunkRecordDB)
+                .where(
+                    ChunkRecordDB.doc_id == run.document_id,
+                    ChunkRecordDB.document_version == run.document_version,
+                    ChunkRecordDB.user_id == run.user_id,
+                    ChunkRecordDB.set_id == run.dataset_id,
+                )
+                .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
+                .offset(offset)
+                .limit(payload.limit + 1)
             )
-            .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
-            .offset(offset)
-            .limit(payload.limit + 1)
-        )
-    ).all()
-    has_more = len(rows) > payload.limit
-    items = rows[: payload.limit]
-    return {
-        "items": [
+        ).all()
+        rows, has_more = _chunk_page(rows, page_limit=payload.limit)
+        items = [
             {
                 "chunk_id": row.chunk_id,
                 "chunk_index": row.chunk_index,
@@ -264,15 +409,44 @@ async def read_document_chunks(
                 "end_page": row.end_page,
                 "start_line": row.start_line,
                 "end_line": row.end_line,
-                "structure": row.structure_metadata,
+                "structure": _structure_hint(row.structure_metadata),
             }
-            for row in items
-        ],
-        "next_cursor": str(offset + payload.limit) if has_more else None,
+            for row in rows
+        ]
+    return {
+        "items": items,
+        "next_cursor": str(offset + len(items)) if has_more else None,
         "complete": not has_more,
         "manifest_hash": run.document_manifest["chunk_manifest_sha256"],
         "total_chunks": run.document_manifest["chunk_count"],
     }
+
+
+async def _inline_chunk_page(
+    run: ReportRun, *, offset: int, limit: int
+) -> tuple[list[dict], bool]:
+    """直传材料没有页码与行号，也没有结构提示：那几项对图片/表格切片才有意义。"""
+    payload = await read_inline_source(
+        StorageFactory.get_storage(), bucket=run.parsed_bucket, object_key=run.parsed_object_key
+    )
+    chunks = payload_chunks(payload)
+    page = chunks[offset : offset + limit]
+    items = [
+        {
+            "chunk_id": chunk.chunk_id,
+            "chunk_index": chunk.chunk_index,
+            "chunk_type": "TEXT",
+            "content": chunk.content,
+            "content_hash": chunk.content_hash,
+            "start_page": None,
+            "end_page": None,
+            "start_line": None,
+            "end_line": None,
+            "structure": None,
+        }
+        for chunk in page
+    ]
+    return items, offset + len(page) < len(chunks)
 
 
 @router.post("/runs/{run_id}/custom-template-chunks")
@@ -281,44 +455,65 @@ async def read_custom_template_chunks(
     run: Annotated[ReportRun, Depends(_authorized_run)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
-    manifest = run.custom_template_manifest
-    if (
-        not run.custom_template_document_id
-        or not run.custom_template_document_version
-        or not manifest
-    ):
+    raw_manifest = run.custom_template_manifest
+    manifest = raw_manifest if isinstance(raw_manifest, dict) else None
+    if not manifest:
         return {"items": [], "next_cursor": None, "complete": True, "available": False}
     offset = int(payload.cursor or 0)
-    rows = (
-        await db.scalars(
-            select(ChunkRecordDB)
-            .where(
-                ChunkRecordDB.doc_id == run.custom_template_document_id,
-                ChunkRecordDB.document_version == run.custom_template_document_version,
-                ChunkRecordDB.user_id == run.user_id,
-                ChunkRecordDB.set_id == run.dataset_id,
+    if manifest.get("source_kind") == SOURCE_KIND_INLINE:
+        # 对话直传的模板：分片冻结在任务自己的对象存储上，与来源正文同一套切分。
+        chunks = payload_chunks(
+            await read_inline_source(
+                StorageFactory.get_storage(),
+                bucket=str(manifest.get("bucket") or run.parsed_bucket),
+                object_key=str(manifest.get("object_key") or ""),
             )
-            .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
-            .offset(offset)
-            .limit(payload.limit + 1)
         )
-    ).all()
-    has_more = len(rows) > payload.limit
-    items = rows[: payload.limit]
-    return {
-        "available": True,
-        "filename": manifest.get("filename"),
-        "items": [
+        page = chunks[offset : offset + payload.limit]
+        items: list[dict[str, Any]] = [
+            {
+                "chunk_id": chunk.chunk_id,
+                "chunk_index": chunk.chunk_index,
+                "content": chunk.content,
+                "content_hash": chunk.content_hash,
+                "structure": None,
+            }
+            for chunk in page
+        ]
+        has_more = offset + len(page) < len(chunks)
+    else:
+        if not run.custom_template_document_id or not run.custom_template_document_version:
+            return {"items": [], "next_cursor": None, "complete": True, "available": False}
+        rows = (
+            await db.scalars(
+                select(ChunkRecordDB)
+                .where(
+                    ChunkRecordDB.doc_id == run.custom_template_document_id,
+                    ChunkRecordDB.document_version == run.custom_template_document_version,
+                    ChunkRecordDB.user_id == run.user_id,
+                    ChunkRecordDB.set_id == run.dataset_id,
+                )
+                .order_by(ChunkRecordDB.chunk_index, ChunkRecordDB.id)
+                .offset(offset)
+                .limit(payload.limit + 1)
+            )
+        ).all()
+        rows, has_more = _chunk_page(rows, page_limit=payload.limit)
+        items = [
             {
                 "chunk_id": row.chunk_id,
                 "chunk_index": row.chunk_index,
                 "content": row.content,
                 "content_hash": row.content_hash,
-                "structure": row.structure_metadata,
+                "structure": _structure_hint(row.structure_metadata),
             }
-            for row in items
-        ],
-        "next_cursor": str(offset + payload.limit) if has_more else None,
+            for row in rows
+        ]
+    return {
+        "available": True,
+        "filename": manifest.get("filename"),
+        "items": items,
+        "next_cursor": str(offset + len(items)) if has_more else None,
         "complete": not has_more,
         "manifest_hash": manifest["chunk_manifest_sha256"],
         "total_chunks": manifest["chunk_count"],
@@ -467,20 +662,73 @@ async def request_clarification(
     }
 
 
+@router.post("/runs/{run_id}/ir-draft")
+async def save_report_ir_draft(
+    payload: ReportIRRequest,
+    run: Annotated[ReportRun, Depends(_authorized_run)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """把候选 ReportIR 落库，只回一份轻量回执。
+
+    整份 IR 只在这一次调用里进入模型上下文；后续 validate / submit 直接引用落库版本，
+    不再重复回传同一份大对象——这是报告会话上下文里最大的可省项。
+    """
+    report_ir = payload.report_ir
+    run.report_ir_draft = report_ir
+    await db.commit()
+    return _draft_receipt(report_ir)
+
+
+@router.post("/runs/{run_id}/ir-draft/patch")
+async def patch_report_ir_draft(
+    payload: ReportIRPatchRequest,
+    run: Annotated[ReportRun, Depends(_authorized_run)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> dict:
+    """增量修补已落库的候选 ReportIR：只提交发生变化的条目。
+
+    修复校验错误时，模型此前必须整份重发 IR（实测一轮修复约 1.6 万字符）；
+    按 evidence_id / field_id / section_id 做条目级 upsert 后，一次修复通常只有几百到几千字符。
+    """
+    draft = run.report_ir_draft
+    if not isinstance(draft, dict):
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "code": "REPORT_IR_DRAFT_MISSING",
+                "message": "尚未落库候选 ReportIR，请先调用 save_report_ir_draft",
+            },
+        )
+    try:
+        updated, summary = apply_report_ir_patch(
+            draft, payload.model_dump(exclude_none=True)
+        )
+    except ReportIRPatchError as exc:
+        raise HTTPException(
+            status_code=422,
+            detail={"code": exc.code, "message": str(exc)},
+        ) from exc
+    run.report_ir_draft = updated
+    await db.commit()
+    receipt = _draft_receipt(updated)
+    receipt["changed"] = summary
+    return receipt
+
+
 @router.post("/runs/{run_id}/validate")
 async def validate_candidate_report(
-    payload: ReportIRRequest,
+    payload: ReportIRValidateRequest,
     run: Annotated[ReportRun, Depends(_authorized_run)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     evidence_context, _manifest = await load_report_source_context(db, run=run)
     validation = validate_report_ir(
-        payload.report_ir,
+        _require_report_ir(payload.report_ir, run),
         run=run,
         template=_template_for_run(run),
         evidence_context=evidence_context,
     )
-    return validation.to_dict()
+    return _trim_validation_payload(validation.to_dict())
 
 
 @router.post("/runs/{run_id}/submit")
@@ -490,8 +738,9 @@ async def submit_candidate_report(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict:
     evidence_context, chunk_manifest = await load_report_source_context(db, run=run)
+    report_ir = _require_report_ir(payload.report_ir, run)
     validation = validate_report_ir(
-        payload.report_ir,
+        report_ir,
         run=run,
         template=_template_for_run(run),
         evidence_context=evidence_context,
@@ -502,12 +751,12 @@ async def submit_candidate_report(
             status_code=422,
             detail={
                 "code": "REPORT_IR_VALIDATION_FAILED",
-                **validation.to_dict(),
-                "coverage_errors": coverage_errors,
+                **_trim_validation_payload(validation.to_dict()),
+                "coverage_errors": coverage_errors[:MAX_VALIDATION_ITEMS],
             },
         )
     encoded = json.dumps(
-        payload.report_ir, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+        report_ir, ensure_ascii=False, sort_keys=True, separators=(",", ":")
     ).encode("utf-8")
     manifest = {
         "run_id": run.id,
@@ -519,10 +768,14 @@ async def submit_candidate_report(
         "chunk_manifest_sha256": chunk_manifest.content_hash,
         "chunk_count": len(chunk_manifest.items),
     }
+    # 通过校验的候选 IR 立刻落库：worker 之后直接读取它做二次校验，
+    # pi 不需要把整份 IR 回传（草稿可能是被增量修补出来的，pi 本地没有完整副本）。
+    run.report_ir = report_ir
+    await db.commit()
+    # 不回显 report_ir / coverage：模型刚提交过它们，回显只是把同一份大对象再占用
+    # 一次上下文（coverage 在大文档上可达数万 token）。pi 侧用自己提交的对象继续。
     return {
         "accepted": True,
-        "report_ir": payload.report_ir,
-        "validation_report": validation.to_dict(),
+        "validation_report": _trim_validation_payload(validation.to_dict()),
         "manifest": manifest,
-        "coverage": payload.coverage,
     }

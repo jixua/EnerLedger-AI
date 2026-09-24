@@ -194,6 +194,30 @@ export function getCurrentAdmin({ signal } = {}) {
   return apiRequest("/api/v1/auth/me", { signal });
 }
 
+export function listUsers({ signal } = {}) {
+  return apiRequest("/api/v1/users", { signal });
+}
+
+export function createUser(payload, { signal } = {}) {
+  return apiRequest("/api/v1/users", { method: "POST", body: payload, signal });
+}
+
+export function updateUser(userId, payload, { signal } = {}) {
+  return apiRequest(`/api/v1/users/${encodeURIComponent(userId)}`, {
+    method: "PATCH",
+    body: payload,
+    signal,
+  });
+}
+
+export function resetUserPassword(userId, password, { signal } = {}) {
+  return apiRequest(`/api/v1/users/${encodeURIComponent(userId)}/reset-password`, {
+    method: "POST",
+    body: { password },
+    signal,
+  });
+}
+
 export function getSystemStatus({ signal } = {}) {
   return apiRequest("/api/v1/system/status", { signal });
 }
@@ -377,6 +401,10 @@ export function getReportRun(runId, { signal } = {}) {
   return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}`, { signal });
 }
 
+export function listReportRuns({ limit = 50, signal } = {}) {
+  return apiRequest(`/api/v1/report-runs?limit=${encodeURIComponent(limit)}`, { signal });
+}
+
 export function listDocumentReportRuns(documentId, { limit = 20, signal } = {}) {
   const path = appendQuery(
     `/api/v1/documents/${encodeURIComponent(documentId)}/report-runs`,
@@ -399,6 +427,13 @@ export function retryReportRun(runId, { signal } = {}) {
   });
 }
 
+export function deleteReportRun(runId, { signal } = {}) {
+  return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}`, {
+    method: "DELETE",
+    signal,
+  });
+}
+
 export function listReportQuestions(runId, { signal } = {}) {
   return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}/questions`, { signal });
 }
@@ -415,40 +450,14 @@ export function getGeneratedReport(runId, { signal } = {}) {
   return apiRequest(`/api/v1/report-runs/${encodeURIComponent(runId)}/report`, { signal });
 }
 
-export function analyzeDocument(documentId, { llmConfigId } = {}, { signal } = {}) {
-  return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}/analysis`, {
-    method: "POST",
-    body: {
-      ...(llmConfigId ? { llm_config_id: Number(llmConfigId) } : {}),
-    },
-    signal,
-  });
-}
-
-export function getDocumentAnalysis(documentId, { signal } = {}) {
-  return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}/analysis`, { signal });
-}
-
-export function getDocumentAnalysisStatus(documentId, { signal } = {}) {
-  return apiRequest(`/api/v1/documents/${encodeURIComponent(documentId)}/analysis/status`, { signal });
-}
-
-export function listDocumentAnalysisReports({ signal } = {}) {
-  return apiRequest("/api/v1/analysis-reports", { signal });
-}
-
-export async function downloadDocumentAnalysisDocx(documentId, { signal } = {}) {
+export async function downloadReportArtifact(runId, artifactId, { signal } = {}) {
   let response;
   try {
     response = await fetch(
-      buildApiUrl(`/api/v1/documents/${encodeURIComponent(documentId)}/analysis/docx`),
-      {
-        method: "GET",
-        headers: createApiHeaders({
-          Accept: "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
-        }),
-        signal,
-      },
+      buildApiUrl(
+        `/api/v1/report-runs/${encodeURIComponent(runId)}/artifacts/${encodeURIComponent(artifactId)}`,
+      ),
+      { method: "GET", headers: createApiHeaders({}), signal },
     );
   } catch (error) {
     if (error?.name === "AbortError") throw error;
@@ -468,7 +477,7 @@ export async function downloadDocumentAnalysisDocx(documentId, { signal } = {}) 
 
   const disposition = response.headers.get("content-disposition") || "";
   const encodedName = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1];
-  let filename = "企业文档-分析报告.docx";
+  let filename = "报告.docx";
   if (encodedName) {
     try {
       filename = decodeURIComponent(encodedName);
@@ -600,6 +609,19 @@ export function uploadDocument(datasetId, file, { signal, folderId } = {}) {
   );
 }
 
+export function uploadAgentMaterial(file, { signal } = {}) {
+  const isFile = typeof File !== "undefined" && file instanceof File;
+  const isBlob = typeof Blob !== "undefined" && file instanceof Blob;
+  if (!isFile && !isBlob) {
+    throw new TypeError("file 必须是 File 或 Blob");
+  }
+  const form = new FormData();
+  form.append("file", file, file.name || "attachment");
+  // 正文留在服务端，只回一个 material_id：报告材料动辄十几万字符，不该每轮重传。
+  // 超过阈值返回 413（detail.message 即"文件过大，请先导入知识库"）。
+  return apiRequest("/api/v1/agent/materials", { method: "POST", body: form, signal });
+}
+
 export function listAgentConversations({ signal, limit = 50 } = {}) {
   return apiRequest(appendQuery("/api/v1/agent/conversations", { limit }), { signal });
 }
@@ -609,6 +631,13 @@ export function listAgentConversationTurns(conversationId, { signal } = {}) {
     `/api/v1/agent/conversations/${encodeURIComponent(conversationId)}/turns`,
     { signal },
   );
+}
+
+export function deleteAgentConversation(conversationId, { signal } = {}) {
+  return apiRequest(`/api/v1/agent/conversations/${encodeURIComponent(conversationId)}`, {
+    method: "DELETE",
+    signal,
+  });
 }
 
 export function confirmAgentTemplateSelection(conversationId, turnId, reportType, { signal } = {}) {

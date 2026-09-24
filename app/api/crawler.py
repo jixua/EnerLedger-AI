@@ -33,8 +33,8 @@ from app.api.documents import (
 )
 from app.domain.auth import (
     ADMIN_USER_ID,
-    get_actor_user_id,
-    get_shared_owner_user_id,
+    get_review_actor_user_id,
+    get_review_owner_user_id,
     require_crawler_api_key,
 )
 from app.domain.models import Dataset, Document
@@ -179,7 +179,7 @@ async def list_crawler_submissions(
     review_status: Literal["PENDING", "APPROVED", "REJECTED"] | None = Query(default="PENDING"),
     offset: int = Query(default=0, ge=0),
     limit: int = Query(default=50, ge=1, le=200),
-    user_id: int = Depends(get_shared_owner_user_id),
+    user_id: int = Depends(get_review_owner_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     filters = [
@@ -213,7 +213,7 @@ async def list_crawler_submissions(
 @submission_router.get("/{document_id}/file")
 async def download_crawler_submission_file(
     document_id: int,
-    user_id: int = Depends(get_shared_owner_user_id),
+    user_id: int = Depends(get_review_owner_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> FileResponse:
     document = await db.scalar(
@@ -266,8 +266,8 @@ async def review_crawler_submission(
     document_id: int,
     payload: CrawlerReviewRequest,
     response: Response,
-    user_id: int = Depends(get_shared_owner_user_id),
-    actor_user_id: int = Depends(get_actor_user_id),
+    user_id: int = Depends(get_review_owner_user_id),
+    actor_user_id: int = Depends(get_review_actor_user_id),
     db: AsyncSession = Depends(get_db),
 ) -> dict:
     document = await db.scalar(

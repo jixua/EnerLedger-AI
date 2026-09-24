@@ -15,7 +15,11 @@
     "chunk_id": {"type": ["string", "null"]},
     "page": {"type": ["integer", "null"], "minimum": 1},
     "reference_uri": {"type": ["string", "null"]},
-    "excerpt": {"type": ["string", "null"], "maxLength": 2000},
+    "excerpt": {
+      "type": ["string", "null"],
+      "maxLength": 2000,
+      "description": "分片原文的逐字摘录：从原文原样复制，标点、换行与解析留下的格式标记（**、[表格引用: …] 等）一并保留，不要改写或拼接。摘录的作用是证明这条引用真的存在，也是读者回原文核对的落点；服务端会核对它是否出自该分片——标点与格式标记的形状差异会被忽略，改字、改数字、改顺序不会。"
+    },
     "content_hash": {"type": "string", "minLength": 8},
     "metadata": {"type": "object"}
   }

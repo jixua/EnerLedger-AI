@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 import re
@@ -28,6 +29,21 @@ FIELD_STATUSES = {
     "NOT_APPLICABLE",
     "UNVERIFIED",
 }
+
+# 可增量修补的集合：草稿键 → (upsert 参数名, delete 参数名, 主键字段)。
+# 修补单位是「整个条目」而不是字段路径：校验错误本身按 evidence_id / field_id /
+# section_id 定位，按条目替换既贴合错误信息，也不需要模型理解路径语义。
+IR_PATCH_COLLECTIONS: dict[str, tuple[str, str, str]] = {
+    "evidence": ("upsert_evidence", "delete_evidence", "evidence_id"),
+    "field_ledger": ("upsert_field_ledger", "delete_field_ledger", "field_id"),
+    "sections": ("upsert_sections", "delete_sections", "section_id"),
+}
+# 整体替换的顶层键（体积小，或本就不适合按条目合并）。
+IR_PATCH_SCALAR_KEYS = ("calculations", "warnings", "limitations", "render_profile")
+
+
+class ReportIRPatchError(RuntimeError):
+    code = "REPORT_IR_PATCH_INVALID"
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,6 +80,83 @@ def _report_ir_schema_validator() -> Draft202012Validator:
         (root / "field-ledger.schema.json").read_text(encoding="utf-8")
     )
     return Draft202012Validator(report_schema)
+
+
+def report_ir_contract_schema() -> dict[str, Any]:
+    """返回校验实际使用的 ReportIR JSON Schema（evidence / field_ledger 已内联）。
+
+    交给报告 Agent，让它在构造 ReportIR 前就看到精确字段名与取值枚举，
+    避免按猜测的字段名（如 evidence 的 value/answer/content）反复被校验拒绝。
+    """
+    return copy.deepcopy(_report_ir_schema_validator().schema)
+
+
+def apply_report_ir_patch(
+    draft: dict[str, Any], patch: dict[str, Any]
+) -> tuple[dict[str, Any], dict[str, Any]]:
+    """在已有草稿上应用增量补丁，返回 (新草稿, 变更摘要)。
+
+    修补语义：按主键 upsert / delete；未出现的集合保持原样；章节保序（新章节追加）。
+    补丁只承载发生变化的部分，避免模型为修一条证据而重发整份 ReportIR。
+    """
+    if not isinstance(draft, dict):
+        raise ReportIRPatchError("草稿不存在，请先整份落库候选 ReportIR")
+    updated = copy.deepcopy(draft)
+    summary: dict[str, Any] = {}
+
+    for key, (upsert_key, delete_key, id_field) in IR_PATCH_COLLECTIONS.items():
+        items = updated.get(key)
+        if not isinstance(items, list):
+            items = []
+        items = [item for item in items if isinstance(item, dict)]
+        positions = {str(item.get(id_field)): index for index, item in enumerate(items)}
+
+        added = replaced = 0
+        for item in patch.get(upsert_key) or []:
+            if not isinstance(item, dict):
+                raise ReportIRPatchError(f"{upsert_key} 的每一项都必须是对象")
+            item_id = str(item.get(id_field) or "").strip()
+            if not item_id:
+                raise ReportIRPatchError(f"{upsert_key} 的每一项都必须带 {id_field}")
+            if item_id in positions:
+                items[positions[item_id]] = item
+                replaced += 1
+            else:
+                positions[item_id] = len(items)
+                items.append(item)
+                added += 1
+
+        deleted_ids = {str(raw).strip() for raw in patch.get(delete_key) or []}
+        removed = sum(
+            1 for item in items if str(item.get(id_field)) in deleted_ids
+        )
+        if removed:
+            items = [item for item in items if str(item.get(id_field)) not in deleted_ids]
+
+        updated[key] = items
+        if added or replaced or removed:
+            summary[key] = {
+                "added": added,
+                "replaced": replaced,
+                "removed": removed,
+                "total": len(items),
+            }
+
+    for key in IR_PATCH_SCALAR_KEYS:
+        if patch.get(key) is not None:
+            updated[key] = patch[key]
+            summary[key] = "replaced"
+
+    meta_patch = patch.get("meta")
+    if isinstance(meta_patch, dict) and meta_patch:
+        meta = dict(updated.get("meta") or {})
+        meta.update(meta_patch)
+        updated["meta"] = meta
+        summary["meta"] = sorted(str(key) for key in meta_patch)
+
+    if not summary:
+        raise ReportIRPatchError("补丁为空：请至少提供一个待修补的集合或字段")
+    return updated, summary
 
 
 def _is_number(value: Any) -> bool:
@@ -168,6 +261,9 @@ def build_fixture_report_ir(
 ) -> dict[str, Any]:
     """Build a non-LLM fixture IR used to verify orchestration and resume behavior."""
 
+    # 直传材料没有文档可指，这两个值就是空——IR 的 meta 允许为空，校验时也按空比对。
+    document_id = int(run.document_id) if run.document_id is not None else None
+    document_version = int(run.document_version) if run.document_version is not None else None
     answered_by_field = {
         question.field_id: question
         for question in answered_questions
@@ -198,8 +294,8 @@ def build_fixture_report_ir(
             {
                 "evidence_id": evidence_id,
                 "source_type": "USER_INPUT",
-                "document_id": int(run.document_id),
-                "document_version": int(run.document_version),
+                "document_id": document_id,
+                "document_version": document_version,
                 "chunk_id": None,
                 "page": None,
                 "reference_uri": None,
@@ -228,8 +324,9 @@ def build_fixture_report_ir(
             "report_type": run.report_type,
             "template_id": run.template_id,
             "template_version": run.template_version,
-            "document_id": int(run.document_id),
-            "document_version": int(run.document_version),
+            "document_id": document_id,
+            "document_version": document_version,
+            "source_filename": run.inline_source_filename,
             "language": run.language,
         },
         "evidence": evidence,
@@ -246,6 +343,63 @@ def build_fixture_report_ir(
         ],
         "render_profile": template.definition["render_profile"],
     }
+
+
+# 摘录逐字校验会撞上的「形状差异」：解析器留下的标记、全角半角标点、空白换行。
+# 这些只在形状上不同，文字是同一段，不该被判成不实引用。
+_MARKUP_MARKERS = re.compile(r"<!--.*?-->|\[(?:表格|图片|图表)引用:[^\]]*\]")
+_PUNCTUATION_SHAPE = str.maketrans(
+    {
+        "，": ",",
+        "。": ".",
+        "：": ":",
+        "；": ";",
+        "（": "(",
+        "）": ")",
+        "、": ",",
+        "！": "!",
+        "？": "?",
+        "“": '"',
+        "”": '"',
+        "‘": "'",
+        "’": "'",
+        "《": "<",
+        "》": ">",
+        "—": "-",
+        "－": "-",
+        "～": "~",
+        "　": " ",
+    }
+)
+_EMPHASIS_MARKERS = str.maketrans("", "", "*`_#")
+
+
+def excerpt_skeleton(value: Any) -> str:
+    """只留文字、不留形状：去掉解析标记、强调符号、标点与空白后的那一串字。
+
+    用来判断摘录是否出自同一段原文。刻意只抹形状不抹文字——比对的是「连续的一段
+    字」，所以编出来的句子照样过不了；但标点被规整过、换行被并成一句、解析留下的
+    ``**`` 与 ``[表格引用: …]`` 被略去，都不再算问题。
+    """
+    if value is None:
+        return ""
+    plain = _MARKUP_MARKERS.sub("", str(value))
+    plain = plain.translate(_PUNCTUATION_SHAPE).translate(_EMPHASIS_MARKERS)
+    return re.sub(r"\s+", "", plain)
+
+
+def excerpt_belongs_to_chunk(excerpt: Any, content: Any) -> bool:
+    """摘录是否确实出自这段原文。
+
+    严格逐字比对会把「同一句话、标点不同」判成不实引用，而模型照抄时顺手整理标点、
+    去掉强调标记是常态——一次实跑里 19 条摘录全部因此被打回，模型只能回头重抄一遍。
+    这里改成先抹平形状再比：约束的实质没变（摘录必须来自那一分片），但不再因为标点
+    形状让人白跑一轮。
+    """
+    quote = excerpt_skeleton(excerpt)
+    if not quote:
+        return True
+    return quote in excerpt_skeleton(content)
 
 
 def validate_report_ir(
@@ -269,8 +423,11 @@ def validate_report_ir(
         "report_type": run.report_type,
         "template_id": run.template_id,
         "template_version": run.template_version,
-        "document_id": int(run.document_id),
-        "document_version": int(run.document_version),
+        # 直传材料期望值就是空；agent 若凭空编一个 document_id，会被这里拦下。
+        "document_id": int(run.document_id) if run.document_id is not None else None,
+        "document_version": (
+            int(run.document_version) if run.document_version is not None else None
+        ),
     }
     for key, expected in frozen_meta.items():
         if meta.get(key) != expected:
@@ -295,6 +452,12 @@ def validate_report_ir(
         errors.append("evidence_id 不能重复")
     evidence_id_set = set(evidence_ids)
     evidence_by_id = {str(item.get("evidence_id")): item for item in evidence_items}
+    # 直传材料来源没有文档可指，冻结值就是空；证据里的 document_id 也按空比对，
+    # 凭空编一个数字会被下面的检查拦下。
+    frozen_document_id = int(run.document_id) if run.document_id is not None else None
+    frozen_document_version = (
+        int(run.document_version) if run.document_version is not None else None
+    )
     if evidence_context is not None:
         for item in evidence_items:
             evidence_id = str(item.get("evidence_id"))
@@ -304,14 +467,19 @@ def validate_report_ir(
                 chunk = evidence_context.document_chunks.get(chunk_id)
                 if (
                     chunk is None
-                    or item.get("document_id") != int(run.document_id)
-                    or item.get("document_version") != int(run.document_version)
+                    or item.get("document_id") != frozen_document_id
+                    or item.get("document_version") != frozen_document_version
                     or item.get("content_hash") != chunk.get("content_hash")
                 ):
                     errors.append(f"证据 {evidence_id} 不是冻结文档分片的真实引用")
                 excerpt = item.get("excerpt")
-                if excerpt and chunk is not None and excerpt not in str(chunk.get("content") or ""):
-                    errors.append(f"证据 {evidence_id} 摘录不属于对应文档分片")
+                if excerpt and chunk is not None and not excerpt_belongs_to_chunk(
+                    excerpt, chunk.get("content")
+                ):
+                    errors.append(
+                        f"证据 {evidence_id} 摘录不属于对应文档分片"
+                        "（须逐字取自该分片，不要改写或拼接）"
+                    )
             elif source_type == "USER_INPUT":
                 question_id = (item.get("metadata") or {}).get("question_id")
                 expected_hash = evidence_context.user_answer_hashes.get(question_id)

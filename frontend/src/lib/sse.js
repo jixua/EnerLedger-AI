@@ -112,10 +112,20 @@ function toAgentRequestBody(payload) {
   const conversationId = payload.conversationId ?? payload.conversation_id;
   if (conversationId) body.conversation_id = conversationId;
   if (payload.attachments?.length) {
-    body.attachments = payload.attachments.map((attachment) => ({
-      document_id: attachment.documentId ?? attachment.document_id,
-      role: attachment.role,
-    }));
+    body.attachments = payload.attachments.map((attachment) => {
+      // 直传附件只带服务端的材料 id（正文留在那边）；知识库附件仍按 document_id 引用。
+      if (attachment.material_id ?? attachment.materialId) {
+        return {
+          filename: attachment.filename,
+          material_id: attachment.material_id ?? attachment.materialId,
+        };
+      }
+      return {
+        document_id: attachment.documentId ?? attachment.document_id,
+        // 用途由服务端判断，界面不再声明；调用方显式指定时才带上
+        ...(attachment.role ? { role: attachment.role } : {}),
+      };
+    });
   }
   return body;
 }

@@ -2,7 +2,6 @@ import { memo, useCallback, useEffect, useMemo, useState } from "react";
 import {
   AlertCircle,
   ArrowLeft,
-  BrainCircuit,
   Check,
   CheckCircle2,
   Clock3,
@@ -30,6 +29,8 @@ import {
 } from "../components/DocumentHtmlTable";
 import { DocumentPreviewImage } from "../components/DocumentPreviewImage";
 import { ReportGenerationDialog } from "../components/ReportGenerationDialog";
+import { Select } from "../components/ui";
+import { listDocumentReportRuns } from "../lib/api";
 import {
   createDocumentBoundaryPlugin,
   mergeDocumentDetailSnapshot,
@@ -39,6 +40,14 @@ import {
 } from "../lib/document-reader";
 import { normalizeDocumentMath } from "../lib/document-math";
 import { hasDocumentPageCount } from "../lib/document-metadata";
+import {
+  formatReportTime,
+  isActiveReportRun,
+  reportRunPath,
+  reportStateLabel,
+  reportStateTone,
+  reportTypeName,
+} from "../lib/reportRun";
 import { documentErrorMessage } from "../lib/text";
 import { useApp } from "../state/AppContext";
 
@@ -269,6 +278,7 @@ export function DocumentDetailPage() {
   const [busyAction, setBusyAction] = useState(false);
   const [copiedValue, setCopiedValue] = useState("");
   const [reportDialogOpen, setReportDialogOpen] = useState(false);
+  const [documentReports, setDocumentReports] = useState([]);
 
   const status = normalizedStatus(document);
   const documentVersion = Number(document?.version ?? 0);
@@ -367,6 +377,30 @@ export function DocumentDetailPage() {
   useEffect(() => {
     void refreshDocument();
   }, [refreshDocument]);
+
+  // 本文件的报告任务：让「看报告」不必先点开「生成报告」对话框。
+  const loadDocumentReports = useCallback(async ({ signal } = {}) => {
+    if (!routeIsValid) return;
+    try {
+      const items = await listDocumentReportRuns(targetDocumentId, { limit: 20, signal });
+      setDocumentReports(Array.isArray(items) ? items : []);
+    } catch (error) {
+      if (error?.name !== "AbortError") setDocumentReports([]);
+    }
+  }, [routeIsValid, targetDocumentId]);
+
+  useEffect(() => {
+    const controller = new AbortController();
+    void loadDocumentReports({ signal: controller.signal });
+    return () => controller.abort();
+  }, [loadDocumentReports]);
+
+  useEffect(() => {
+    if (reportDialogOpen || !documentVersion) return undefined;
+    const controller = new AbortController();
+    void loadDocumentReports({ signal: controller.signal });
+    return () => controller.abort();
+  }, [reportDialogOpen, documentVersion, loadDocumentReports]);
 
   const loadPreview = useCallback(async (signal) => {
     if (status !== "READY" || !actions.loadDocumentPreview) return;
@@ -470,7 +504,6 @@ export function DocumentDetailPage() {
         </div>
         <div className="document-detail-header__actions">
           <button type="button" className="button button--secondary" onClick={() => { void refreshPage(); }} disabled={loadingDocument || loadingPreview}><RefreshCw className={loadingDocument || loadingPreview ? "spin" : ""} size={15} />刷新</button>
-          {status === "READY" ? <Link className="button button--primary" to={`/datasets/${datasetId}/documents/${targetDocumentId}/analysis`}><BrainCircuit size={16} />分析报告</Link> : null}
           {status === "READY" ? <button type="button" className="button button--primary" onClick={() => setReportDialogOpen(true)}><FileOutput size={16} />生成报告</button> : null}
           {status === "READY" ? <button type="button" className="button button--secondary" onClick={() => handleLifecycleAction(actions.reparseDocument)} disabled={busyAction}><RotateCw className={busyAction ? "spin" : ""} size={15} />重新解析</button> : null}
           {canRetry ? <button type="button" className="button button--primary" onClick={() => handleLifecycleAction(actions.retryDocument)} disabled={busyAction}><RefreshCw className={busyAction ? "spin" : ""} size={15} />重试解析</button> : null}
@@ -485,6 +518,31 @@ export function DocumentDetailPage() {
       </section>
 
       {documentError ? <div className="notice notice--error" role="alert"><AlertCircle size={16} /><p>{documentError}</p><button type="button" onClick={() => setDocumentError("")} aria-label="关闭错误">×</button></div> : null}
+
+      {documentReports.length ? (
+        <section className="panel document-reports" aria-label="本文件的报告任务">
+          <div className="document-reports__head">
+            <h2>本文件的报告</h2>
+            <Link className="button button--tiny" to="/reports">全部报告</Link>
+          </div>
+          <ul className="document-reports__list">
+            {documentReports.slice(0, 5).map((item) => (
+              <li key={item.run_id}>
+                <Link to={reportRunPath(item.run_id)}>
+                  <strong>{reportTypeName(item)}</strong>
+                  <span className={`report-state ${reportStateTone(item.state)}`}>
+                    {reportStateLabel(item.state)}
+                  </span>
+                  <small>
+                    v{item.document_version} · {formatReportTime(item.created_at)}
+                    {isActiveReportRun(item.state) ? " · 生成中" : ""}
+                  </small>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      ) : null}
 
       {status !== "READY" ? (
         <section className={`panel document-processing-state document-processing-state--${status.toLowerCase()}`}>
@@ -508,10 +566,7 @@ export function DocumentDetailPage() {
               <p>按原文连续展示；分割线标记正文进入检索索引的位置。</p>
             </div>
             <div className="document-reader__actions">
-              <select aria-label="跳转到分片" value={jumpTarget} onChange={(event) => jumpToSection(event.target.value)} disabled={!readerBoundaries.length}>
-                <option value="">跳转到分片</option>
-                {readerBoundaries.map((entry) => <option key={entry.anchorId} value={entry.anchorId}>分片 {String(entry.readerIndex + 1).padStart(2, "0")}</option>)}
-              </select>
+              <Select className="document-chunk-select" ariaLabel="跳转到分片" value={jumpTarget} onChange={jumpToSection} disabled={!readerBoundaries.length} options={[{ value: "", label: "跳转到分片" }, ...readerBoundaries.map((entry) => ({ value: entry.anchorId, label: `分片 ${String(entry.readerIndex + 1).padStart(2, "0")}` }))]} />
               <button type="button" className="button button--secondary" onClick={() => setShowBoundaries((current) => !current)} disabled={!readerBoundaries.length}>{showBoundaries ? <EyeOff size={15} /> : <Eye size={15} />}{showBoundaries ? "隐藏分片线" : "显示分片线"}</button>
               <button type="button" className="button button--secondary" onClick={() => { void copyText(preview?.content || "", "document"); }} disabled={!preview?.content}>{copiedValue === "document" ? <Check size={14} /> : <Copy size={14} />}{copiedValue === "document" ? "已复制" : "复制全文"}</button>
             </div>

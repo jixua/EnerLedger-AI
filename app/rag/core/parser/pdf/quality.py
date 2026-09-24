@@ -429,7 +429,7 @@ class PdfQualityAnalyzer:
         and the post-parse quality gate cannot disagree about raster-dominant pages,
         hidden OCR layers, or the configured image coverage threshold. Truly blank
         pages do not affect the ratio, while a small born-digital cover or appendix
-        does not prevent an otherwise scanned document from using MinerU.
+        does not prevent an otherwise scanned document from using the local OCR path.
         """
 
         if not 0 < min_scanned_page_ratio <= 1:

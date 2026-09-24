@@ -26,6 +26,39 @@ from app.rag.models.db_models import Base
 UnsignedBigInteger = BigInteger().with_variant(mysql.BIGINT(unsigned=True), "mysql")
 
 
+class UserAccount(Base):
+    """Interactive account; business resources remain in the shared root workspace."""
+
+    __tablename__ = "user_account"
+    __table_args__ = (
+        UniqueConstraint("username", name="uk_user_account_username"),
+        Index("idx_user_account_role_status", "role", "status"),
+    )
+
+    id: Mapped[int] = mapped_column(UnsignedBigInteger, primary_key=True, autoincrement=True)
+    username: Mapped[str] = mapped_column(String(64), nullable=False)
+    password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="ACTIVE", server_default="ACTIVE"
+    )
+    auth_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default="1"
+    )
+    created_by_user_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
+    last_login_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime,
+        nullable=False,
+        default=utc_now,
+        onupdate=utc_now,
+        server_default=func.current_timestamp(),
+    )
+
+
 class Dataset(Base):
     """知识数据集；模型绑定直接内聚在本表。"""
 
@@ -243,6 +276,34 @@ class AgentConversationTurn(Base):
     )
 
 
+class ReportMaterial(Base):
+    """对话里直传的报告材料：暂存区，不进知识库。
+
+    用户上传的文件就地提取成文本后放在这里，等报告任务创建时被消费。步骤刻意拆成
+    「先暂存、后建任务」两段，而不是把全文再塞进创建请求：报告材料动辄十几万字符，
+    每轮对话重传一遍既撑大请求体，也会把会话记录撑爆。
+
+    正文本身按对象存储存放（与 ``Document`` 同样的「元数据进库、字节进 MinIO」约定），
+    表里只留指针。消费后置 ``consumed_at`` 并删对象；未被消费的行按 ``created_at`` 清理。
+    """
+
+    __tablename__ = "report_material"
+    __table_args__ = (Index("idx_report_material_user_created", "user_id", "created_at"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
+    filename: Mapped[str] = mapped_column(String(512), nullable=False)
+    char_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    page_count: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    bucket: Mapped[str] = mapped_column(String(64), nullable=False)
+    object_key: Mapped[str] = mapped_column(String(512), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime, nullable=False, default=utc_now, server_default=func.current_timestamp()
+    )
+
+
 class ReportRun(Base):
     """A frozen, tenant-owned report-generation execution."""
 
@@ -261,9 +322,18 @@ class ReportRun(Base):
 
     id: Mapped[str] = mapped_column(String(36), primary_key=True)
     user_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
-    dataset_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
-    document_id: Mapped[int] = mapped_column(UnsignedBigInteger, nullable=False)
-    document_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    # 来源分两种：DOCUMENT 指向已入库解析的文档；INLINE 是对话里直传的材料，
+    # 不进知识库。INLINE 没有文档可指，所以这三个字段可空——判断来源一律看
+    # source_kind，不要靠「document_id 是否为空」反推。正文与分片清单两种来源都要，
+    # 因此 parsed_bucket / parsed_object_key / document_manifest 两边共用。
+    source_kind: Mapped[str] = mapped_column(
+        String(16), nullable=False, default="DOCUMENT", server_default="DOCUMENT"
+    )
+    dataset_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
+    document_id: Mapped[int | None] = mapped_column(UnsignedBigInteger, nullable=True)
+    document_version: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    # INLINE 来源的用户原文件名：报告中心要显示「来源：年度材料.pdf」，没有它这一列是空的。
+    inline_source_filename: Mapped[str | None] = mapped_column(String(512), nullable=True)
     parsed_bucket: Mapped[str] = mapped_column(String(64), nullable=False)
     parsed_object_key: Mapped[str] = mapped_column(String(512), nullable=False)
     report_type: Mapped[str] = mapped_column(String(2), nullable=False)
@@ -303,6 +373,9 @@ class ReportRun(Base):
     lease_owner: Mapped[str | None] = mapped_column(String(128), nullable=True)
     lease_expires_at: Mapped[datetime | None] = mapped_column(DateTime, nullable=True)
     report_ir: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
+    # 候选 ReportIR 草稿：由 save_report_ir_draft 落库，validate/submit 直接引用它，
+    # 避免整份 IR 在每次校验/提交时重复占用模型上下文。
+    report_ir_draft: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     checkpoint: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     analysis_coverage: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)
     validation_report: Mapped[dict[str, Any] | None] = mapped_column(JSON, nullable=True)

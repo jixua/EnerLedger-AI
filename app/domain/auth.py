@@ -1,4 +1,4 @@
-"""Configuration-backed JWT identities and role boundaries."""
+"""Database-backed JWT identities and role boundaries."""
 
 from __future__ import annotations
 
@@ -7,14 +7,20 @@ import hashlib
 import hmac
 import secrets
 from datetime import UTC, datetime, timedelta
-from typing import Annotated, Literal, TypedDict
+from typing import Annotated, Literal, TypedDict, cast
 
 import jwt
 from fastapi import Depends, Header, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt import InvalidTokenError
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.domain.models import UserAccount
+from app.domain.time import utc_now
 from app.rag.config import settings
+from app.rag.database import get_async_session_factory, get_db
 
 ADMIN_USER_ID = 1
 REVIEWER_USER_ID = 2
@@ -25,7 +31,8 @@ _bearer = HTTPBearer(auto_error=False)
 class AuthIdentity(TypedDict):
     user_id: int
     username: str
-    role: Literal["admin", "reviewer"]
+    role: Literal["admin", "user", "reviewer"]
+    auth_version: int
 
 
 def hash_admin_password(password: str, *, salt: bytes | None = None) -> str:
@@ -74,29 +81,75 @@ def verify_admin_password(password: str, encoded: str) -> bool:
     return hmac.compare_digest(actual, expected)
 
 
-def authenticate_admin(username: str, password: str) -> bool:
-    username_matches = hmac.compare_digest(username, settings.ADMIN_USERNAME)
-    password_matches = verify_admin_password(password, settings.ADMIN_PASSWORD_HASH)
-    return username_matches and password_matches
+async def ensure_bootstrap_accounts() -> None:
+    """Create the fixed root account and migrate the optional legacy reviewer once."""
+
+    session_factory = get_async_session_factory()
+    async with session_factory() as db:
+        root = await db.get(UserAccount, ADMIN_USER_ID)
+        if root is None:
+            db.add(
+                UserAccount(
+                    id=ADMIN_USER_ID,
+                    username=settings.ADMIN_USERNAME.strip(),
+                    password_hash=settings.ADMIN_PASSWORD_HASH,
+                    role="admin",
+                    status="ACTIVE",
+                    auth_version=1,
+                )
+            )
+        if settings.REVIEWER_PASSWORD_HASH.strip():
+            reviewer = await db.get(UserAccount, REVIEWER_USER_ID)
+            if reviewer is None:
+                db.add(
+                    UserAccount(
+                        id=REVIEWER_USER_ID,
+                        username=settings.REVIEWER_USERNAME.strip(),
+                        password_hash=settings.REVIEWER_PASSWORD_HASH,
+                        role="reviewer",
+                        status="ACTIVE",
+                        auth_version=1,
+                        created_by_user_id=ADMIN_USER_ID,
+                    )
+                )
+        try:
+            await db.commit()
+        except IntegrityError:
+            # Multiple API workers may bootstrap concurrently. A competing successful
+            # insert is harmless; any other conflict is surfaced by the root check.
+            await db.rollback()
+        persisted_root = await db.get(UserAccount, ADMIN_USER_ID)
+        if persisted_root is None or persisted_root.role != "admin":
+            raise RuntimeError("root 管理员账号初始化失败")
 
 
-def authenticate_user(username: str, password: str) -> AuthIdentity | None:
-    """Authenticate one of the explicitly configured interactive accounts."""
+async def authenticate_user(
+    db: AsyncSession, username: str, password: str
+) -> AuthIdentity | None:
+    """Authenticate an active database account and update its last-login timestamp."""
 
-    if authenticate_admin(username, password):
-        return {"user_id": ADMIN_USER_ID, "username": settings.ADMIN_USERNAME, "role": "admin"}
-
-    reviewer_hash = settings.REVIEWER_PASSWORD_HASH.strip()
-    if not reviewer_hash:
+    normalized = username.strip()
+    if not normalized:
         return None
-    username_matches = hmac.compare_digest(username, settings.REVIEWER_USERNAME)
-    password_matches = verify_admin_password(password, reviewer_hash)
-    if not username_matches or not password_matches:
+    account = await db.scalar(select(UserAccount).where(UserAccount.username == normalized))
+    # Keep unknown/disabled usernames on the same expensive password path so the
+    # login response does not become a practical account-enumeration oracle.
+    encoded_hash = account.password_hash if account is not None else settings.ADMIN_PASSWORD_HASH
+    password_matches = verify_admin_password(password, encoded_hash)
+    if (
+        account is None
+        or account.status != "ACTIVE"
+        or account.role not in {"admin", "user", "reviewer"}
+        or not password_matches
+    ):
         return None
+    account.last_login_at = utc_now()
+    await db.commit()
     return {
-        "user_id": REVIEWER_USER_ID,
-        "username": settings.REVIEWER_USERNAME,
-        "role": "reviewer",
+        "user_id": account.id,
+        "username": account.username,
+        "role": cast(Literal["admin", "user", "reviewer"], account.role),
+        "auth_version": account.auth_version,
     }
 
 
@@ -122,12 +175,14 @@ def create_access_token(
         "user_id": ADMIN_USER_ID,
         "username": settings.ADMIN_USERNAME,
         "role": "admin",
+        "auth_version": 1,
     }
     token = jwt.encode(
         {
             "sub": str(authenticated["user_id"]),
             "username": authenticated["username"],
             "role": authenticated["role"],
+            "ver": authenticated["auth_version"],
             "iat": issued_at,
             "exp": expires_at,
             "iss": settings.JWT_ISSUER,
@@ -147,7 +202,7 @@ def decode_access_token(token: str) -> dict[str, object]:
             algorithms=["HS256"],
             issuer=settings.JWT_ISSUER,
             audience=settings.JWT_AUDIENCE,
-            options={"require": ["sub", "exp", "iat", "iss", "aud"]},
+            options={"require": ["sub", "role", "ver", "exp", "iat", "iss", "aud"]},
         )
     except InvalidTokenError as exc:
         raise HTTPException(
@@ -155,20 +210,26 @@ def decode_access_token(token: str) -> dict[str, object]:
             detail={"code": "INVALID_ACCESS_TOKEN", "message": "登录状态无效或已过期"},
             headers={"WWW-Authenticate": "Bearer"},
         ) from exc
-    expected_subject = {
-        "admin": str(ADMIN_USER_ID),
-        "reviewer": str(REVIEWER_USER_ID),
-    }.get(str(payload.get("role")))
-    if expected_subject is None or payload.get("sub") != expected_subject:
+    if payload.get("role") not in {"admin", "user", "reviewer"}:
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
             detail={"code": "ROLE_INVALID", "message": "账号角色无效"},
         )
+    try:
+        if int(str(payload.get("sub"))) <= 0 or int(payload.get("ver", 0)) <= 0:
+            raise ValueError
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "INVALID_ACCESS_TOKEN", "message": "登录状态无效或已过期"},
+            headers={"WWW-Authenticate": "Bearer"},
+        ) from exc
     return payload
 
 
-def get_current_user(
+async def get_current_user(
     credentials: Annotated[HTTPAuthorizationCredentials | None, Depends(_bearer)],
+    db: Annotated[AsyncSession, Depends(get_db)],
 ) -> dict[str, object]:
     if credentials is None or credentials.scheme.lower() != "bearer":
         raise HTTPException(
@@ -176,7 +237,25 @@ def get_current_user(
             detail={"code": "AUTH_REQUIRED", "message": "请先登录"},
             headers={"WWW-Authenticate": "Bearer"},
         )
-    return decode_access_token(credentials.credentials)
+    payload = decode_access_token(credentials.credentials)
+    account = await db.get(UserAccount, int(str(payload["sub"])))
+    if (
+        account is None
+        or account.status != "ACTIVE"
+        or account.role != payload.get("role")
+        or account.auth_version != int(payload["ver"])
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail={"code": "ACCOUNT_CHANGED", "message": "账号状态已变更，请重新登录"},
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    return {
+        **payload,
+        "username": account.username,
+        "role": account.role,
+        "auth_version": account.auth_version,
+    }
 
 
 def _require_role(principal: dict[str, object], allowed_roles: set[str]) -> None:
@@ -197,27 +276,54 @@ def get_current_admin(
 
 
 def get_user_id(
-    admin: Annotated[dict[str, object], Depends(get_current_admin)],
+    principal: Annotated[dict[str, object], Depends(get_current_user)],
 ) -> int:
-    """Map the authenticated administrator to the existing data ownership boundary."""
+    """Map administrators and normal users to the shared business workspace."""
 
-    _require_role(admin, {"admin"})
-    return int(admin["sub"])
+    _require_role(principal, {"admin", "user"})
+    return ADMIN_USER_ID
 
 
 def get_shared_owner_user_id(
     principal: Annotated[dict[str, object], Depends(get_current_user)],
 ) -> int:
-    """Map admin and reviewer reads/chat to the administrator-owned data boundary."""
+    """Map permitted chat access to the shared root-owned data boundary."""
 
-    _require_role(principal, {"admin", "reviewer"})
+    _require_role(principal, {"admin", "user", "reviewer"})
     return ADMIN_USER_ID
 
 
 def get_actor_user_id(
     principal: Annotated[dict[str, object], Depends(get_current_user)],
 ) -> int:
-    """Return the authenticated actor for immutable audit attribution."""
+    """Return the authenticated chat actor for conversation ownership."""
+
+    _require_role(principal, {"admin", "user", "reviewer"})
+    return int(principal["sub"])
+
+
+def get_workspace_owner_user_id(
+    principal: Annotated[dict[str, object], Depends(get_current_user)],
+) -> int:
+    """Allow all roles to read the dataset names needed by their permitted UI."""
+
+    _require_role(principal, {"admin", "user", "reviewer"})
+    return ADMIN_USER_ID
+
+
+def get_review_owner_user_id(
+    principal: Annotated[dict[str, object], Depends(get_current_user)],
+) -> int:
+    """Map administrators and reviewers to the shared review queue."""
+
+    _require_role(principal, {"admin", "reviewer"})
+    return ADMIN_USER_ID
+
+
+def get_review_actor_user_id(
+    principal: Annotated[dict[str, object], Depends(get_current_user)],
+) -> int:
+    """Return the administrator/reviewer who made an immutable review decision."""
 
     _require_role(principal, {"admin", "reviewer"})
     return int(principal["sub"])

@@ -15,6 +15,8 @@ from pydantic import (
     model_validator,
 )
 
+from app.domain.time import as_utc
+
 Capability = Literal["CHAT", "EMBEDDING", "SPARSE_EMBEDDING", "RERANK", "VISION"]
 ProtocolName = Annotated[
     str,
@@ -22,12 +24,26 @@ ProtocolName = Annotated[
 ]
 
 
+class UtcTimestampModel(BaseModel):
+    """出参模型基类：把库内的无时区 UTC 时间标记为带时区 UTC。
+
+    业务表的 ``DATETIME`` 不保存时区，直接出参会让客户端按本地时间解析
+    （UTC+8 下整表时间早 8 小时）。统一在模型校验后归一化，新增出参字段无需
+    逐个处理。
+    """
+
+    @field_validator("*", mode="after")
+    @classmethod
+    def _mark_utc(cls, value: Any) -> Any:
+        return as_utc(value)
+
+
 class AdminLogin(BaseModel):
     username: str = Field(min_length=1, max_length=64)
     password: SecretStr = Field(min_length=1, max_length=256)
 
 
-class AuthToken(BaseModel):
+class AuthToken(UtcTimestampModel):
     access_token: str
     token_type: Literal["bearer"] = "bearer"
     expires_at: datetime
@@ -36,7 +52,7 @@ class AuthToken(BaseModel):
 class CurrentAdmin(BaseModel):
     user_id: int
     username: str
-    role: Literal["admin", "reviewer"]
+    role: Literal["admin", "user", "reviewer"]
 
 
 class DatasetCreate(BaseModel):
@@ -107,7 +123,7 @@ class DatasetUpdate(BaseModel):
         return self
 
 
-class DatasetRead(BaseModel):
+class DatasetRead(UtcTimestampModel):
     id: int
     name: str
     description: str | None
@@ -159,7 +175,7 @@ class DocumentFolderUpdate(BaseModel):
         return self
 
 
-class DocumentFolderRead(BaseModel):
+class DocumentFolderRead(UtcTimestampModel):
     id: int
     dataset_id: int
     parent_id: int | None
@@ -193,7 +209,7 @@ class DocumentUpdate(BaseModel):
         return self
 
 
-class DocumentRead(BaseModel):
+class DocumentRead(UtcTimestampModel):
     document_id: int
     dataset_id: int
     folder_id: int | None
@@ -230,7 +246,7 @@ class DocumentRead(BaseModel):
     updated_at: datetime
 
 
-class CrawlerSubmissionRead(BaseModel):
+class CrawlerSubmissionRead(UtcTimestampModel):
     document_id: int
     dataset_id: int
     dataset_name: str
@@ -276,7 +292,7 @@ class CrawlerReviewRequest(BaseModel):
         return self
 
 
-class DocumentChunkRead(BaseModel):
+class DocumentChunkRead(UtcTimestampModel):
     """文档当前版本的可追溯分片，不暴露内部向量或租户字段。"""
 
     chunk_id: str
@@ -457,7 +473,7 @@ class LLMConfigUpdate(BaseModel):
         return self
 
 
-class LLMConfigRead(BaseModel):
+class LLMConfigRead(UtcTimestampModel):
     model_config = ConfigDict(from_attributes=True)
 
     id: int

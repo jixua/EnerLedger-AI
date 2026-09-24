@@ -25,10 +25,6 @@ from app.api.auth import router as auth_router
 from app.api.crawler import router as crawler_router
 from app.api.crawler import submission_router
 from app.api.datasets import router as datasets_router
-from app.api.document_analysis import (
-    report_index_router as document_analysis_report_index_router,
-)
-from app.api.document_analysis import router as document_analysis_router
 from app.api.documents import router as documents_router
 from app.api.llm import router as llm_router
 from app.api.rag import router as rag_router
@@ -37,11 +33,15 @@ from app.api.report_agent_internal import router as report_agent_internal_router
 from app.api.reports import router as reports_router
 from app.api.structured_data import router as structured_data_router
 from app.api.system import router as system_router
+from app.api.users import router as users_router
 
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
     await init_database()
+    from app.domain.auth import ensure_bootstrap_accounts
+
+    await ensure_bootstrap_accounts()
     from app.rag.application.recall_pipeline_provider import (
         prewarm_recall_pipeline,
     )
@@ -104,14 +104,13 @@ app.include_router(submission_router)
 app.include_router(llm_router)
 app.include_router(datasets_router)
 app.include_router(documents_router)
-app.include_router(document_analysis_router)
-app.include_router(document_analysis_report_index_router)
 app.include_router(recall_router)
 app.include_router(reports_router)
 app.include_router(rag_router)
 app.include_router(report_agent_internal_router)
 app.include_router(system_router)
 app.include_router(structured_data_router)
+app.include_router(users_router)
 
 
 @app.get("/health/live", tags=["系统"])

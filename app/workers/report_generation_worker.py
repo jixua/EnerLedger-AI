@@ -22,14 +22,23 @@ from app.rag.core.llm.encryption import decrypt_api_key
 from app.rag.core.mq.messages import ReportGenerationMessage, ReportGenerationPayload
 from app.rag.database import close_database, get_db_context, init_database
 from app.rag.models.db_models import LLMModelConfigDB
-from app.rag.observability.logging import logger, setup_logger
+from app.rag.observability.logging import logger, safe_exception_stack, setup_logger
 from app.rag.services.mq_service import MQService
 from app.services.document_queue import DOCUMENT_STATUS_READY
 from app.services.report_agent_tokens import issue_report_agent_token
+from app.services.report_artifacts import ReportArtifactError, persist_report_artifacts
+from app.services.report_budget import (
+    ReportDocumentTooLargeError,
+    assert_document_fits_context,
+    load_document_payload_stats,
+    report_context_budget,
+)
+from app.services.report_inline_source import SOURCE_KIND_INLINE
 from app.services.report_ir import build_fixture_report_ir, validate_report_ir
 from app.services.report_queue import ReportRunClaim, ReportRunQueueService
 from app.services.report_source_context import (
     load_document_chunk_manifest,
+    load_inline_template_manifest,
     load_report_source_context,
     validate_chunk_coverage,
 )
@@ -122,7 +131,10 @@ class FixtureReportProcessor:
             "report_ir_sha256": hashlib.sha256(encoded).hexdigest(),
             "template_id": run.template_id,
             "template_version": run.template_version,
-            "document_version": int(run.document_version),
+            # 直传材料来源没有文档版本；manifest 是记录用的，按空写即可。
+            "document_version": (
+                int(run.document_version) if run.document_version is not None else None
+            ),
             "generator": "platform-fixture",
         }
         return ReportProcessingResult(
@@ -158,14 +170,25 @@ class PiReportProcessor:
             )
             error.error_code = "REPORT_DOCUMENT_MANIFEST_CHANGED"
             raise error
-        if run.custom_template_document_id:
+        expected_custom = run.custom_template_manifest or {}
+        if expected_custom.get("source_kind") == SOURCE_KIND_INLINE:
+            # 内联模板冻结在任务自己的对象存储上，外部改不到；只需确认它读得回来、
+            # 且清单与冻结值一致。
+            custom_manifest = await load_inline_template_manifest(run)
+            if (
+                custom_manifest.content_hash != expected_custom.get("chunk_manifest_sha256")
+                or len(custom_manifest.items) != expected_custom.get("chunk_count")
+            ):
+                error = PiReportProcessorError("冻结的用户模板已经变化", retryable=False)
+                error.error_code = "REPORT_CUSTOM_TEMPLATE_CHANGED"
+                raise error
+        elif run.custom_template_document_id:
             custom_document = await db.scalar(
                 select(Document).where(
                     Document.id == run.custom_template_document_id,
                     Document.user_id == run.user_id,
                 )
             )
-            expected_custom = run.custom_template_manifest or {}
             if (
                 custom_document is None
                 or int(custom_document.dataset_id) != int(run.dataset_id)
@@ -182,6 +205,44 @@ class PiReportProcessor:
                 error = PiReportProcessorError("冻结的用户模板分片已经变化", retryable=False)
                 error.error_code = "REPORT_CUSTOM_TEMPLATE_CHANGED"
                 raise error
+        # 与创建任务时同一套上下文预算：重试、历史任务等任何执行路径都不允许在
+        # 「一轮读不完」的情况下调用模型（必然以输出截断告终）。
+        if run.source_kind == SOURCE_KIND_INLINE:
+            # 冻结快照不会漂移，直接用创建时记下的规模，不必再读一次对象存储
+            source_chunks = int(expected_manifest.get("chunk_count") or 0)
+            source_chars = int(expected_manifest.get("char_count") or 0)
+        else:
+            source_chunks, source_chars = await load_document_payload_stats(
+                db, document_id=int(run.document_id), document_version=int(run.document_version)
+            )
+        custom_chunks = custom_chars = 0
+        if run.custom_template_document_id:
+            custom_chunks, custom_chars = await load_document_payload_stats(
+                db,
+                document_id=int(run.custom_template_document_id),
+                document_version=int(run.custom_template_document_version or 0),
+            )
+        try:
+            estimated_tokens = assert_document_fits_context(
+                content_chars=source_chars + custom_chars,
+                chunk_count=source_chunks + custom_chunks,
+            )
+        except ReportDocumentTooLargeError as exc:
+            error = PiReportProcessorError(str(exc), retryable=False)
+            error.error_code = exc.code
+            raise error from exc
+        budget = report_context_budget()
+        logger.info(
+            "报告任务上下文预算检查通过 run_id={} 估算tokens={} 分片数={} "
+            "模型窗口={} 最大输出={} 预留={} prompt预算={}",
+            run.id,
+            estimated_tokens,
+            source_chunks + custom_chunks,
+            budget.window_tokens,
+            budget.max_output_tokens,
+            budget.reserve_tokens,
+            budget.prompt_tokens,
+        )
         model = await db.scalar(
             select(LLMModelConfigDB).where(LLMModelConfigDB.id == run.llm_config_id)
         )
@@ -230,6 +291,12 @@ class PiReportProcessor:
                 "protocol": model_snapshot["protocol"],
                 "baseUrl": model_snapshot["api_base_url"],
                 "apiKey": decrypt_api_key(model.api_key),
+                # 报告 Agent 一次要产出的 ReportIR 远大于对话回复，必须显式下发输出预算，
+                # 否则 pi 侧会退回 8192 默认值并把输出截断（stopReason=length）。
+                "maxTokens": settings.REPORT_AGENT_MODEL_MAX_OUTPUT_TOKENS,
+                "contextWindow": settings.REPORT_AGENT_MODEL_CONTEXT_WINDOW,
+                # 思考开关跟随应用设置；开启时预算闸门会同步多扣一份预留。
+                "thinking": settings.REPORT_AGENT_MODEL_THINKING,
             },
         }
         await db.rollback()
@@ -244,6 +311,9 @@ class PiReportProcessor:
                 )
         except (httpx.TimeoutException, httpx.NetworkError) as exc:
             raise PiReportProcessorError("Pi Agent 服务暂时不可用") from exc
+        # 前面的 rollback 已使 run 实例过期；pi 调用（可能数分钟）结束后先异步刷新，
+        # 避免随后读取属性/传入校验触发同步懒加载（MissingGreenlet）。
+        await db.refresh(run)
         if response.status_code != 200:
             try:
                 code = str(response.json().get("error") or "PI_AGENT_REQUEST_FAILED")
@@ -276,12 +346,18 @@ class PiReportProcessor:
                 },
                 analysis_coverage=None,
             )
-        if outcome != "SUBMITTED" or not isinstance(result.get("reportIr"), dict):
+        if outcome != "SUBMITTED":
             raise PiReportProcessorError("Pi Agent 未提交有效 ReportIR", retryable=False)
         template = ReportTemplate.from_snapshot(run.template_snapshot)
         evidence_context, chunk_manifest = await load_report_source_context(db, run=run)
+        # 提交接口已把通过校验的候选 IR 落库（草稿可能被增量修补过，pi 本地没有完整
+        # 副本），权威二次校验直接读库里的版本。
+        await db.refresh(run)
+        submitted_ir = run.report_ir
+        if not isinstance(submitted_ir, dict):
+            raise PiReportProcessorError("Pi Agent 未提交有效 ReportIR", retryable=False)
         validation = validate_report_ir(
-            result["reportIr"],
+            submitted_ir,
             run=run,
             template=template,
             evidence_context=evidence_context,
@@ -292,15 +368,29 @@ class PiReportProcessor:
                 "Pi Agent 返回值未通过 FastAPI 权威校验",
                 retryable=False,
             )
+        # 报告已通过权威校验，先落盘可下载产物；产物失败不影响报告本身（内容已在库里）。
+        try:
+            await persist_report_artifacts(
+                db, run=run, template=template, report_ir=submitted_ir
+            )
+        except ReportArtifactError as exc:
+            logger.bind(
+                event="report_artifact_failed",
+                run_id=str(run.id),
+                error=str(exc)[:300],
+            ).error("报告产物落盘失败：报告已通过校验，仍按成功处理")
         encoded = json.dumps(
-            result["reportIr"], ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            submitted_ir, ensure_ascii=False, sort_keys=True, separators=(",", ":")
         ).encode("utf-8")
         manifest = {
             "run_id": str(run.id),
             "report_ir_sha256": hashlib.sha256(encoded).hexdigest(),
             "template_id": run.template_id,
             "template_version": run.template_version,
-            "document_version": int(run.document_version),
+            # 直传材料来源没有文档版本；manifest 是记录用的，按空写即可。
+            "document_version": (
+                int(run.document_version) if run.document_version is not None else None
+            ),
             "chunk_manifest_sha256": chunk_manifest.content_hash,
             "chunk_count": len(chunk_manifest.items),
             "generator": "pi-agent",
@@ -309,7 +399,7 @@ class PiReportProcessor:
         return ReportProcessingResult(
             state="SUCCEEDED",
             stage="COMPLETED",
-            report_ir=result["reportIr"],
+            report_ir=submitted_ir,
             validation_report=validation.to_dict(),
             manifest=manifest,
             analysis_coverage=result.get("coverage"),
@@ -364,42 +454,47 @@ class ReportGenerationWorker:
             run = await db.scalar(select(ReportRun).where(ReportRun.id == payload.run_id))
             if run is None:
                 return
-            if (
-                int(run.user_id) != payload.user_id
-                or int(run.document_id) != payload.document_id
-                or int(run.document_version) != payload.document_version
+            if int(run.user_id) != payload.user_id or (
+                payload.document_id is not None
+                and (
+                    run.document_id != payload.document_id
+                    or run.document_version != payload.document_version
+                )
             ):
                 raise ValueError("报告消息与冻结任务身份不一致")
-            document = await db.scalar(
-                select(Document).where(
-                    Document.id == run.document_id,
-                    Document.user_id == run.user_id,
-                )
-            )
-            if (
-                document is None
-                or document.status != DOCUMENT_STATUS_READY
-                or int(document.version) != int(run.document_version)
-                or document.parsed_bucket != run.parsed_bucket
-                or document.parsed_object_key != run.parsed_object_key
-            ):
-                await db.execute(
-                    update(ReportRun)
-                    .where(ReportRun.id == run.id)
-                    .values(
-                        state="STALE_DOCUMENT",
-                        stage="FAILED",
-                        error_code="REPORT_DOCUMENT_VERSION_CHANGED",
-                        error_message="文档版本或解析产物已变化，请重新创建报告",
-                        finished_at=utc_now(),
-                        lease_token=None,
-                        lease_owner=None,
-                        lease_expires_at=None,
+            # 直传材料没有文档可指，也就没有「文档版本已变化」这回事：它的正文是创建
+            # 任务时冻结的快照，外部改不到，不存在漂移。这里只对文档来源校验。
+            if run.source_kind != SOURCE_KIND_INLINE:
+                document = await db.scalar(
+                    select(Document).where(
+                        Document.id == run.document_id,
+                        Document.user_id == run.user_id,
                     )
-                    .execution_options(synchronize_session=False)
                 )
-                await db.commit()
-                return
+                if (
+                    document is None
+                    or document.status != DOCUMENT_STATUS_READY
+                    or int(document.version) != int(run.document_version)
+                    or document.parsed_bucket != run.parsed_bucket
+                    or document.parsed_object_key != run.parsed_object_key
+                ):
+                    await db.execute(
+                        update(ReportRun)
+                        .where(ReportRun.id == run.id)
+                        .values(
+                            state="STALE_DOCUMENT",
+                            stage="FAILED",
+                            error_code="REPORT_DOCUMENT_VERSION_CHANGED",
+                            error_message="文档版本或解析产物已变化，请重新创建报告",
+                            finished_at=utc_now(),
+                            lease_token=None,
+                            lease_owner=None,
+                            lease_expires_at=None,
+                        )
+                        .execution_options(synchronize_session=False)
+                    )
+                    await db.commit()
+                    return
 
         async with get_db_context() as db:
             claim = await self.queue.claim(
@@ -458,6 +553,8 @@ class ReportGenerationWorker:
                 event="report_processing_failed",
                 run_id=claim.run_id,
                 error_type=type(exc).__name__,
+                error_message=str(exc)[:500],
+                stack_trace=safe_exception_stack(exc),
             ).error("报告 Worker 处理失败")
         finally:
             heartbeat_stop.set()

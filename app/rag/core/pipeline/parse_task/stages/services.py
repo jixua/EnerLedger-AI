@@ -142,8 +142,7 @@ class StageServices:
     ) -> dict:
         """调用解析服务生成 Markdown 与结构化解析结果。
 
-        ``source_path`` 为 ``None`` 仅出现在 MinerU URL 旁路场景；其余路径下必须是
-        已经流式下载完成的本地临时文件路径。
+        ``source_path`` 必须是已经流式下载完成的本地临时文件路径。
 
         ``dataset_cfg`` 为数据集级配置（由 CleaningStage 从 DB 读取注入）：PDF 后端按
         ``payload 显式 > 数据集配置 > settings.PDF_PARSER_BACKEND`` 三层优先级选取；
@@ -157,7 +156,7 @@ class StageServices:
             dataset_backend = (
                 dataset_cfg.pdf.pdf_parser_backend if dataset_cfg is not None else None
             )
-            # 三层优先级：payload 显式指定 > 数据集级配置 > 系统默认（默认 mineru，与原硬编码一致）。
+            # 三层优先级：payload 显式指定 > 数据集级配置 > 系统默认。
             pdf_backend = (
                 payload.pdf_parser_backend or dataset_backend or settings.PDF_PARSER_BACKEND
             )
@@ -168,8 +167,6 @@ class StageServices:
                 "image_prefix": payload.image_prefix or payload.md_object_key,
                 "storage": self._storage,
             }
-            if pdf_backend.lower() == "mineru":
-                parser_kwargs["source_file_url"] = self.source_io.build_source_file_url(payload)
         elif payload.file_type.lower() in {"doc", "docx"}:
             parser_kwargs = {
                 "image_bucket": payload.image_bucket or payload.markdown_bucket,

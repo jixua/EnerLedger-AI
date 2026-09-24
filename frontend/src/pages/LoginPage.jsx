@@ -21,9 +21,10 @@ export function LoginPage() {
     setBusy(true);
     setError("");
     try {
-      await login(username.trim(), password);
+      const account = await login(username.trim(), password);
       const destination = location.state?.from;
-      navigate(typeof destination === "string" && destination.startsWith("/") ? destination : "/", { replace: true });
+      const fallback = account?.role === "reviewer" ? "/crawler/review" : "/";
+      navigate(typeof destination === "string" && destination.startsWith("/") ? destination : fallback, { replace: true });
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "登录失败，请稍后重试");
     } finally {

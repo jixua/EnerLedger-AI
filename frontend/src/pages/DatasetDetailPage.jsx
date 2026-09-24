@@ -27,6 +27,7 @@ import {
 } from "lucide-react";
 import { Link, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { UploadDialog } from "../components/UploadDialog";
+import { Select } from "../components/ui";
 import {
   createDocumentFolder,
   deleteDocumentFolder,
@@ -595,13 +596,13 @@ export function DatasetDetailPage() {
             <>
               <div className="document-toolbar">
                 <label className="document-search"><Search size={15} aria-hidden="true" /><input aria-label="搜索文档" value={documentQuery} onChange={(event) => setDocumentQuery(event.target.value)} placeholder="搜索文件名" /></label>
-                <select className="document-status-filter" aria-label="按状态筛选文档" value={documentStatus} onChange={(event) => setDocumentStatus(event.target.value)}>
-                  <option value="ALL">全部状态</option>
-                  <option value="QUEUED">排队中</option>
-                  <option value="PROCESSING">处理中</option>
-                  <option value="READY">处理完成</option>
-                  <option value="FAILED">失败</option>
-                </select>
+                <Select className="document-status-filter" ariaLabel="按状态筛选文档" value={documentStatus} onChange={setDocumentStatus} options={[
+                  { value: "ALL", label: "全部状态" },
+                  { value: "QUEUED", label: "排队中" },
+                  { value: "PROCESSING", label: "处理中" },
+                  { value: "READY", label: "处理完成" },
+                  { value: "FAILED", label: "失败" },
+                ]} />
                 <span className="document-toolbar__count">显示 {filteredDocuments.length} / {folderDocuments.length}</span>
                 <button type="button" className="button button--secondary" onClick={refreshDocuments} disabled={loadingDocuments || refreshingDocuments}><RefreshCw className={loadingDocuments || refreshingDocuments ? "spin" : ""} size={15} />刷新</button>
               </div>
@@ -623,7 +624,7 @@ export function DatasetDetailPage() {
                         </div>
                         <time className="document-row__time" role="cell" data-label="更新时间">{formatTime(document.updated_at)}</time>
                         <div className="document-row__actions" role="cell" data-label="操作">
-                          <select className="document-folder-select" aria-label={`移动 ${document.filename || id} 到文件夹`} title="移动到文件夹" value={document.folder_id ?? ""} onChange={(event) => handleMoveDocument(document, event.target.value)} disabled={busy}><option value="">未分类</option>{folderOptions.map((folder) => <option key={folder.id} value={folder.id}>{`${"　".repeat(folder.depth)}${folder.name}`}</option>)}</select>
+                          <Select className="document-folder-select" ariaLabel={`移动 ${document.filename || id} 到文件夹`} title="移动到文件夹" value={document.folder_id ?? ""} onChange={(folderId) => handleMoveDocument(document, folderId)} disabled={busy} options={[{ value: "", label: "未分类" }, ...folderOptions.map((folder) => ({ value: folder.id, label: `${"　".repeat(folder.depth)}${folder.name}` }))]} />
                           <Link className="button button--tiny document-view-link" to={`/datasets/${datasetId}/documents/${id}`} aria-label={`查看 ${document.filename || id} 的分片详情`}><Eye size={13} />详情</Link>
                           <button type="button" className="icon-button icon-button--quiet" onClick={() => openRenameDocument(document)} disabled={busy || renaming} aria-label={`重命名 ${document.filename || id}`} title="修改展示名称"><Pencil size={14} /></button>
                           {retryable ? <button type="button" className="button button--tiny" onClick={() => runDocumentAction(document, actions.retryDocument, "文档已重新加入队列。")} disabled={busy}><RefreshCw className={busy ? "spin" : ""} size={13} />重试</button> : null}
@@ -675,16 +676,16 @@ export function DatasetDetailPage() {
             <div className="section-heading"><div><h2>基本信息与模型配置</h2><p>更新后将用于后续文档解析和对话。</p></div></div>
             <div className="form-grid form-grid--two">
               <label className="form-field"><span>数据集名称</span><input required value={settingsForm.name} onChange={(event) => setSettingsForm((current) => ({ ...current, name: event.target.value }))} /></label>
-              <label className="form-field"><span>对话模型 <small>可选</small></span><select value={settingsForm.chat_config_id} onChange={(event) => setSettingsForm((current) => ({ ...current, chat_config_id: event.target.value }))}><option value="">暂不绑定</option>{chatModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}</select></label>
+              <div className="form-field"><span>对话模型 <small>可选</small></span><Select ariaLabel="对话模型" value={settingsForm.chat_config_id} onChange={(chat_config_id) => setSettingsForm((current) => ({ ...current, chat_config_id }))} options={[{ value: "", label: "暂不绑定" }, ...chatModels.map((model) => ({ value: modelId(model), label: modelLabel(model) }))]} /></div>
             </div>
             <label className="form-field"><span>描述</span><textarea rows={3} maxLength={512} value={settingsForm.description} onChange={(event) => setSettingsForm((current) => ({ ...current, description: event.target.value }))} /></label>
             {hasActiveDocuments ? <div className="notice notice--warning settings-model-notice"><Clock3 size={15} /><p>当前仍有文档在排队或处理，需等待完成后才能更换向量模型。</p></div> : null}
             {parseBindingChanged && !hasActiveDocuments ? <div className="notice notice--warning settings-model-notice"><AlertCircle size={15} /><p>保存解析模型绑定后，现有文档将生成新版本、重新解析并重建检索索引。</p></div> : null}
             <div className="form-grid form-grid--two">
-              <label className="form-field"><span>稠密向量模型</span><select required disabled={hasActiveDocuments} value={settingsForm.dense_embedding_config_id} onChange={(event) => setSettingsForm((current) => ({ ...current, dense_embedding_config_id: event.target.value }))}>{denseModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}</select></label>
-              <label className="form-field"><span>稀疏向量模型</span><select required disabled={hasActiveDocuments} value={settingsForm.sparse_embedding_config_id} onChange={(event) => setSettingsForm((current) => ({ ...current, sparse_embedding_config_id: event.target.value }))}>{sparseModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}</select></label>
+              <div className="form-field"><span>稠密向量模型</span><Select ariaLabel="稠密向量模型" disabled={hasActiveDocuments} value={settingsForm.dense_embedding_config_id} onChange={(dense_embedding_config_id) => setSettingsForm((current) => ({ ...current, dense_embedding_config_id }))} options={denseModels.map((model) => ({ value: modelId(model), label: modelLabel(model) }))} /></div>
+              <div className="form-field"><span>稀疏向量模型</span><Select ariaLabel="稀疏向量模型" disabled={hasActiveDocuments} value={settingsForm.sparse_embedding_config_id} onChange={(sparse_embedding_config_id) => setSettingsForm((current) => ({ ...current, sparse_embedding_config_id }))} options={sparseModels.map((model) => ({ value: modelId(model), label: modelLabel(model) }))} /></div>
             </div>
-            <label className="form-field"><span>PDF OCR / 视觉模型 <small>可选</small></span><select disabled={hasActiveDocuments} value={settingsForm.vision_config_id} onChange={(event) => setSettingsForm((current) => ({ ...current, vision_config_id: event.target.value }))}><option value="">暂不绑定</option>{visionModels.map((model) => <option key={modelId(model)} value={modelId(model)}>{modelLabel(model)}</option>)}</select><small>仅在 PDF 页面缺少有效正文或图表需要解释时调用；未绑定不会阻止文档完成解析和检索。</small></label>
+            <div className="form-field"><span>PDF OCR / 视觉模型 <small>可选</small></span><Select ariaLabel="PDF OCR / 视觉模型" disabled={hasActiveDocuments} value={settingsForm.vision_config_id} onChange={(vision_config_id) => setSettingsForm((current) => ({ ...current, vision_config_id }))} options={[{ value: "", label: "暂不绑定" }, ...visionModels.map((model) => ({ value: modelId(model), label: modelLabel(model) }))]} /><small>仅在 PDF 页面缺少有效正文或图表需要解释时调用；未绑定不会阻止文档完成解析和检索。</small></div>
             {!denseModels.length || !sparseModels.length ? <p className="settings-model-empty"><AlertCircle size={14} />缺少可用的向量模型，请先前往 <Link to="/models">模型配置</Link>。</p> : null}
             <footer className="dataset-settings-form__actions"><span>{settingsDirty ? "有尚未保存的更改" : "当前设置已保存"}</span><button type="submit" className="button button--primary" disabled={savingSettings || !settingsDirty || !denseModels.length || !sparseModels.length}>{savingSettings ? <Loader2 className="spin" size={15} /> : <Settings2 size={15} />}{savingSettings ? "正在保存" : "保存更改"}</button></footer>
           </form>
@@ -705,7 +706,7 @@ export function DatasetDetailPage() {
             </header>
             <form className="form-stack" onSubmit={saveFolder}>
               <label className="form-field"><span>文件夹名称</span><input autoFocus required maxLength={64} value={folderName} onChange={(event) => setFolderName(event.target.value)} placeholder="例如：排放因子" /></label>
-              <label className="form-field"><span>上级文件夹</span><select value={folderParentId} onChange={(event) => setFolderParentId(event.target.value)}><option value="">顶层</option>{folderOptions.filter((folder) => folderDialog.mode !== "rename" || !folderDescendantIds(folders, folderDialog.folder.id).has(Number(folder.id))).map((folder) => <option key={folder.id} value={folder.id}>{`${"　".repeat(folder.depth)}${folder.name}`}</option>)}</select></label>
+              <div className="form-field"><span>上级文件夹</span><Select ariaLabel="上级文件夹" value={folderParentId} onChange={setFolderParentId} options={[{ value: "", label: "顶层" }, ...folderOptions.filter((folder) => folderDialog.mode !== "rename" || !folderDescendantIds(folders, folderDialog.folder.id).has(Number(folder.id))).map((folder) => ({ value: folder.id, label: `${"　".repeat(folder.depth)}${folder.name}` }))]} /></div>
               <footer className="dialog__footer">
                 <button type="button" className="button button--ghost" onClick={() => setFolderDialog(null)} disabled={folderSaving}>取消</button>
                 <button type="submit" className="button button--primary" disabled={folderSaving || !folderName.trim()}>{folderSaving ? <Loader2 className="spin" size={15} /> : <FolderPlus size={15} />}{folderSaving ? "正在保存" : "保存文件夹"}</button>

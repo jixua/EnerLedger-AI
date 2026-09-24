@@ -58,10 +58,18 @@ class ReportRunQueueService:
         if not pending_due and not expired:
             return None
         if int(run.attempt_count or 0) >= self.max_attempts:
+            previous = run.error_code
             run.state = "FAILED"
             run.stage = "FAILED"
             run.error_code = "REPORT_MAX_ATTEMPTS_EXCEEDED"
-            run.error_message = "报告任务超过最大尝试次数"
+            # 上下文压力类失败要给出可操作的下一步，否则用户只看到一个错误码。
+            hint = (
+                "；该文档规模接近当前模型的上下文上限，可拆分文档后分别生成，"
+                "或改用上下文更大的模型"
+                if previous in {"REPORT_IR_NOT_SUBMITTED", "REPORT_AGENT_TIMEOUT"}
+                else ""
+            )
+            run.error_message = f"报告任务超过最大尝试次数（历次错误：{previous or '未知'}）{hint}"
             run.finished_at = claimed_at
             self._clear_lease(run)
             await db.commit()
@@ -70,6 +78,8 @@ class ReportRunQueueService:
         run.state = "PROCESSING"
         run.stage = "PREPARING"
         run.attempt_count = int(run.attempt_count or 0) + 1
+        # 每次尝试都是新的 Agent 会话：清掉上一轮的候选 IR，避免误提交过期草稿。
+        run.report_ir_draft = None
         run.lease_token = token
         run.lease_owner = worker_id[:128]
         run.lease_expires_at = claimed_at + timedelta(seconds=self.lease_seconds)
@@ -110,6 +120,10 @@ class ReportRunQueueService:
             "finished_at": completed_at if state == "SUCCEEDED" else None,
             "updated_at": completed_at,
         }
+        if state == "NEEDS_INPUT":
+            # 「等用户补充」不是失败：每次问答往返都会重新认领一次任务，
+            # 如果计入尝试次数，多轮提问的任务会在第三轮被 MAX_ATTEMPTS 判死。
+            values["attempt_count"] = 0
         result = await db.execute(
             update(ReportRun)
             .where(

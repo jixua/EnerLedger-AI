@@ -67,13 +67,21 @@ export function createEnerLedgerClient(config, runId, runToken, signal) {
       method: "POST",
       body: JSON.stringify({ questions }),
     }),
-    validate: (reportIr) => request(`${prefix}/validate`, {
+    validate: () => request(`${prefix}/validate`, {
+      method: "POST",
+      body: JSON.stringify({}),
+    }),
+    saveIrDraft: (reportIr) => request(`${prefix}/ir-draft`, {
       method: "POST",
       body: JSON.stringify({ report_ir: reportIr }),
     }),
-    submit: (reportIr, coverage) => request(`${prefix}/submit`, {
+    patchIrDraft: (patch) => request(`${prefix}/ir-draft/patch`, {
       method: "POST",
-      body: JSON.stringify({ report_ir: reportIr, coverage }),
+      body: JSON.stringify(patch),
+    }),
+    submit: (coverage) => request(`${prefix}/submit`, {
+      method: "POST",
+      body: JSON.stringify({ coverage }),
     }),
   };
 }

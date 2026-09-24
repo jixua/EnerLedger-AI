@@ -23,6 +23,9 @@ DISPATCH_PENDING = "PENDING"
 DISPATCHING = "DISPATCHING"
 DISPATCH_PUBLISHED = "PUBLISHED"
 
+# 处理租约过期后额外留出的宽限：worker 存活时会续租，过期说明它已经不在了。
+STRANDED_LEASE_GRACE = timedelta(seconds=60)
+
 
 class MessagePublisher(Protocol):
     async def send(self, message: ReportGenerationMessage) -> None: ...
@@ -32,8 +35,9 @@ class MessagePublisher(Protocol):
 class ReportDispatchClaim:
     run_id: str
     user_id: int
-    document_id: int
-    document_version: int
+    # 直传材料来源没有文档可指，这两项为空。
+    document_id: int | None
+    document_version: int | None
     lease_token: str
 
 
@@ -97,6 +101,14 @@ class ReportRunDispatcher:
                         ReportRun.dispatch_lease_expires_at.is_(None),
                         ReportRun.dispatch_lease_expires_at <= now,
                     ),
+                    # 已投递但处理租约过期的任务：worker 可能在上次处理中被杀掉，
+                    # 而消息不会再重投——不重新投递的话任务会永远停在 PROCESSING。
+                    (ReportRun.state == "PROCESSING")
+                    & (ReportRun.dispatch_status == DISPATCH_PUBLISHED)
+                    & or_(
+                        ReportRun.lease_expires_at.is_(None),
+                        ReportRun.lease_expires_at <= now - STRANDED_LEASE_GRACE,
+                    ),
                 )
             )
             .order_by(ReportRun.dispatch_available_at, ReportRun.created_at)
@@ -129,8 +141,10 @@ class ReportRunDispatcher:
         return ReportDispatchClaim(
             run_id=str(run.id),
             user_id=int(run.user_id),
-            document_id=int(run.document_id),
-            document_version=int(run.document_version),
+            document_id=int(run.document_id) if run.document_id is not None else None,
+            document_version=(
+                int(run.document_version) if run.document_version is not None else None
+            ),
             lease_token=token,
         )
 
@@ -139,8 +153,10 @@ class ReportRunDispatcher:
             ReportGenerationMessage.build(
                 run_id=str(run.id),
                 user_id=int(run.user_id),
-                document_id=int(run.document_id),
-                document_version=int(run.document_version),
+                document_id=int(run.document_id) if run.document_id is not None else None,
+                document_version=(
+                    int(run.document_version) if run.document_version is not None else None
+                ),
             )
         )
 

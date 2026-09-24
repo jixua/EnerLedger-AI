@@ -6,17 +6,22 @@ import os
 from collections import deque
 from copy import deepcopy
 from datetime import UTC, datetime
+from io import BytesIO
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
+from docx import Document as WordDocument
+from fastapi import HTTPException
 
 os.environ.setdefault("ADMIN_PASSWORD_HASH", "scrypt:test-only")
 
 import app.api.reports as reports_api
-from app.api.report_agent_internal import get_run_clarifications
-from app.api.reports import ReportCreateRequest, create_report
-from app.domain.models import Document, ReportQuestion, ReportRun
+from app.api.report_agent_internal import _chunk_page, get_run_clarifications
+from app.api.reports import ReportCreateRequest, create_report, delete_report_run
+from app.domain.models import Document, ReportMaterial, ReportQuestion, ReportRun
+from app.rag.config import settings
 from app.rag.core.mq.messages import ReportGenerationMessage
 from app.rag.models.db_models import LLMModelConfigDB
 from app.services.report_agent_tokens import (
@@ -24,17 +29,37 @@ from app.services.report_agent_tokens import (
     issue_report_agent_token,
     verify_report_agent_token,
 )
+from app.services.report_artifacts import (
+    artifact_download_name,
+    persist_report_artifacts,
+    render_report_markdown,
+)
+from app.services.report_budget import (
+    ReportDocumentTooLargeError,
+    assert_document_fits_context,
+    estimate_document_tokens,
+)
 from app.services.report_calculations import execute_registered_formula
+from app.services.report_docx import render_report_docx
+from app.services.report_html import render_report_html
+from app.services.report_inline_source import SOURCE_KIND_INLINE, build_inline_chunks
 from app.services.report_ir import (
     ReportEvidenceContext,
+    ReportIRPatchError,
+    apply_report_ir_patch,
     build_fixture_report_ir,
+    excerpt_belongs_to_chunk,
     validate_report_ir,
 )
 from app.services.report_model_policy import (
     ReportModelEndpointError,
     validate_report_model_endpoint,
 )
-from app.services.report_source_context import ReportChunkManifest, validate_chunk_coverage
+from app.services.report_source_context import (
+    ReportChunkManifest,
+    load_report_source_context,
+    validate_chunk_coverage,
+)
 from app.services.report_templates import (
     ReportTemplate,
     ReportTemplateError,
@@ -61,6 +86,11 @@ def _document() -> Document:
         status="READY",
         version=2,
     )
+
+
+async def _load_payload_stats(_db, *, document_id, document_version):
+    """默认的文档规模统计：很小的文档，必然通过上下文预算检查。"""
+    return 4, 1200
 
 
 def _run() -> ReportRun:
@@ -242,6 +272,133 @@ def test_blocking_not_applicable_and_forged_user_evidence_cannot_publish() -> No
     assert any("真实用户回答" in error for error in strict.errors)
 
 
+# --- 证据摘录的逐字校验 -------------------------------------------------------
+#
+# 摘录必须出自它引用的那一分片，这是防伪造的地基。但「逐字」过去的判法是严格字符串
+# 包含：模型照抄时顺手规整标点、去掉解析留下的 ** 与 [表格引用: …]、把换行并成一句，
+# 就会被判成不实引用——一次实跑里 19 条摘录全部因此打回，只能回头重抄一遍。现在先
+# 抹平形状再比：形状不该管，文字才要管。
+
+# 真实解析出来的分片就长这样：全角标点、markdown 强调标记、表格占位符混在一起。
+_REAL_CHUNK = (
+    "**报告编号：23523GZ0013R0M**\n\n伊顿电气有限公司\n\n微型断路器\n\n碳足迹评价报告\n\n"
+    "**核查机构名称（公章）：**杭州中奥质量认证有限公司\n\n"
+    "[表格引用: table_001]\n表格摘要：未提供表格总结。"
+)
+
+
+def test_excerpt_survives_formatting_differences() -> None:
+    assert excerpt_belongs_to_chunk("**报告编号：23523GZ0013R0M**", _REAL_CHUNK)
+    # 全角标点被规整成半角
+    assert excerpt_belongs_to_chunk("核查机构名称(公章):杭州中奥质量认证有限公司", _REAL_CHUNK)
+    # 去掉强调标记、把换行并成一句
+    assert excerpt_belongs_to_chunk("伊顿电气有限公司 微型断路器 碳足迹评价报告", _REAL_CHUNK)
+    # 引用跨过解析留下的表格占位符（原文里那行标记被略去，两边的字连起来读）
+    assert excerpt_belongs_to_chunk(
+        "产品碳足迹信息如下：表格摘要：未提供表格总结。",
+        "产品碳足迹信息如下：\n\n[表格引用: table_002]\n表格摘要：未提供表格总结。",
+    )
+    # 分页标记同理
+    assert excerpt_belongs_to_chunk(
+        "第一章 范围第二章 目标", "第一章 范围\n<!-- WORD_PAGE -->\n第二章 目标"
+    )
+
+
+def test_excerpt_must_still_come_from_the_chunk() -> None:
+    """抹平的是形状，不是内容：编出来的、或别处拼来的句子照样过不了。"""
+    assert not excerpt_belongs_to_chunk("该产品碳足迹总值为 0.44 kgCO2e", _REAL_CHUNK)
+    assert not excerpt_belongs_to_chunk("核查机构名称：某某检测有限公司", _REAL_CHUNK)
+    # 顺序颠倒不算「连续的一段」
+    assert not excerpt_belongs_to_chunk("微型断路器伊顿电气有限公司", _REAL_CHUNK)
+    # 数值被改动——碳核算里改一个数字就是另一回事，标点可以不管，数字必须管
+    assert not excerpt_belongs_to_chunk(
+        "原材料获取 392.05 gCO2-eq", "原材料获取 392.04 gCO2-eq；运输分销 15.16 gCO2-eq"
+    )
+
+
+def test_excerpt_check_is_lenient_only_about_shape() -> None:
+    assert excerpt_belongs_to_chunk(None, _REAL_CHUNK)
+    assert excerpt_belongs_to_chunk("", _REAL_CHUNK)
+    assert excerpt_belongs_to_chunk("   ", _REAL_CHUNK)
+    assert not excerpt_belongs_to_chunk("任何一句话", "")
+    # 分片里的每个字都在，但被重新拼过——不是原文的连续片段
+    assert not excerpt_belongs_to_chunk("杭州中奥质量认证有限公司报告编号", _REAL_CHUNK)
+
+
+def _excerpt_ir(run: ReportRun, template, *, excerpt: str) -> dict:
+    report_ir = build_fixture_report_ir(run=run, template=template, answered_questions=[])
+    report_ir["evidence"] = [
+        {
+            "evidence_id": "E-DOC-EXCERPT",
+            "source_type": "DOCUMENT",
+            "document_id": int(run.document_id),
+            "document_version": int(run.document_version),
+            "chunk_id": "c1",
+            "content_hash": "c" * 64,
+            "excerpt": excerpt,
+            "metadata": {},
+        }
+    ]
+    return report_ir
+
+
+def _excerpt_context() -> ReportEvidenceContext:
+    return ReportEvidenceContext(
+        document_chunks={"c1": {"content_hash": "c" * 64, "content": _REAL_CHUNK}},
+        user_answer_hashes={},
+    )
+
+
+def test_validate_report_ir_accepts_a_tidied_excerpt() -> None:
+    run, template, _report_ir = _fixture_report_ir()
+    tidied = "核查机构名称(公章):杭州中奥质量认证有限公司"
+
+    validation = validate_report_ir(
+        _excerpt_ir(run, template, excerpt=tidied),
+        run=run,
+        template=template,
+        evidence_context=_excerpt_context(),
+    )
+
+    assert not [error for error in validation.errors if "摘录" in error]
+
+
+def test_validate_report_ir_rejects_a_fabricated_excerpt() -> None:
+    run, template, _report_ir = _fixture_report_ir()
+    fabricated = "核查机构为杭州中奥质量认证有限公司，保证等级为合理保证"
+
+    validation = validate_report_ir(
+        _excerpt_ir(run, template, excerpt=fabricated),
+        run=run,
+        template=template,
+        evidence_context=_excerpt_context(),
+    )
+
+    assert any("摘录不属于对应文档分片" in error for error in validation.errors)
+
+
+def test_excerpt_rule_is_stated_where_the_model_reads_it() -> None:
+    """模型不知道就不会遵守：schema 与报告 agent 的提示词里都要写明逐字照抄。
+
+    同时钉住措辞别骗人：校验放宽之后不能再对模型说「整理过的会被判为不实引用」——
+    那是句已经不成立的威胁，模型试出来一次就不再信这套契约了。
+    """
+    root = Path(__file__).resolve().parents[1]
+    schema = json.loads(
+        (root / "reporting" / "common" / "evidence.schema.json").read_text(encoding="utf-8")
+    )
+    description = schema["properties"]["excerpt"]["description"]
+    assert "逐字" in description
+    assert "忽略" in description, "要说清标点形状的差异会被忽略"
+    assert "不实引用" not in description, "校验已放宽，不能再这样吓唬模型"
+
+    prompt = (
+        root / "apps" / "pi-service" / "src" / "runtime" / "report-agent.js"
+    ).read_text(encoding="utf-8")
+    assert "逐字复制" in prompt
+    assert "不实引用" not in prompt
+
+
 def test_chunk_coverage_requires_exact_order_hash_and_completion() -> None:
     items = (
         {"chunk_id": "c1", "chunk_index": 0, "content_hash": "a" * 64},
@@ -341,6 +498,7 @@ async def test_create_report_freezes_document_template_and_model(
         return None, SimpleNamespace(items=({"chunk_id": "c1"},), content_hash="b" * 64)
 
     monkeypatch.setattr(reports_api, "load_report_source_context", load_source_context)
+    monkeypatch.setattr(reports_api, "load_document_payload_stats", _load_payload_stats)
     model = LLMModelConfigDB(
         id=5,
         scope="USER",
@@ -405,6 +563,7 @@ async def test_create_report_freezes_uploaded_template_manifest(
         return SimpleNamespace(items=({"chunk_id": "template-1"},), content_hash="c" * 64)
 
     monkeypatch.setattr(reports_api, "load_report_source_context", load_source_context)
+    monkeypatch.setattr(reports_api, "load_document_payload_stats", _load_payload_stats)
     monkeypatch.setattr(reports_api, "load_document_chunk_manifest", load_custom_manifest)
     custom_template = Document(
         id=8,
@@ -452,9 +611,714 @@ async def test_create_report_freezes_uploaded_template_manifest(
     assert response["custom_template_document_id"] == 8
     assert run.custom_template_document_version == 3
     assert run.custom_template_manifest == {
+        "source_kind": "DOCUMENT",
         "document_id": 8,
         "document_version": 3,
         "filename": "组织碳盘查模板.docx",
         "chunk_manifest_sha256": "c" * 64,
         "chunk_count": 1,
     }
+
+
+@pytest.mark.asyncio
+async def test_create_report_rejects_document_beyond_context_budget(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """一轮读不完的文档必须在创建时就明确拒绝，而不是跑到一半截断失败。"""
+
+    template = ReportTemplateRegistry(_reporting_root()).get("R2")
+
+    class Registry:
+        def get(self, report_type):
+            return template
+
+    monkeypatch.setattr(reports_api, "report_template_registry", Registry())
+
+    async def load_payload_stats(_db, *, document_id, document_version):
+        # 本地真实存在的一份 829 分片 / 144 万字符文档：约 72 万 tokens。
+        return 829, 1_441_668
+
+    monkeypatch.setattr(reports_api, "load_document_payload_stats", load_payload_stats)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await create_report(
+            document_id=7,
+            payload=ReportCreateRequest(report_type="R2", llm_config_id=5),
+            user_id=11,
+            db=_Session([_document()]),
+        )
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["code"] == "REPORT_DOCUMENT_TOO_LARGE"
+    assert "请拆分文档" in excinfo.value.detail["message"]
+
+
+def test_chunk_page_limits_page_by_char_budget() -> None:
+    """分页必须按字符预算截断：分片正文长度差异极大，只按条数会让单次返回爆掉上下文。"""
+    budget = settings.REPORT_AGENT_CHUNK_PAGE_MAX_CHARS
+
+    def row(content: str):
+        return SimpleNamespace(content=content)
+
+    rows = [row("文" * (budget // 3)) for _ in range(10)]
+    page, has_more = _chunk_page(rows, page_limit=10)
+    assert len(page) == 2
+    assert has_more is True
+
+    page, has_more = _chunk_page(rows[:2], page_limit=10)
+    assert len(page) == 2
+    assert has_more is False
+
+
+def test_chunk_page_always_returns_one_chunk_for_oversized_chunk() -> None:
+    """单条超预算也必须返回，否则游标永远无法前进。"""
+    budget = settings.REPORT_AGENT_CHUNK_PAGE_MAX_CHARS
+    rows = [SimpleNamespace(content="文" * (budget * 3))]
+    page, has_more = _chunk_page(rows, page_limit=10)
+    assert len(page) == 1
+    assert has_more is False
+
+
+def test_document_budget_estimate_grows_with_content_and_rejects_oversized() -> None:
+    small = estimate_document_tokens(content_chars=2_000, chunk_count=4)
+    large = estimate_document_tokens(content_chars=400_000, chunk_count=200)
+    assert small < large
+    assert assert_document_fits_context(content_chars=2_000, chunk_count=4) == small
+    with pytest.raises(ReportDocumentTooLargeError):
+        assert_document_fits_context(content_chars=400_000, chunk_count=200)
+
+
+def test_thinking_reserve_shrinks_prompt_budget(monkeypatch: pytest.MonkeyPatch) -> None:
+    """开启思考后要少收一批文档：思考会随轮次累积进 prompt，且不受我们控制。"""
+    document = {"content_chars": 50_000, "chunk_count": 70}
+
+    monkeypatch.setattr(settings, "REPORT_AGENT_MODEL_THINKING", False)
+    assert assert_document_fits_context(**document) > 0
+
+    monkeypatch.setattr(settings, "REPORT_AGENT_MODEL_THINKING", True)
+    with pytest.raises(ReportDocumentTooLargeError):
+        assert_document_fits_context(**document)
+
+
+@pytest.mark.asyncio
+async def test_report_ir_draft_is_validated_from_storage(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """候选 IR 只落库一次，validate 不再回传整份 IR（这是报告会话里最大的可省项）。"""
+    from app.api import report_agent_internal as internal
+
+    template = ReportTemplateRegistry(_reporting_root()).get("R2")
+    run = _run()
+    run.template_snapshot = template.to_snapshot()
+    report_ir = build_fixture_report_ir(run=run, template=template, answered_questions=[])
+
+    async def load_context(_db, *, run):
+        return None, SimpleNamespace(items=())
+
+    monkeypatch.setattr(internal, "load_report_source_context", load_context)
+
+    class Session:
+        async def commit(self):
+            return None
+
+    session = Session()
+    receipt = await internal.save_report_ir_draft(
+        payload=internal.ReportIRRequest(report_ir=report_ir), run=run, db=session
+    )
+    assert receipt["saved"] is True
+    assert receipt["field_ledger_count"] == len(report_ir["field_ledger"])
+    assert len(receipt["revision"]) == 12
+    assert run.report_ir_draft == report_ir
+
+    result = await internal.validate_candidate_report(
+        payload=internal.ReportIRValidateRequest(), run=run, db=session
+    )
+    assert {"schema_valid", "publishable", "errors"} <= set(result)
+
+    # 草稿缺失时必须明确报错，而不是拿旧内容校验或静默通过。
+    run.report_ir_draft = None
+    with pytest.raises(HTTPException) as excinfo:
+        await internal.validate_candidate_report(
+            payload=internal.ReportIRValidateRequest(), run=run, db=session
+        )
+    assert excinfo.value.status_code == 409
+    assert excinfo.value.detail["code"] == "REPORT_IR_DRAFT_MISSING"
+
+
+def test_report_ir_patch_updates_only_touched_items() -> None:
+    """补丁只带变化条目：按主键覆盖/追加/删除，章节保序。"""
+    draft = {
+        "schema_version": 1,
+        "meta": {"run_id": "run-1", "language": "zh-CN"},
+        "evidence": [
+            {"evidence_id": "E-1", "source_type": "DOCUMENT", "content_hash": "a" * 64},
+            {"evidence_id": "E-2", "source_type": "DOCUMENT", "content_hash": "b" * 64},
+        ],
+        "field_ledger": [{"field_id": "f1", "status": "MISSING"}],
+        "sections": [
+            {"section_id": "s1", "title": "摘要", "blocks": []},
+            {"section_id": "s2", "title": "范围", "blocks": []},
+        ],
+        "calculations": [],
+    }
+    updated, summary = apply_report_ir_patch(
+        draft,
+        {
+            "upsert_evidence": [
+                {"evidence_id": "E-2", "source_type": "USER_INPUT", "content_hash": "c" * 64},
+                {"evidence_id": "E-3", "source_type": "DOCUMENT", "content_hash": "d" * 64},
+            ],
+            "delete_evidence": ["E-1"],
+            "upsert_field_ledger": [{"field_id": "f2", "status": "FOUND"}],
+            "upsert_sections": [
+                {"section_id": "s1", "title": "摘要", "blocks": [{"type": "text"}]}
+            ],
+            "limitations": ["草稿"],
+        },
+    )
+
+    assert [item["evidence_id"] for item in updated["evidence"]] == ["E-2", "E-3"]
+    assert updated["evidence"][0]["content_hash"] == "c" * 64
+    assert [item["field_id"] for item in updated["field_ledger"]] == ["f1", "f2"]
+    # 章节保序：s1 仍是第一位，内容被替换。
+    assert [item["section_id"] for item in updated["sections"]] == ["s1", "s2"]
+    assert updated["sections"][0]["blocks"] == [{"type": "text"}]
+    assert updated["limitations"] == ["草稿"]
+    assert summary["evidence"] == {"added": 1, "replaced": 1, "removed": 1, "total": 2}
+    # 原草稿不被就地修改，便于回滚。
+    assert [item["evidence_id"] for item in draft["evidence"]] == ["E-1", "E-2"]
+
+
+def test_report_ir_patch_rejects_empty_or_keyless_items() -> None:
+    draft = {"evidence": [], "field_ledger": [], "sections": []}
+    with pytest.raises(ReportIRPatchError):
+        apply_report_ir_patch(draft, {"upsert_evidence": []})
+    with pytest.raises(ReportIRPatchError):
+        apply_report_ir_patch(draft, {"upsert_evidence": [{"source_type": "DOCUMENT"}]})
+
+
+@pytest.mark.asyncio
+async def test_report_ir_patch_endpoint_applies_to_stored_draft(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """落库后的修补直接改变后续校验看到的草稿。"""
+    from app.api import report_agent_internal as internal
+
+    template = ReportTemplateRegistry(_reporting_root()).get("R2")
+    run = _run()
+    run.template_snapshot = template.to_snapshot()
+    report_ir = build_fixture_report_ir(run=run, template=template, answered_questions=[])
+    run.report_ir_draft = report_ir
+
+    async def load_context(_db, *, run):
+        return None, SimpleNamespace(items=())
+
+    monkeypatch.setattr(internal, "load_report_source_context", load_context)
+
+    class Session:
+        async def commit(self):
+            return None
+
+    session = Session()
+    section_id = report_ir["sections"][0]["section_id"]
+    receipt = await internal.patch_report_ir_draft(
+        payload=internal.ReportIRPatchRequest(delete_sections=[section_id]),
+        run=run,
+        db=session,
+    )
+    assert receipt["saved"] is True
+    assert receipt["changed"]["sections"]["removed"] == 1
+    assert section_id not in [
+        section["section_id"] for section in run.report_ir_draft["sections"]
+    ]
+
+    result = await internal.validate_candidate_report(
+        payload=internal.ReportIRValidateRequest(), run=run, db=session
+    )
+    assert "报告章节必须与模板章节完整一致" in result["errors"]
+
+    # 空补丁必须被拒绝，避免模型用无效调用浪费一轮。
+    with pytest.raises(HTTPException) as excinfo:
+        await internal.patch_report_ir_draft(
+            payload=internal.ReportIRPatchRequest(),
+            run=run,
+            db=session,
+        )
+    assert excinfo.value.status_code == 422
+    assert excinfo.value.detail["code"] == "REPORT_IR_PATCH_INVALID"
+
+
+def _fixture_report_ir() -> tuple[ReportRun, ReportTemplate, dict]:
+    template = ReportTemplateRegistry(_reporting_root()).get("R1")
+    run = _run()
+    run.report_type = "R1"
+    run.template_id = template.template_id
+    run.template_version = template.version
+    run.template_snapshot = template.to_snapshot()
+    report_ir = build_fixture_report_ir(run=run, template=template, answered_questions=[])
+    return run, template, report_ir
+
+
+def test_report_markdown_renders_sections_ledgers_and_evidence() -> None:
+    run, template, report_ir = _fixture_report_ir()
+    report_ir["sections"][0]["blocks"] = [
+        {"type": "paragraph", "text": "正文段落。", "evidence_ids": ["E-1"]},
+        {"type": "callout", "text": "口径提示。", "evidence_ids": []},
+        {
+            "type": "table",
+            "data": {"columns": ["项目", "值"], "rows": [["功能单位", "1 吨"]]},
+            "evidence_ids": [],
+        },
+    ]
+    report_ir["evidence"] = [
+        {
+            "evidence_id": "E-1",
+            "source_type": "DOCUMENT",
+            "chunk_id": "c-1",
+            "content_hash": "a" * 64,
+            "excerpt": "原文摘录",
+        }
+    ]
+
+    markdown = render_report_markdown(run=run, template=template, report_ir=report_ir)
+
+    # 标题用报告名称：R1–R7 是内部编号，界面上从不呈现，导出件里也不该出现
+    assert markdown.startswith("# 产品碳足迹评价报告")
+    assert "R1" not in markdown.splitlines()[0]
+    assert f"## {report_ir['sections'][0]['title']}" in markdown
+    assert "正文段落。（证据：E-1）" in markdown
+    # 提示块不用 Markdown 引用语法：同一段话在纯文本里、在预览里都读得通
+    assert "**【提示】** 口径提示。" in markdown
+    assert not any(line.startswith(">") for line in markdown.splitlines())
+    assert "| 项目 | 值 |" in markdown and "| 功能单位 | 1 吨 |" in markdown
+    assert "## 附表一：字段台账" in markdown
+    assert "## 附表二：证据台账" in markdown
+    assert "| E-1 | DOCUMENT | c-1 | 原文摘录 |" in markdown
+
+
+def test_report_docx_builds_valid_document() -> None:
+    run, template, report_ir = _fixture_report_ir()
+
+    payload = render_report_docx(run=run, template=template, report_ir=report_ir)
+
+    assert payload[:2] == b"PK"  # zip 容器
+    assert len(payload) > 2000
+
+    exported = WordDocument(BytesIO(payload))
+    text = "\n".join(paragraph.text for paragraph in exported.paragraphs)
+    assert "产品碳足迹评价报告" in text
+    section = exported.sections[0]
+    assert section.page_width.cm == pytest.approx(21, abs=0.01)
+    assert section.page_height.cm == pytest.approx(29.7, abs=0.01)
+    assert exported.styles["Heading 1"].font.size.pt == 15
+    # 表格是表格，不是一段带竖线的文字
+    assert exported.tables
+    assert "|" not in text
+
+
+def test_artifact_download_name_uses_template_name_not_internal_code() -> None:
+    """下载文件名用模板名。R1–R7 是内部编号，界面上从不呈现，文件名也不该例外。"""
+    run, _template, _ir = _fixture_report_ir()
+
+    assert artifact_download_name(
+        run=run, document_filename="清单材料.docx", artifact_type="DOCX"
+    ) == "清单材料-产品碳足迹评价报告.docx"
+    # 模板名本身以「报告」结尾，不再重复拼一次
+    assert "报告报告" not in artifact_download_name(
+        run=run, document_filename="清单材料.docx", artifact_type="DOCX"
+    )
+    # 三种产物共用同一套命名，只有扩展名不同
+    assert artifact_download_name(
+        run=run, document_filename="清单材料.docx", artifact_type="HTML"
+    ) == "清单材料-产品碳足迹评价报告.html"
+    assert artifact_download_name(
+        run=run, document_filename="清单材料.docx", artifact_type="MARKDOWN"
+    ) == "清单材料-产品碳足迹评价报告.md"
+
+    # 快照里没有模板名时才退回内部编号，这时才需要补上「报告」后缀
+    run.template_snapshot = {}
+    assert artifact_download_name(
+        run=run, document_filename="清单材料.docx", artifact_type="DOCX"
+    ) == "清单材料-R1报告.docx"
+    # 没有源文件名时用任务号兜底
+    assert artifact_download_name(
+        run=run, document_filename=None, artifact_type="DOCX"
+    ).startswith("报告-")
+
+
+class _InlineStorage:
+    """直传材料的内联来源走对象存储，这里用一个内存替身。"""
+
+    def __init__(self) -> None:
+        self.objects: dict[tuple[str, str], bytes] = {}
+
+    def upload_bytes(self, bucket, object_key, content, content_type) -> None:
+        self.objects[(bucket, object_key)] = content
+
+    def download_to_path(self, bucket, object_key, dst) -> None:
+        Path(dst).write_bytes(self.objects[(bucket, object_key)])
+
+
+class _NoQuestionsSession:
+    """内联来源只查补充问答，那条查询返回空即可。"""
+
+    async def scalars(self, _statement):
+        class Rows:
+            def all(self):
+                return []
+
+        return Rows()
+
+
+@pytest.mark.asyncio
+async def test_inline_source_freezes_chunks_and_reads_back_the_same_manifest() -> None:
+    """直传材料不进知识库，但报告链路该有的分片与清单一样不能少。"""
+    run, _template, _ir = _fixture_report_ir()
+    storage = _InlineStorage()
+    text = "\n\n".join(f"第{index}段。" + "内容" * 200 for index in range(1, 9))
+    material = ReportMaterial(
+        id="m-1",
+        user_id=1,
+        filename="年度材料.pdf",
+        char_count=len(text),
+        page_count=3,
+        bucket="private",
+        object_key="report-materials/1/m-1.txt",
+        content_hash="x" * 64,
+    )
+
+    source = await reports_api._material_source(
+        storage, material=material, text=text, run_id="run-1"
+    )
+
+    assert source.kind == SOURCE_KIND_INLINE
+    # 没有文档可指——这正是那三个字段改成可空的原因
+    assert source.document_id is None and source.document_version is None
+    assert source.dataset_id is None
+    assert source.filename == "年度材料.pdf"
+    assert source.chars == len(text)
+    assert source.chunks >= 1
+    assert storage.objects[(source.bucket, source.object_key)]
+
+    run.source_kind = SOURCE_KIND_INLINE
+    run.parsed_bucket = source.bucket
+    run.parsed_object_key = source.object_key
+    _context, manifest = await load_report_source_context(
+        _NoQuestionsSession(), run=run, storage=storage
+    )
+
+    assert len(manifest.items) == source.chunks
+    assert manifest.chunk_ids[0] == "M-1"
+
+    # agent 读到底并原样回报覆盖时通过；少报一片就不许提交
+    complete = {
+        "complete": True,
+        "manifest_hash": manifest.content_hash,
+        "chunks": list(manifest.items),
+    }
+    assert validate_chunk_coverage(complete, manifest) == []
+    assert validate_chunk_coverage(
+        {**complete, "chunks": list(manifest.items)[:-1]}, manifest
+    )
+    assert validate_chunk_coverage({**complete, "complete": False}, manifest)
+
+
+def test_inline_source_rejects_an_empty_material() -> None:
+    assert build_inline_chunks("") == []
+    assert build_inline_chunks("  \n\n  ") == []
+
+
+def test_report_html_keeps_charts_and_escapes_model_content() -> None:
+    run, template, report_ir = _fixture_report_ir()
+    report_ir["sections"][0]["blocks"] = [
+        {"type": "paragraph", "text": "正文段落。", "evidence_ids": ["E-1"]},
+        {"type": "callout", "text": "<script>alert(1)</script>", "evidence_ids": []},
+        {
+            "type": "metric_cards",
+            "data": {"items": [{"label": "总碳足迹", "value": 12.5}]},
+            "evidence_ids": [],
+        },
+        {
+            "type": "bar_chart",
+            "data": {
+                "unit": "kgCO2e",
+                "series": [{"label": "原料", "value": 3}, {"label": "运输", "value": 1}],
+            },
+            "evidence_ids": [],
+        },
+        {
+            "type": "donut_chart",
+            "data": {
+                "unit": "kgCO2e",
+                "series": [{"label": "原料", "value": 3}, {"label": "运输", "value": 1}],
+            },
+            "evidence_ids": [],
+        },
+    ]
+    report_ir["warnings"] = ["口径提示。"]
+    report_ir["limitations"] = ["本报告不构成核查结论。"]
+    report_ir["evidence"] = [
+        {
+            "evidence_id": "E-1",
+            "source_type": "DOCUMENT",
+            "chunk_id": "c-1",
+            "content_hash": "a" * 64,
+            "excerpt": "原文摘录",
+        }
+    ]
+
+    html = render_report_html(run=run, template=template, report_ir=report_ir)
+
+    assert html.startswith("<!DOCTYPE html>")
+    assert '<html lang="zh-CN">' in html
+    assert f"<title>{template.name}</title>" in html
+    # 模型写的正文一律转义；并断掉一切外部加载与脚本执行
+    assert "<script>alert(1)</script>" not in html
+    assert "&lt;script&gt;alert(1)&lt;/script&gt;" in html
+    assert "default-src 'none'" in html
+    # 这是 HTML 路线相对 Word 的意义所在：图表仍是图表，不降级成表格
+    assert 'class="bar__fill"' in html
+    assert 'class="share__segment"' in html
+    assert "kgCO2e" in html
+    # 阅读提示在正文之前，台账与限制在正文之后
+    assert html.index("阅读提示") < html.index("正文段落。") < html.index("字段台账")
+    assert "证据台账" in html and "使用限制" in html
+
+
+def test_report_html_uses_diverging_bars_when_series_has_negatives() -> None:
+    run, template, report_ir = _fixture_report_ir()
+    report_ir["sections"][0]["blocks"] = [
+        {
+            "type": "bar_chart",
+            "data": {
+                "unit": "tCO2e",
+                "series": [{"label": "排放", "value": 8}, {"label": "绿电抵扣", "value": -2}],
+            },
+            "evidence_ids": [],
+        }
+    ]
+
+    html = render_report_html(run=run, template=template, report_ir=report_ir)
+
+    # 含负值时长度条会把负值画成零宽，改用围绕零基线的发散条
+    assert 'class="diverge__fill is-negative"' in html
+    assert 'class="bar__fill"' not in html
+
+
+def test_report_html_falls_back_to_table_when_share_chart_unsuited() -> None:
+    run, template, report_ir = _fixture_report_ir()
+    report_ir["sections"][0]["blocks"] = [
+        {
+            "type": "donut_chart",
+            "data": {
+                "series": [{"label": f"分项{index}", "value": index + 1} for index in range(6)]
+            },
+            "evidence_ids": [],
+        }
+    ]
+
+    html = render_report_html(run=run, template=template, report_ir=report_ir)
+
+    # 超出配色槽位数时色相会重复，读者对不回分项，改出数据表
+    assert 'class="share__segment"' not in html
+    assert "分项5" in html
+
+
+class _ArtifactStorage:
+    def __init__(self) -> None:
+        self.uploaded: list[tuple[str, str, int, str]] = []
+        self.removed: list[tuple[str, str]] = []
+
+    def upload_bytes(self, bucket, object_key, content, content_type) -> None:
+        self.uploaded.append((bucket, object_key, len(content), content_type))
+
+    def remove_object(self, bucket, object_key) -> bool:
+        self.removed.append((bucket, object_key))
+        return True
+
+
+class _ArtifactSession:
+    def __init__(self, existing=()) -> None:
+        self.existing = list(existing)
+        self.added: list[Any] = []
+        self.deleted: list[Any] = []
+        self.ops: list[str] = []
+        self.commits = 0
+
+    async def scalars(self, _statement):
+        class Rows:
+            def __init__(self, values):
+                self._values = values
+
+            def all(self):
+                return list(self._values)
+
+        return Rows(self.existing)
+
+    async def delete(self, value):
+        self.deleted.append(value)
+        self.ops.append("delete")
+
+    def add(self, value):
+        self.added.append(value)
+        self.ops.append("add")
+
+    async def flush(self):
+        self.ops.append("flush")
+
+    async def commit(self):
+        self.commits += 1
+
+
+@pytest.mark.asyncio
+async def test_persist_report_artifacts_writes_only_requested_formats() -> None:
+    run, template, report_ir = _fixture_report_ir()
+    storage = _ArtifactStorage()
+
+    run.output_formats = ["ONLINE"]
+    session = _ArtifactSession()
+    assert await persist_report_artifacts(
+        session, run=run, template=template, report_ir=report_ir, storage=storage
+    ) == []
+    assert storage.uploaded == []
+
+    run.output_formats = ["ONLINE", "MARKDOWN", "DOCX", "HTML"]
+    session = _ArtifactSession()
+    created = await persist_report_artifacts(
+        session, run=run, template=template, report_ir=report_ir, storage=storage
+    )
+    assert [artifact.artifact_type for artifact in created] == ["MARKDOWN", "DOCX", "HTML"]
+    assert [item[3] for item in storage.uploaded] == [
+        "text/markdown; charset=utf-8",
+        "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        "text/html; charset=utf-8",
+    ]
+    assert all(item[1].startswith(f"reports/11/3/7/{run.id}/report-") for item in storage.uploaded)
+    assert [item[1].rsplit(".", 1)[-1] for item in storage.uploaded] == ["md", "docx", "html"]
+    assert len(session.added) == 3 and session.commits == 1
+    assert all(artifact.content_hash and artifact.size_bytes > 0 for artifact in created)
+
+
+@pytest.mark.asyncio
+async def test_persist_report_artifacts_flushes_purge_before_reinsert() -> None:
+    """重复落盘同一份产物时，删除必须先于插入落到库。
+
+    ``report_artifact`` 上有 (run_id, artifact_type) 唯一键，而同一个 flush 里
+    SQLAlchemy 先执行 insert 再执行 delete；不显式 flush，重建同一份产物就会撞唯一键。
+    """
+    run, template, report_ir = _fixture_report_ir()
+    run.output_formats = ["ONLINE", "DOCX", "HTML"]
+    storage = _ArtifactStorage()
+
+    first = await persist_report_artifacts(
+        _ArtifactSession(), run=run, template=template, report_ir=report_ir, storage=storage
+    )
+    session = _ArtifactSession(existing=first)
+    created = await persist_report_artifacts(
+        session, run=run, template=template, report_ir=report_ir, storage=storage
+    )
+
+    assert [artifact.artifact_type for artifact in created] == ["DOCX", "HTML"]
+    assert session.ops.index("flush") < session.ops.index("add")
+
+
+class _DeleteRunSession:
+    """删除报告任务用的最小会话替身：记录写操作，不连库。"""
+
+    def __init__(self, run: Any, artifacts: list[Any] | None = None) -> None:
+        self._run = run
+        self._artifacts = list(artifacts or [])
+        self.executed: list[Any] = []
+        self.deleted: list[Any] = []
+        self.commits = 0
+
+    async def scalar(self, _statement):
+        return self._run
+
+    async def scalars(self, _statement):
+        values = list(self._artifacts)
+
+        class Rows:
+            def all(self):
+                return values
+
+        return Rows()
+
+    async def execute(self, statement):
+        self.executed.append(statement)
+
+    async def delete(self, value):
+        self.deleted.append(value)
+
+    async def flush(self):
+        pass
+
+    async def commit(self):
+        self.commits += 1
+
+
+@pytest.mark.asyncio
+async def test_delete_report_run_purges_artifacts_and_clears_soft_references(monkeypatch) -> None:
+    run, _template, _ir = _fixture_report_ir()
+    run.state = "SUCCEEDED"
+    artifact = SimpleNamespace(
+        bucket="private", object_key="reports/11/3/7/run-1/report-abc.docx", artifact_type="DOCX"
+    )
+    session = _DeleteRunSession(run, [artifact])
+    storage = _ArtifactStorage()
+    monkeypatch.setattr(
+        "app.services.report_artifacts.StorageFactory.get_storage", staticmethod(lambda: storage)
+    )
+
+    await delete_report_run(run.id, user_id=11, db=session)
+
+    # 产物对象与登记行一并清掉
+    assert storage.removed == [("private", "reports/11/3/7/run-1/report-abc.docx")]
+    assert session.deleted == [artifact]
+    # 澄清问题 → 对话里的软引用 → 任务本体；顺序即依赖顺序
+    assert [statement.table.name for statement in session.executed] == [
+        "report_question",
+        "agent_conversation_turn",
+        "report_run",
+    ]
+    assert session.commits == 1
+
+
+@pytest.mark.asyncio
+async def test_delete_report_run_refuses_run_still_in_progress(monkeypatch) -> None:
+    """进行中的任务不能删：worker 仍持有租约并会回写该行。"""
+
+    run, _template, _ir = _fixture_report_ir()
+    run.state = "PROCESSING"
+    session = _DeleteRunSession(run)
+    storage = _ArtifactStorage()
+    monkeypatch.setattr(
+        "app.services.report_artifacts.StorageFactory.get_storage", staticmethod(lambda: storage)
+    )
+
+    with pytest.raises(HTTPException) as failure:
+        await delete_report_run(run.id, user_id=11, db=session)
+
+    assert failure.value.status_code == 409
+    assert session.executed == []
+    assert session.commits == 0
+    assert storage.removed == []
+
+
+def test_report_ir_schema_documents_warnings_and_limitations() -> None:
+    """这两个字段曾经只有类型、没有任何说明。
+
+    schema 是直接交给报告 Agent 的那份（report_ir_contract_schema），说明缺失时模型
+    只能凭直觉填，实测就会把正文里已经写过的口径说明再写一遍。
+    """
+
+    schema_path = _reporting_root() / "common" / "report-ir.schema.json"
+    schema = json.loads(schema_path.read_text(encoding="utf-8"))
+    properties = schema["properties"]
+
+    for field in ("warnings", "limitations"):
+        assert properties[field].get("description"), f"{field} 缺少字段说明"
+
+    # warnings 要明确要求不与正文重复，否则模型仍会把正文的提示块抄一遍
+    assert "不要" in properties["warnings"]["description"]
+    # 两个字段要能区分开，否则模型会混着写
+    assert "不涉及具体数值" in properties["limitations"]["description"]

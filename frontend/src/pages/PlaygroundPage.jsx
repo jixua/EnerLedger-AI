@@ -8,37 +8,33 @@ import {
   Copy,
   Database,
   FileText,
-  LayoutTemplate,
   LoaderCircle,
-  MessageSquareText,
   Paperclip,
-  Plus,
   Search,
-  Square,
   Sparkles,
+  Square,
   X,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
-import { Link, useLocation } from "react-router-dom";
+import { Link } from "react-router-dom";
 
+import { isStreamingMessage, useChatSession } from "../state/ChatSessionContext";
+import { ChatReportCard } from "../components/ChatReportCard";
 import {
-  confirmAgentTemplateSelection,
-  listAgentConversations,
-  listAgentConversationTurns,
-} from "../lib/api";
-import { isDocumentRetrievalReady } from "../lib/parse-quality";
+  applyMention,
+  documentIdOf,
+  documentNameOf,
+  filterMentionCandidates,
+  mentionQueryAt,
+  mentionRuns,
+  removeMention,
+} from "../lib/doc-mention";
 import {
   findHitByCitationIndex,
   linkifyRecallChunkMentions,
   recallChunkNumberFromHref,
 } from "../lib/recall-evidence";
-import { useApp } from "../state/AppContext";
-
-const SUGGESTED_QUESTIONS = [
-  "企业天然气燃烧排放如何核算？",
-  "请概括文档中的碳排放数据质量要求。",
-];
 
 const STATUS_COPY = {
   recalling: "正在查找相关内容",
@@ -49,13 +45,15 @@ const STATUS_COPY = {
   error: "生成失败",
 };
 
-function normalizeEvent(eventOrName, maybePayload) {
-  if (typeof eventOrName === "string") return { event: eventOrName, data: maybePayload ?? {} };
-  return {
-    event: eventOrName?.event ?? eventOrName?.type ?? "message",
-    data: eventOrName?.data ?? eventOrName?.payload ?? eventOrName ?? {},
-  };
-}
+/** 回答正文里的 markdown 标题下沉一级：页面级 h1 是会话标题，正文不应再出现 h1。 */
+const MESSAGE_MARKDOWN_COMPONENTS = {
+  h1: (props) => <h2 {...props} />,
+  h2: (props) => <h3 {...props} />,
+  h3: (props) => <h4 {...props} />,
+  h4: (props) => <h5 {...props} />,
+  h5: (props) => <h6 {...props} />,
+  h6: (props) => <h6 {...props} />,
+};
 
 function scoreText(value) {
   const numeric = Number(value);
@@ -77,19 +75,6 @@ function pageText(hit) {
   return page !== undefined && page !== null ? `第 ${page} 页` : "页码未记录";
 }
 
-function updateMessage(messages, messageId, updater) {
-  return messages.map((message) => message.id === messageId ? updater(message) : message);
-}
-
-function mergeRecallHits(current, incoming) {
-  const merged = new Map();
-  for (const hit of [...(current || []), ...(incoming || [])]) {
-    const key = hit.evidence_id || hit.chunk_id || `${hit.dataset_id}:${hit.doc_id}:${hit.result_rank}`;
-    merged.set(key, hit);
-  }
-  return [...merged.values()];
-}
-
 function modelLabel(model) {
   return model?.display_name || model?.model_name || `模型 #${model?.id}`;
 }
@@ -101,119 +86,71 @@ function modelDescription(model) {
   return parts.join(" · ") || "用于生成对话回复";
 }
 
-function flattenDocuments(documents) {
-  if (Array.isArray(documents)) return documents;
-  return Object.values(documents || {}).flatMap((items) => Array.isArray(items) ? items : []);
-}
-
+/**
+ * 对话页只负责呈现。
+ *
+ * 会话状态、正在跑的 SSE 流、附件草稿都在 ChatSessionProvider 里 —— 切到别的页面时
+ * 这个组件会被卸载，状态若留在这里就跟着没了。这里只保留纯视图状态（弹层、
+ * 引用抽屉、复制反馈）和 DOM ref。
+ */
 export function PlaygroundPage() {
-  const location = useLocation();
-  const { datasets = [], models = [], documents = {}, streamAgent, uploadDocuments, loadDocuments, isDemo } = useApp();
-  const [selectedDatasetIds, setSelectedDatasetIds] = useState([]);
-  const [selectedModelId, setSelectedModelId] = useState("");
-  const [question, setQuestion] = useState("");
-  const [messages, setMessages] = useState([]);
-  const [conversationId, setConversationId] = useState(null);
-  const [conversations, setConversations] = useState([]);
-  const [historyLoading, setHistoryLoading] = useState(false);
-  const [attachments, setAttachments] = useState([]);
-  const [uploadingRole, setUploadingRole] = useState(null);
-  const [attachmentError, setAttachmentError] = useState("");
-  const [confirmationSelections, setConfirmationSelections] = useState({});
-  const [attachmentMenuOpen, setAttachmentMenuOpen] = useState(false);
+  const {
+    messages,
+    conversationId,
+    conversations,
+    confirmTemplate,
+    confirmationSelections,
+    setConfirmationSelections,
+    submitQuestion,
+    stopGeneration,
+    isActiveStreaming,
+    question,
+    setQuestion,
+    attachments,
+    uploading,
+    attachmentError,
+    setAttachmentError,
+    uploadConversationFile,
+    removeAttachment,
+    selectedDatasetIds,
+    toggleDataset,
+    clearDatasetSelection,
+    selectedModelId,
+    selectModel,
+    selectedModel,
+    chatModels,
+    showModelSelector,
+    needsExplicitModel,
+    activeDatasets,
+    retrievalReadyCounts,
+    mentionableDocuments,
+    mentionedDocument,
+    mentionDocument,
+    clearMention,
+    datasetTriggerLabel,
+    canSubmit,
+  } = useChatSession();
+
+  const [openSelector, setOpenSelector] = useState(null);
+  const [mention, setMention] = useState(null);
+  // 组字期间把颜色交还给 textarea：见下方覆盖层的注释
+  const [composing, setComposing] = useState(false);
   const [sourceMessageId, setSourceMessageId] = useState(null);
   const [activeCitationIndex, setActiveCitationIndex] = useState(null);
   const [copiedMessageId, setCopiedMessageId] = useState(null);
-  const [openSelector, setOpenSelector] = useState(null);
-  const abortRef = useRef(null);
-  const activeAssistantRef = useRef(null);
-  const messageEndRef = useRef(null);
+  const threadRef = useRef(null);
+  const stickToBottomRef = useRef(true);
   const controlsRef = useRef(null);
   const datasetTriggerRef = useRef(null);
   const modelTriggerRef = useRef(null);
   const sourceCardRefs = useRef(new Map());
   const sourceFileRef = useRef(null);
-  const templateFileRef = useRef(null);
+  const textareaRef = useRef(null);
+  const highlightRef = useRef(null);
 
-  const retrievalReadyCounts = useMemo(() => {
-    const counts = new Map();
-    flattenDocuments(documents).forEach((document) => {
-      if (!isDocumentRetrievalReady(document)) return;
-      const datasetId = Number(document.dataset_id ?? document.datasetId);
-      if (!Number.isFinite(datasetId)) return;
-      counts.set(datasetId, (counts.get(datasetId) || 0) + 1);
-    });
-    return counts;
-  }, [documents]);
-  const activeDatasets = useMemo(
-    () => datasets.filter((dataset) => (
-      String(dataset.status || "ACTIVE").toUpperCase() !== "DELETED"
-      && (
-        retrievalReadyCounts.has(Number(dataset.id))
-        || Number(dataset.retrieval_ready_document_count || 0) > 0
-      )
-    )),
-    [datasets, retrievalReadyCounts],
-  );
-  const chatModels = useMemo(
-    () => models.filter((model) => model.capability === "CHAT" && model.is_active !== false),
-    [models],
-  );
-  const selectedDatasets = useMemo(
-    () => activeDatasets.filter((dataset) => selectedDatasetIds.includes(String(dataset.id))),
-    [activeDatasets, selectedDatasetIds],
-  );
-  const effectiveDatasets = selectedDatasetIds.length ? selectedDatasets : activeDatasets;
-  const boundChatIds = useMemo(
-    () => new Set(effectiveDatasets.map((dataset) => dataset.chat_config_id).filter(Boolean).map(String)),
-    [effectiveDatasets],
-  );
-  const needsExplicitModel = effectiveDatasets.length > 1
-    || effectiveDatasets.some((dataset) => !dataset.chat_config_id)
-    || boundChatIds.size > 1;
-  const showModelSelector = needsExplicitModel && chatModels.length > 1;
-  const selectedModel = useMemo(
-    () => chatModels.find((model) => String(model.id) === String(selectedModelId)) || null,
-    [chatModels, selectedModelId],
-  );
-  const documentsById = useMemo(() => new Map(
-    flattenDocuments(documents).map((document) => [
-      Number(document.document_id ?? document.id),
-      document,
-    ]),
-  ), [documents]);
-  const resolvedAttachments = useMemo(() => attachments.map((attachment) => ({
-    ...attachment,
-    document: documentsById.get(Number(attachment.documentId)) ?? attachment.document,
-  })), [attachments, documentsById]);
-  const attachmentsReady = resolvedAttachments.every(
-    (attachment) => String(attachment.document?.status || "").toUpperCase() === "READY",
-  );
-  const attachmentsFailed = resolvedAttachments.some(
-    (attachment) => String(attachment.document?.status || "").toUpperCase() === "FAILED",
-  );
-  const attachmentRolesValid = !resolvedAttachments.length
-    || (
-      resolvedAttachments.filter((attachment) => attachment.role === "SOURCE").length === 1
-      && resolvedAttachments.filter((attachment) => attachment.role === "TEMPLATE").length <= 1
-    );
-  const datasetTriggerLabel = !selectedDatasetIds.length
-    ? `全部知识库${activeDatasets.length ? `（${activeDatasets.length}）` : ""}`
-    : selectedDatasets.length === 1
-    ? selectedDatasets[0].name
-    : selectedDatasets.length
-      ? `${selectedDatasets.length} 个数据集`
-      : "选择数据集";
-  const isRunning = messages.some((message) => message.role === "assistant" && ["recalling", "generating"].includes(message.status));
-  const hasRetrievalScope = activeDatasets.length > 0;
-  const canSubmit = Boolean(
-    question.trim()
-    && hasRetrievalScope
-    && (!needsExplicitModel || selectedModelId)
-    && !isRunning
-    && !uploadingRole
-    && attachmentsReady
-    && attachmentRolesValid
+  const activeConversationTitle = useMemo(
+    () => conversations.find((item) => item.conversation_id === conversationId)?.title || "对话",
+    [conversations, conversationId],
   );
   const sourceMessage = messages.find((message) => message.id === sourceMessageId);
   const sourceHits = sourceMessage?.hits ?? [];
@@ -222,86 +159,23 @@ export function PlaygroundPage() {
   ).length;
 
   useEffect(() => {
-    setSelectedDatasetIds((current) => current.filter(
-      (id) => activeDatasets.some((dataset) => String(dataset.id) === id),
-    ));
-  }, [activeDatasets]);
-
-  async function refreshConversations() {
-    try {
-      setConversations(await listAgentConversations());
-    } catch {
-      setConversations([]);
-    }
-  }
+    // 切换会话时恢复"粘底"跟随。
+    stickToBottomRef.current = true;
+  }, [conversationId]);
 
   useEffect(() => {
-    refreshConversations();
+    // 挂载时直接吸到底：切回来时这段可能已经生成了一屏，等下一个 delta 才吸会闪一下。
+    const el = threadRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
   }, []);
 
   useEffect(() => {
-    const pending = resolvedAttachments.filter(
-      (attachment) => !["READY", "FAILED"].includes(String(attachment.document?.status || "").toUpperCase()),
-    );
-    if (!pending.length) return undefined;
-    const timer = window.setInterval(() => {
-      for (const datasetId of new Set(pending.map((attachment) => Number(attachment.document?.dataset_id)))) {
-        if (datasetId) loadDocuments?.(datasetId).catch(() => {});
-      }
-    }, 3000);
-    return () => window.clearInterval(timer);
-  }, [loadDocuments, resolvedAttachments]);
-
-  useEffect(() => {
-    if (!new URLSearchParams(location.search).has("new")) return;
-    abortRef.current?.abort();
-    activeAssistantRef.current = null;
-    setMessages([]);
-    setConversationId(null);
-    setAttachments([]);
-    setQuestion("");
-    setSourceMessageId(null);
-    setActiveCitationIndex(null);
-    setOpenSelector(null);
-  }, [location.search]);
-
-  useEffect(() => {
-    if (!isDemo || new URLSearchParams(location.search).get("preview") !== "confirmation") return;
-    setConversationId("preview-conversation");
-    setMessages([
-      { id: "preview-user", role: "user", content: "请根据这份年度材料生成分析报告。", attachments: [{ document_id: 2101, role: "SOURCE", filename: "年度材料.md" }] },
-      {
-        id: "preview-assistant",
-        turnId: "preview-turn",
-        role: "assistant",
-        content: "我还不能可靠判断报告类型，请从下面的候选中选择一项后继续。",
-        status: "done",
-        hits: [],
-        interaction: {
-          type: "TEMPLATE_SELECTION",
-          status: "OPEN",
-          question: "当前材料可能对应多类报告，请确认要生成哪一种？",
-          options: [
-            { value: "R2", label: "R2 · 组织温室气体排放清单报告", description: "适合 Scope 1/2/3 年度盘查与组织边界材料。" },
-            { value: "R3", label: "R3 · ESG/可持续发展报告", description: "适合同时包含治理、战略、风险与指标目标的材料。" },
-            { value: "R6", label: "R6 · SBTi 目标设定报告", description: "适合基准年清单、近期目标与净零路径材料。" },
-          ],
-        },
-      },
-    ]);
-  }, [isDemo, location.search]);
-
-  useEffect(() => {
-    setSelectedModelId((current) => {
-      if (!needsExplicitModel) return current ? "" : current;
-      if (current && chatModels.some((model) => String(model.id) === String(current))) return current;
-      return chatModels.length === 1 ? String(chatModels[0].id) : "";
-    });
-  }, [chatModels, needsExplicitModel]);
-
-  useEffect(() => {
-    if (!showModelSelector && openSelector === "model") setOpenSelector(null);
-  }, [showModelSelector, openSelector]);
+    // 流式输出期间仅在用户位于底部时跟随；用户上滑阅读时保持当前位置。
+    if (!stickToBottomRef.current) return;
+    const el = threadRef.current;
+    if (!el) return;
+    el.scrollTop = el.scrollHeight;
+  }, [messages]);
 
   useEffect(() => {
     if (!openSelector) return undefined;
@@ -313,7 +187,7 @@ export function PlaygroundPage() {
     function handleKeyDown(event) {
       if (event.key !== "Escape") return;
       event.preventDefault();
-      const trigger = openSelector === "datasets" ? datasetTriggerRef.current : modelTriggerRef.current;
+      const trigger = selectorTriggerRef(openSelector);
       setOpenSelector(null);
       window.requestAnimationFrame(() => trigger?.focus());
     }
@@ -327,8 +201,8 @@ export function PlaygroundPage() {
   }, [openSelector]);
 
   useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ block: "end", behavior: "smooth" });
-  }, [messages]);
+    if (!showModelSelector && openSelector === "model") setOpenSelector(null);
+  }, [showModelSelector, openSelector]);
 
   useEffect(() => {
     if (!sourceMessageId || !activeCitationIndex) return undefined;
@@ -338,247 +212,38 @@ export function PlaygroundPage() {
     return () => window.cancelAnimationFrame(frame);
   }, [activeCitationIndex, sourceMessageId]);
 
-  function toggleDataset(datasetId) {
-    const normalized = String(datasetId);
-    setSelectedDatasetIds((current) => current.includes(normalized)
-      ? current.filter((item) => item !== normalized)
-      : [...current, normalized]);
+  function selectorTriggerRef(selector) {
+    if (selector === "datasets") return datasetTriggerRef.current;
+    if (selector === "model") return modelTriggerRef.current;
+    return null;
   }
 
   function closeSelectorAndRestoreFocus(selector = openSelector) {
-    const trigger = selector === "datasets" ? datasetTriggerRef.current : modelTriggerRef.current;
+    const trigger = selectorTriggerRef(selector);
     setOpenSelector(null);
     window.requestAnimationFrame(() => trigger?.focus());
   }
 
-  function selectModel(modelId) {
-    setSelectedModelId(String(modelId));
+  function handleSelectModel(modelId) {
+    selectModel(modelId);
     closeSelectorAndRestoreFocus("model");
   }
 
-  async function openConversation(id) {
-    if (!id || isRunning) return;
-    setHistoryLoading(true);
-    setAttachmentError("");
-    try {
-      const turns = await listAgentConversationTurns(id);
-      setConversationId(id);
-      setAttachments([]);
-      setMessages(turns.flatMap((turn) => [
-        {
-          id: `user-${turn.turn_id}`,
-          role: "user",
-          content: turn.user_content,
-          attachments: turn.attachments || [],
-        },
-        {
-          id: `assistant-${turn.turn_id}`,
-          turnId: turn.turn_id,
-          role: "assistant",
-          content: turn.assistant_content || "",
-          status: turn.status === "FAILED" ? "error" : turn.status === "CANCELLED" ? "stopped" : "done",
-          error: turn.error_message,
-          interaction: turn.interaction,
-          reportRunId: turn.report_run_id,
-          hits: [],
-        },
-      ]));
-    } catch (error) {
-      setAttachmentError(error?.message || "历史对话读取失败");
-    } finally {
-      setHistoryLoading(false);
-    }
+  function handleSubmit(event) {
+    stickToBottomRef.current = true;
+    submitQuestion(event);
   }
 
-  async function uploadConversationFile(file, role) {
-    if (!file) return;
-    const targetDatasetId = selectedDatasetIds.length === 1
-      ? Number(selectedDatasetIds[0])
-      : activeDatasets.length === 1 ? Number(activeDatasets[0].id) : null;
-    if (!targetDatasetId) {
-      throw new Error("上传对话资料前，请只选择一个知识库。");
-    }
-    if (role === "SOURCE" && attachments.some((item) => item.role === "SOURCE")) {
-      throw new Error("每轮只能添加一个源文件，请先移除现有源文件。");
-    }
-    if (role === "TEMPLATE" && attachments.some((item) => item.role === "TEMPLATE")) {
-      throw new Error("每轮只能添加一个报告模板，请先移除现有模板。");
-    }
-    setUploadingRole(role);
-    try {
-      const [result] = await uploadDocuments(targetDatasetId, [file], { stopOnError: true });
-      const documentId = Number(result?.document_id ?? result?.id);
-      if (!documentId) throw new Error("上传成功但未返回文档编号");
-      setAttachments((current) => [...current, { documentId, role, document: result }]);
-    } finally {
-      setUploadingRole(null);
-      setAttachmentMenuOpen(false);
-    }
-  }
-
-  async function handleFileSelection(event, role) {
+  async function handleFileSelection(event) {
     const file = event.target.files?.[0];
     event.target.value = "";
     if (!file) return;
     setAttachmentError("");
     try {
-      await uploadConversationFile(file, role);
+      await uploadConversationFile(file);
     } catch (error) {
       setAttachmentError(error?.message || "文件上传失败");
     }
-  }
-
-  async function confirmTemplate(message, reportType) {
-    if (!conversationId || !message.turnId) return;
-    setMessages((current) => updateMessage(current, message.id, (item) => ({ ...item, confirmationBusy: true })));
-    try {
-      if (isDemo) {
-        setMessages((current) => updateMessage(current, message.id, (item) => ({
-          ...item,
-          content: `已按 ${reportType} 创建预览报告任务。`,
-          interaction: { ...item.interaction, status: "ANSWERED", selected: reportType },
-          confirmationBusy: false,
-        })));
-        return;
-      }
-      const result = await confirmAgentTemplateSelection(conversationId, message.turnId, reportType);
-      setMessages((current) => updateMessage(current, message.id, (item) => ({
-        ...item,
-        content: result.turn.assistant_content,
-        interaction: result.turn.interaction,
-        reportRunId: result.turn.report_run_id,
-        confirmationBusy: false,
-      })));
-      await refreshConversations();
-    } catch (error) {
-      setMessages((current) => updateMessage(current, message.id, (item) => ({
-        ...item,
-        confirmationBusy: false,
-        error: error?.message || "提交选择失败",
-      })));
-    }
-  }
-
-  function handleStreamEvent(eventOrName, maybePayload) {
-    const assistantId = activeAssistantRef.current;
-    if (!assistantId) return;
-    const { event, data } = normalizeEvent(eventOrName, maybePayload);
-    if (event === "conversation_started") {
-      setConversationId(data.conversation_id ?? null);
-    }
-    setMessages((current) => updateMessage(current, assistantId, (message) => {
-      if (event === "stream_started") {
-        return { ...message, requestId: data.request_id ?? message.requestId, status: "recalling" };
-      }
-      if (event === "conversation_started") {
-        return { ...message, turnId: data.turn_id ?? message.turnId };
-      }
-      if (event === "confirmation_required") {
-        return { ...message, interaction: data.interaction, status: "done" };
-      }
-      if (event === "report_started") {
-        return { ...message, reportRunId: data.report_run?.run_id ?? null };
-      }
-      if (event === "recall_done") {
-        const nextHits = data.hits ?? [];
-        return {
-          ...message,
-          hits: mergeRecallHits(message.hits, nextHits),
-          failedSources: data.failed_sources ?? [],
-          retrievalScope: data.scope ?? message.retrievalScope,
-          retrievalDetails: data.retrieval ?? message.retrievalDetails,
-          knowledgeBaseCounts: data.per_knowledge_base_counts ?? message.knowledgeBaseCounts,
-          status: nextHits.length ? "recalling" : "empty",
-        };
-      }
-      if (event === "answer_delta") {
-        return { ...message, content: message.content + (data.text ?? data.delta ?? ""), status: "generating" };
-      }
-      if (event === "answer_done") {
-        return {
-          ...message,
-          content: data.answer ?? message.content,
-          hits: data.hits ?? message.hits,
-          failedSources: data.failed_sources ?? message.failedSources,
-          retrievalScope: data.scope ?? message.retrievalScope,
-          retrievalDetails: data.retrieval ?? message.retrievalDetails,
-          knowledgeBaseCounts: data.per_knowledge_base_counts ?? message.knowledgeBaseCounts,
-          elapsedMs: data.elapsed_ms ?? null,
-          requestId: data.request_id ?? message.requestId,
-          status: "done",
-        };
-      }
-      if (event === "error") {
-        return { ...message, error: data.message ?? "流式响应中断，请稍后重试。", status: "error" };
-      }
-      return message;
-    }));
-  }
-
-  async function submitQuestion(event) {
-    event?.preventDefault();
-    if (!canSubmit || typeof streamAgent !== "function") return;
-
-    const prompt = question.trim();
-    const idBase = `${Date.now()}-${Math.random().toString(16).slice(2)}`;
-    const assistantId = `assistant-${idBase}`;
-    const submittedAttachments = resolvedAttachments.map((attachment) => ({
-      documentId: attachment.documentId,
-      role: attachment.role,
-      filename: attachment.document?.filename,
-      status: attachment.document?.status,
-    }));
-    const userMessage = {
-      id: `user-${idBase}`,
-      role: "user",
-      content: prompt,
-      attachments: submittedAttachments,
-    };
-    const assistantMessage = {
-      id: assistantId,
-      role: "assistant",
-      content: "",
-      status: "recalling",
-      hits: [],
-      failedSources: [],
-      datasetIds: [...selectedDatasetIds],
-      modelId: selectedModelId || null,
-    };
-    setOpenSelector(null);
-    setMessages((current) => [...current, userMessage, assistantMessage]);
-    setQuestion("");
-    setAttachments([]);
-    activeAssistantRef.current = assistantId;
-    const controller = new AbortController();
-    abortRef.current = controller;
-
-    try {
-      await streamAgent({
-        query: prompt,
-        datasetIds: selectedDatasetIds.map(Number),
-        llmConfigId: selectedModelId ? Number(selectedModelId) : undefined,
-        conversationId,
-        attachments: submittedAttachments,
-        signal: controller.signal,
-        onEvent: handleStreamEvent,
-      });
-    } catch (error) {
-      setMessages((current) => updateMessage(current, assistantId, (message) => ({
-        ...message,
-        status: controller.signal.aborted || error?.name === "AbortError" ? "stopped" : "error",
-        error: controller.signal.aborted || error?.name === "AbortError"
-          ? "已停止生成。"
-          : error?.message || "无法完成本次生成，请检查模型配置和系统状态。",
-      })));
-    } finally {
-      abortRef.current = null;
-      activeAssistantRef.current = null;
-      refreshConversations();
-    }
-  }
-
-  function stopGeneration() {
-    abortRef.current?.abort();
   }
 
   function closeSourceDrawer() {
@@ -610,54 +275,212 @@ export function PlaygroundPage() {
     window.setTimeout(() => setCopiedMessageId(null), 1500);
   }
 
+  /**
+   * 输入框里的 @ 引用。候选面板由「光标附近有没有一次 @ 查询」决定，选中后把
+   * @文件名 写进正文，文档身份另交给会话上下文在发送时带上去。
+   */
+  const mentionCandidates = useMemo(
+    () => (mention ? filterMentionCandidates(mentionableDocuments, mention.query) : []),
+    [mention, mentionableDocuments],
+  );
+
+  /** 列表被上限截断时说一声：翻不到自己的文件，得能分清是「还有更多」还是「真的没有」。 */
+  const mentionTruncated = Boolean(
+    mention && !mention.query && mentionableDocuments.length > mentionCandidates.length,
+  );
+
+  /** 输入框里要着色的片段。判据与「引用是否成立」共用同一处，颜色才不会骗人。 */
+  const mentionRunList = useMemo(
+    () => mentionRuns(question, mentionedDocument),
+    [question, mentionedDocument],
+  );
+
+  function syncMention(node) {
+    if (!node) return;
+    const span = mentionQueryAt(node.value, node.selectionStart);
+    setMention(span ? { ...span, index: 0 } : null);
+  }
+
+  function selectMentionCandidate(document) {
+    if (!mention || !document) return;
+    const next = applyMention(question, mention, documentNameOf(document));
+    setQuestion(next.text);
+    mentionDocument(document);
+    setMention(null);
+    // 光标落回文件名之后：接着打字或再 @ 一份都不用重新点输入框
+    window.requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(next.caret, next.caret);
+    });
+  }
+
+  function composeMentionIntent(intent) {
+    if (!mentionedDocument) return;
+    const name = documentNameOf(mentionedDocument);
+    // 快捷入口只负责把这句话写好，发不发还是用户按发送——和手打一句话没有区别，
+    // 后端也只有一条意图判定，不为按钮另开一条分支。
+    setQuestion(intent === "report" ? `用 @${name} 生成报告` : `解释一下 @${name} 的内容`);
+    setMention(null);
+    window.requestAnimationFrame(() => {
+      const node = textareaRef.current;
+      if (!node) return;
+      node.focus();
+      node.setSelectionRange(node.value.length, node.value.length);
+    });
+  }
+
+  function dropMention() {
+    setQuestion((current) => removeMention(current, mentionedDocument));
+    clearMention();
+  }
+
   const composer = (
-    <form className="chat-composer" onSubmit={submitQuestion}>
-      <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={(event) => handleFileSelection(event, "SOURCE")} />
-      <input ref={templateFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={(event) => handleFileSelection(event, "TEMPLATE")} />
-      {resolvedAttachments.length ? (
-        <div className="composer-attachments" aria-label="本轮附件">
-          {resolvedAttachments.map((attachment) => {
-            const status = String(attachment.document?.status || "").toUpperCase();
-            const ready = status === "READY";
-            const failed = status === "FAILED";
-            return (
-              <span className={`composer-attachment${ready ? " is-ready" : failed ? " is-failed" : " is-pending"}`} key={`${attachment.role}-${attachment.documentId}`}>
-                {attachment.role === "TEMPLATE" ? <LayoutTemplate size={14} /> : <FileText size={14} />}
-                <span><strong>{attachment.document?.filename || `文档 #${attachment.documentId}`}</strong><small>{attachment.role === "TEMPLATE" ? "报告模板" : "源文件"} · {ready ? "可用" : failed ? "解析失败" : "解析中"}</small></span>
-                <button type="button" aria-label="移除附件" onClick={() => setAttachments((current) => current.filter((item) => !(item.role === attachment.role && item.documentId === attachment.documentId)))}><X size={13} /></button>
+    <form className="chat-composer" onSubmit={handleSubmit}>
+      <input ref={sourceFileRef} type="file" hidden accept=".pdf,.doc,.docx,.html,.htm,.md,.markdown" onChange={handleFileSelection} />
+      {attachments.length ? (
+        <div className="composer-attachments" aria-label="对话附件">
+          {attachments.map((attachment) => (
+            <span className="composer-attachment is-ready" key={attachment.id}>
+              <FileText size={14} />
+              <span>
+                <strong>{attachment.filename}</strong>
+                <small>{attachment.pageCount ? `${attachment.pageCount} 页 · 已读取` : "已读取"}</small>
               </span>
-            );
-          })}
+              <button type="button" aria-label="移除附件" onClick={() => removeAttachment(attachment.id)}><X size={13} /></button>
+            </span>
+          ))}
         </div>
       ) : null}
-      <textarea
-        value={question}
-        onChange={(event) => setQuestion(event.target.value)}
-        placeholder="输入消息，按 Enter 发送"
-        rows={2}
+      {mention && mentionCandidates.length ? (
+        <div className="composer-mentions" role="listbox" aria-label="引用知识库文档">
+          <p className="composer-mentions__lead">
+            引用文档：可以问它内容，也可以用它生成报告
+          </p>
+          {mentionCandidates.map((document, index) => (
+            <button
+              type="button"
+              role="option"
+              aria-selected={index === mention.index}
+              className={`composer-mentions__option${index === mention.index ? " is-active" : ""}`}
+              key={documentIdOf(document) ?? index}
+              // 按下时不让输入框先失焦：失焦会触发一次选择同步，把面板关掉
+              onMouseDown={(event) => event.preventDefault()}
+              onMouseEnter={() => setMention((current) => (current ? { ...current, index } : current))}
+              onClick={() => selectMentionCandidate(document)}
+            >
+              <FileText size={14} />
+              <span>
+                <strong>{documentNameOf(document)}</strong>
+                <small>{document.dataset_name || "知识库文档"}</small>
+              </span>
+            </button>
+          ))}
+          {mentionTruncated ? (
+            <p className="composer-mentions__more">
+              还有 {mentionableDocuments.length - mentionCandidates.length} 份，继续输入可筛选
+            </p>
+          ) : null}
+        </div>
+      ) : null}
+      {mention && !mentionCandidates.length ? (
+        <p className="composer-mentions__empty">
+          {mentionableDocuments.length
+            ? "没有匹配的文档，换个词试试。"
+            : "当前知识库里还没有可引用的文档，先导入并解析一份。"}
+        </p>
+      ) : null}
+      {/* 输入框里的 @ 引用要换个颜色，而 textarea 没法给局部文字上色：
+          下面这层与它逐字对齐地重画一遍同样的文字，textarea 的文字透明、只留光标。
+          中文输入法组字期间把颜色交还给 textarea——组字预览由浏览器画在光标处，
+          文字一透明就看不清自己正在打什么。 */}
+      <div className={`composer-input${composing ? " is-composing" : ""}`}>
+        <div className="composer-highlight" aria-hidden="true" ref={highlightRef}>
+          {mentionRunList.map((run, index) => (
+            run.type === "mention" ? (
+              <span className="composer-highlight__mention" key={`m-${index}`}>{run.text}</span>
+            ) : (
+              <span key={`t-${index}`}>{run.text}</span>
+            )
+          ))}
+        </div>
+        <textarea
+          ref={textareaRef}
+          value={question}
+          onChange={(event) => {
+            setQuestion(event.target.value);
+            syncMention(event.target);
+          }}
+          onSelect={(event) => syncMention(event.target)}
+          onScroll={(event) => {
+            // 覆盖层不单独滚动，跟着输入框走，否则两行文字会错位
+            const layer = highlightRef.current;
+            if (layer) layer.scrollTop = event.currentTarget.scrollTop;
+          }}
+          onCompositionStart={() => setComposing(true)}
+          onCompositionEnd={() => setComposing(false)}
+          placeholder="输入消息，按 Enter 发送；输入 @ 可引用知识库文档"
+          rows={2}
         maxLength={8000}
         aria-label="对话输入"
         onKeyDown={(event) => {
           if (event.nativeEvent?.isComposing || event.isComposing) return;
+          if (mention && mentionCandidates.length) {
+            // 面板打开时方向键归它用：默认行为会移动光标，光标一动面板就跟着重算了
+            if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+              event.preventDefault();
+              const step = event.key === "ArrowDown" ? 1 : -1;
+              setMention((current) => current && {
+                ...current,
+                index: (current.index + step + mentionCandidates.length) % mentionCandidates.length,
+              });
+              return;
+            }
+            if (event.key === "Enter" || event.key === "Tab") {
+              event.preventDefault();
+              selectMentionCandidate(mentionCandidates[mention.index] || mentionCandidates[0]);
+              return;
+            }
+            if (event.key === "Escape") {
+              event.preventDefault();
+              setMention(null);
+              return;
+            }
+          }
           if (event.key === "Enter" && !event.shiftKey) {
             event.preventDefault();
-            submitQuestion(event);
+            handleSubmit(event);
           }
         }}
-      />
+        />
+      </div>
+      {mentionedDocument ? (
+        <div className="composer-mention-bar">
+          <span className="composer-mention-bar__label">
+            <FileText size={13} />
+            已引用《{documentNameOf(mentionedDocument)}》
+          </span>
+          <button type="button" onClick={() => composeMentionIntent("report")}>用它生成报告</button>
+          <button type="button" onClick={() => composeMentionIntent("explain")}>解释这份文档</button>
+          <button type="button" className="composer-mention-bar__drop" aria-label="取消引用" onClick={dropMention}>
+            <X size={13} />
+          </button>
+        </div>
+      ) : null}
       <div className="chat-composer__toolbar">
         <div className="chat-composer__controls" ref={controlsRef}>
-          <div className={`composer-selector composer-selector--attachment${attachmentMenuOpen ? " is-open" : ""}`}>
-            <button type="button" className="composer-selector__trigger composer-attachment-trigger" aria-label="添加资料" aria-expanded={attachmentMenuOpen} onClick={() => setAttachmentMenuOpen((value) => !value)}>
-              {uploadingRole ? <LoaderCircle className="spin" size={15} /> : <Paperclip size={15} />}
-              <span>添加资料</span>
+          {/* 上传时不问用途：哪份是来源文档、哪份是报告模板由服务端判断 */}
+          <div className="composer-selector composer-selector--attachment">
+            <button
+              type="button"
+              className="composer-selector__trigger composer-attachment-trigger"
+              aria-label="上传文件"
+              onClick={() => sourceFileRef.current?.click()}
+            >
+              {uploading ? <LoaderCircle className="spin" size={15} /> : <Paperclip size={15} />}
+              <span>上传文件</span>
             </button>
-            {attachmentMenuOpen ? (
-              <div className="composer-selector__panel composer-selector__panel--attachment">
-                <button type="button" className="attachment-role-option" onClick={() => sourceFileRef.current?.click()}><FileText size={17} /><span><strong>上传源文件</strong><small>分析内容并自动匹配报告类型</small></span></button>
-                <button type="button" className="attachment-role-option" onClick={() => templateFileRef.current?.click()}><LayoutTemplate size={17} /><span><strong>上传报告模板</strong><small>作为章节、字段映射和版式参考</small></span></button>
-              </div>
-            ) : null}
           </div>
           <div className={`composer-selector composer-selector--datasets${openSelector === "datasets" ? " is-open" : ""}`}>
             <button
@@ -691,7 +514,7 @@ export function PlaygroundPage() {
                     <button
                       type="button"
                       className={`composer-selector__option${!selectedDatasetIds.length ? " is-selected" : ""}`}
-                      onClick={() => setSelectedDatasetIds([])}
+                      onClick={() => clearDatasetSelection()}
                       aria-pressed={!selectedDatasetIds.length}
                     >
                       <span className="composer-selector__check">{!selectedDatasetIds.length ? <Check size={13} /> : null}</span>
@@ -766,7 +589,7 @@ export function PlaygroundPage() {
                               name="chat-model"
                               value={model.id}
                               checked={selected}
-                              onChange={() => selectModel(model.id)}
+                              onChange={() => handleSelectModel(model.id)}
                             />
                             <span className="composer-selector__radio">{selected ? <Check size={12} /> : null}</span>
                             <span className="composer-selector__copy"><strong>{modelLabel(model)}</strong><small>{modelDescription(model)}</small></span>
@@ -786,82 +609,90 @@ export function PlaygroundPage() {
           ) : null}
         </div>
 
-        {isRunning ? (
+        {isActiveStreaming ? (
           <button className="composer-send composer-send--stop" type="button" onClick={stopGeneration} aria-label="停止生成"><Square size={14} fill="currentColor" /></button>
         ) : (
           <button className="composer-send" type="submit" disabled={!canSubmit} aria-label="发送"><ArrowUp size={18} /></button>
         )}
       </div>
-      {!activeDatasets.length ? (
-        <p className="composer-warning composer-warning--action">开始对话前，请先<Link to="/datasets">创建数据集并上传文档</Link>。</p>
-      ) : attachmentError ? (
+      {attachmentError ? (
         <p className="composer-warning" role="alert">{attachmentError}</p>
-      ) : resolvedAttachments.length && !attachmentRolesValid ? (
-        <p className="composer-warning">添加报告模板后还需要上传一个源文件。</p>
-      ) : attachmentsFailed ? (
-        <p className="composer-warning" role="alert">附件解析失败，请移除后重新上传。</p>
-      ) : resolvedAttachments.length && !attachmentsReady ? (
-        <p className="composer-warning">附件正在解析，完成后即可发送。</p>
       ) : needsExplicitModel && !chatModels.length ? (
         <p className="composer-warning composer-warning--action">开始对话前，请先<Link to="/models">配置可用的对话模型</Link>。</p>
       ) : needsExplicitModel && !selectedModelId ? <p className="composer-warning">请选择用于本次对话的模型。</p> : null}
     </form>
   );
 
+  // 「最近对话」列表已移入工作台左栏（components/WorkspaceRail.jsx）：它属于导航，
+  // 不该跟着对话页一起被切走。
   return (
-    <div className="conversation-workspace">
-      <aside className="conversation-history" aria-label="历史对话">
-        <header><span>最近对话</span><button type="button" aria-label="新建对话" onClick={() => { setConversationId(null); setMessages([]); setAttachments([]); }}><Plus size={15} /></button></header>
-        <div className="conversation-history__list">
-          {historyLoading ? <p>正在读取…</p> : conversations.length ? conversations.map((item) => (
-            <button type="button" className={item.conversation_id === conversationId ? "is-active" : ""} key={item.conversation_id} onClick={() => openConversation(item.conversation_id)}>
-              <MessageSquareText size={14} /><span><strong>{item.title}</strong><small>{item.turn_count} 轮对话</small></span>
-            </button>
-          )) : <p>还没有历史对话</p>}
-        </div>
-      </aside>
+    <div className="conversation-page-wrapper">
       <div className={`conversation-page${messages.length ? " conversation-page--active" : ""}`}>
       {!messages.length ? (
-        <main className="conversation-empty">
+        <div className="conversation-empty">
           <div className="conversation-empty__intro">
-            <h1>把碳知识库<br />变成会回答问题的专家</h1>
-            <p>AI 检索政策、标准与核算资料，生成有依据的答案，并回溯原文片段和页码。</p>
+            <h1>让资料库会回答问题</h1>
+            <p>AI 检索政策、标准与核算资料，答案有据可依，并可回溯原文片段与页码。</p>
           </div>
           <div className="conversation-empty__composer">{composer}</div>
-          <div className="chat-suggestions" aria-label="建议问题">
-            {SUGGESTED_QUESTIONS.map((suggestion) => (
-              <button type="button" key={suggestion} onClick={() => setQuestion(suggestion)}>{suggestion}</button>
-            ))}
-          </div>
-        </main>
+        </div>
       ) : (
-        <main className="conversation-thread">
+        <div
+          className="conversation-thread"
+          ref={threadRef}
+          role="log"
+          aria-live="polite"
+          aria-relevant="additions text"
+          aria-label="对话消息"
+          onScroll={(event) => {
+            // 滞回判定：流式增长会垫高"距底距离"，阈间保持现状避免状态抖断。
+            const el = event.currentTarget;
+            const distance = el.scrollHeight - el.scrollTop - el.clientHeight;
+            if (distance <= 250) stickToBottomRef.current = true;
+            else if (distance >= 400) stickToBottomRef.current = false;
+          }}
+          onWheel={(event) => {
+            // 滚轮向上即视为用户离开底部，立即停止跟随。
+            if (event.deltaY < 0) stickToBottomRef.current = false;
+          }}
+        >
           <div className="message-column">
+            {/* 对话视图此前没有任何标题：补一个页面级 h1，供辅助技术定位与朗读上下文。 */}
+            <h1 className="sr-only">{activeConversationTitle}</h1>
             {messages.map((message) => message.role === "user" ? (
               <article className="chat-message chat-message--user" key={message.id}>
                 <div className="chat-message__avatar">U</div>
                 <div className="chat-message__body">
-                  {message.attachments?.length ? <div className="chat-message__attachments">{message.attachments.map((attachment) => <span key={`${attachment.role}-${attachment.document_id ?? attachment.documentId}`}><FileText size={13} />{attachment.filename || `文档 #${attachment.document_id ?? attachment.documentId}`}<small>{attachment.role === "TEMPLATE" ? "模板" : "源文件"}</small></span>)}</div> : null}
+                  {message.attachments?.length ? <div className="chat-message__attachments">{message.attachments.map((attachment, index) => <span key={`${attachment.filename}-${index}`}><FileText size={13} />{attachment.filename || `文档 #${attachment.document_id ?? attachment.documentId}`}<small>{attachment.direct || attachment.material_id ? "文件内容" : attachment.role === "TEMPLATE" ? "模板" : "来源文档"}</small></span>)}</div> : null}
                   <p>{message.content}</p>
+                  {message.content ? (
+                    <footer className="chat-message__actions">
+                      <button type="button" onClick={() => copyMessage(message)}>{copiedMessageId === message.id ? <Check size={14} /> : <Copy size={14} />}{copiedMessageId === message.id ? "已复制" : "复制"}</button>
+                    </footer>
+                  ) : null}
                 </div>
               </article>
             ) : (
-              <article className="chat-message chat-message--assistant" key={message.id}>
+              <article
+                className="chat-message chat-message--assistant"
+                key={message.id}
+                aria-busy={isStreamingMessage(message)}
+              >
                 <div className="chat-message__avatar"><Sparkles size={15} /></div>
                 <div className="chat-message__body">
-                  {message.status !== "done" ? <div className="chat-message__status">
-                    {["recalling", "generating"].includes(message.status) ? <LoaderCircle className="spin" size={14} /> : message.status === "error" ? <CircleAlert size={14} /> : <Check size={14} />}
+                  {message.status !== "done" ? <div className="chat-message__status" role="status">
+                    {isStreamingMessage(message) ? <LoaderCircle className="spin" size={14} /> : message.status === "error" ? <CircleAlert size={14} /> : <Check size={14} />}
                     <span>{STATUS_COPY[message.status] || "处理中"}</span>
                   </div> : null}
                   {message.content ? (
                     <div className="chat-markdown" onClickCapture={(event) => handleRecallChunkLinkClick(event, message)}>
-                      <ReactMarkdown remarkPlugins={[remarkGfm]}>
+                      <ReactMarkdown remarkPlugins={[remarkGfm]} components={MESSAGE_MARKDOWN_COMPONENTS}>
                         {linkifyRecallChunkMentions(message.content, message.hits)}
                       </ReactMarkdown>
                     </div>
                   ) : null}
                   {!message.content && message.status === "empty" ? <p className="chat-message__empty">根据已选择的数据集，暂未找到可以支持回答的相关内容。</p> : null}
-                  {!message.content && ["recalling", "generating"].includes(message.status) ? (
+                  {!message.content && isStreamingMessage(message) ? (
                     <div className="typing-line"><span /><span /><span /></div>
                   ) : null}
                   {message.error ? <p className="chat-message__error">{message.error}</p> : null}
@@ -879,8 +710,9 @@ export function PlaygroundPage() {
                     </section>
                   ) : null}
                   {message.interaction?.status === "ANSWERED" ? <p className="chat-message__notice">已确认 {message.interaction.selected}，报告任务已经创建。</p> : null}
+                  {message.reportRunId ? <ChatReportCard runId={message.reportRunId} /> : null}
                   {message.failedSources?.length ? <p className="chat-message__warning">部分检索服务暂时不可用，本次回答可能不完整。</p> : null}
-                  {!["recalling", "generating"].includes(message.status) ? (
+                  {!isStreamingMessage(message) ? (
                     <footer className="chat-message__actions">
                       {message.hits?.length ? <button type="button" onClick={() => openSourceDrawer(message)}><Search size={14} />查看 {message.hits.length} 个召回片段</button> : null}
                       {message.content ? <button type="button" onClick={() => copyMessage(message)}>{copiedMessageId === message.id ? <Check size={14} /> : <Copy size={14} />}{copiedMessageId === message.id ? "已复制" : "复制"}</button> : null}
@@ -889,10 +721,9 @@ export function PlaygroundPage() {
                 </div>
               </article>
             ))}
-            <div ref={messageEndRef} />
           </div>
           <div className="conversation-composer-dock">{composer}</div>
-        </main>
+        </div>
       )}
 
       {sourceMessage ? (

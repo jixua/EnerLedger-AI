@@ -4,14 +4,16 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from pydantic import BaseModel, ConfigDict
+from sqlalchemy import delete as sa_delete
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.reports import ReportCreateRequest, create_report
 from app.domain.auth import get_actor_user_id, get_shared_owner_user_id
 from app.domain.models import AgentConversation, AgentConversationTurn, Document
+from app.domain.time import as_utc
 from app.rag.database import get_db
 from app.services.agent_conversations import finish_turn, turn_dict
 from app.services.document_queue import DOCUMENT_STATUS_READY
@@ -55,8 +57,8 @@ async def list_conversations(
                 "conversation_id": conversation.id,
                 "title": conversation.title,
                 "turn_count": turn_count,
-                "created_at": conversation.created_at,
-                "updated_at": conversation.updated_at,
+                "created_at": as_utc(conversation.created_at),
+                "updated_at": as_utc(conversation.updated_at),
             }
         )
     return result
@@ -87,6 +89,42 @@ async def list_conversation_turns(
         )
     ).all()
     return [turn_dict(turn) for turn in turns]
+
+
+@router.delete("/conversations/{conversation_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_conversation(
+    conversation_id: str,
+    user_id: Annotated[int, Depends(get_actor_user_id)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> None:
+    """删除整段对话及其全部回合。
+
+    两张表之间没有数据库级外键，回合需要显式清理。报告任务（``report_run``）
+    不随对话删除：它是独立交付物，删除对话后仍在报告中心可查。
+    """
+
+    owned = await db.scalar(
+        select(AgentConversation.id).where(
+            AgentConversation.id == conversation_id,
+            AgentConversation.user_id == user_id,
+        )
+    )
+    if owned is None:
+        raise HTTPException(status_code=404, detail="对话不存在")
+
+    await db.execute(
+        sa_delete(AgentConversationTurn).where(
+            AgentConversationTurn.conversation_id == conversation_id,
+            AgentConversationTurn.user_id == user_id,
+        )
+    )
+    await db.execute(
+        sa_delete(AgentConversation).where(
+            AgentConversation.id == conversation_id,
+            AgentConversation.user_id == user_id,
+        )
+    )
+    await db.commit()
 
 
 @router.post("/documents/{document_id}/classify-report-template")
@@ -135,13 +173,18 @@ async def confirm_template_selection(
     turn.interaction = interaction
     turn.status = "PROCESSING_ACTION"
     await db.commit()
+    # 来源与模板都可能是知识库文档，也可能是对话直传的材料；卡片里带的是哪一套，
+    # 就按哪一套重建任务。
+    source_document_id = interaction.get("source_document_id")
     try:
         run = await create_report(
-            document_id=int(interaction["source_document_id"]),
+            document_id=int(source_document_id) if source_document_id else None,
             payload=ReportCreateRequest(
                 report_type=payload.report_type,
                 llm_config_id=int(interaction["llm_config_id"]),
                 custom_template_document_id=interaction.get("template_document_id"),
+                material_id=interaction.get("source_material_id"),
+                template_material_id=interaction.get("template_material_id"),
                 user_instructions=interaction.get("user_instructions"),
             ),
             user_id=owner_user_id,
@@ -152,7 +195,9 @@ async def confirm_template_selection(
         turn.interaction = {**interaction, "status": "OPEN"}
         await db.commit()
         raise
-    answer = f"已按 {payload.report_type} 创建报告任务，任务编号 {run['run_id'][:8]}。"
+    # 对话里只说报告类型名称，不暴露 R1–R7 这类内部编号。
+    report_name = run.get("report_type_name") or payload.report_type
+    answer = f"已按「{report_name}」创建报告任务，任务编号 {run['run_id'][:8]}。"
     await finish_turn(
         db,
         turn=turn,
