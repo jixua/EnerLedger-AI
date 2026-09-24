@@ -11,6 +11,16 @@ def test_production_api_image_includes_lambdamart_models() -> None:
     assert "models/" in pipeline
 
 
+def test_pi_runtime_files_are_owned_by_runtime_user() -> None:
+    dockerfile = (ROOT / "deploy/jenkins/Dockerfile.pi").read_text()
+
+    assert (
+        "COPY --from=build --chown=node:node /app/third_party/pi ./third_party/pi"
+        in dockerfile
+    )
+    assert "COPY --chown=node:node apps/pi-service ./apps/pi-service" in dockerfile
+
+
 def test_production_deploy_recreates_only_changed_application_services() -> None:
     script = (ROOT / "deploy/production/scripts/deploy.sh").read_text()
 

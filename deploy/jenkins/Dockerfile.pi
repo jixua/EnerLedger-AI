@@ -23,8 +23,8 @@ ENV NODE_ENV=production \
     TZ=Asia/Shanghai
 
 WORKDIR /app
-COPY --from=build /app/third_party/pi ./third_party/pi
-COPY apps/pi-service ./apps/pi-service
+COPY --from=build --chown=node:node /app/third_party/pi ./third_party/pi
+COPY --chown=node:node apps/pi-service ./apps/pi-service
 USER node
 EXPOSE 8010
 HEALTHCHECK --interval=15s --timeout=5s --start-period=20s --retries=5 \
