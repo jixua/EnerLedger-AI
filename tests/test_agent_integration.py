@@ -19,6 +19,9 @@ from app.services.agent_runs import AgentRunRegistry
 def test_agent_is_disabled_by_default() -> None:
     assert Settings.model_fields["AGENT_ENABLED"].default is False
     assert Settings.model_fields["PI_SERVICE_BASE_URL"].default == "http://127.0.0.1:8010"
+    assert Settings.model_fields["AGENT_RECALL_DISPLAY_LIMIT"].default == 64
+    assert Settings.model_fields["RERANK_DEFAULT_TOP_N"].default == 12
+    assert RecallConfig().rerank_top_n == 12
 
 
 def test_internal_agent_auth_requires_exact_bearer_token(
@@ -90,6 +93,8 @@ def test_agent_chat_model_requires_one_shared_binding_without_explicit_selection
 async def test_multi_knowledge_base_recall_skips_only_broken_config(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    purposes = []
+
     @asynccontextmanager
     async def fake_db_context():
         yield object()
@@ -98,7 +103,8 @@ async def test_multi_knowledge_base_recall_skips_only_broken_config(
         def __init__(self, _db) -> None:
             pass
 
-        async def load(self, _user_id, dataset_id, _purpose):
+        async def load(self, _user_id, dataset_id, purpose):
+            purposes.append(purpose)
             if dataset_id == 12:
                 raise ConfigurationException("broken binding")
             return SimpleNamespace(dataset_id=dataset_id)
@@ -111,6 +117,10 @@ async def test_multi_knowledge_base_recall_skips_only_broken_config(
     assert config == RecallConfig.from_settings()
     assert list(contexts) == [11]
     assert failed == [12]
+    assert purposes == [
+        agent_module.DatasetExecutionPurpose.AGENT_RECALL,
+        agent_module.DatasetExecutionPurpose.AGENT_RECALL,
+    ]
 
 
 @pytest.mark.asyncio
@@ -200,8 +210,23 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
             ),
         }
 
+    rank_requests = []
+
+    class FakeLambdaMartRanker:
+        async def rank(self, **request):
+            rank_requests.append(request)
+            return SimpleNamespace(
+                ranked_chunk_ids=["chunk-1", "chunk-2", "chunk-3"],
+                mode="ltr",
+                model_version="test-lambdamart",
+                elapsed_ms=1.25,
+            )
+
     monkeypatch.setattr(agent_module, "_resolve_agent_recall_execution", fake_resolve)
     monkeypatch.setattr(agent_module, "get_recall_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(
+        agent_module, "get_initialized_agent_ltr_ranker", lambda: FakeLambdaMartRanker()
+    )
     monkeypatch.setattr(agent_module, "fetch_chunk_sources", fake_sources)
     monkeypatch.setattr(
         agent_module, "aclose_dataset_execution_contexts", lambda _contexts: _async_none()
@@ -231,6 +256,15 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
         await agent_module.agent_run_registry.release(context.run_id)
 
     hit = result["ranked_hits"][0]
+    assert len(result["ranked_hits"]) == 3
+    assert result["retrieval"]["context_count"] == 2
+    assert result["retrieval"]["rerank_applied"] is True
+    assert len(rank_requests) == 2
+    assert all(request["allow_fallback"] is False for request in rank_requests)
+    assert all(
+        set(request["candidate_contents"]) == {"chunk-1", "chunk-2", "chunk-3"}
+        for request in rank_requests
+    )
     assert hit["result_rank"] == 1
     assert hit["knowledge_base_name"] == "政策库"
     assert hit["normalized_scores"]["dense"] == 0.8
@@ -240,6 +274,8 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
     assert result["retrieval"]["context_count"] == 2
     assert [item["selected_for_context"] for item in result["ranked_hits"]] == [True, True, False]
     assert result["retrieval"]["weights"]["dense"] == 0.7
+    assert result["retrieval"]["strategy"] == "bm25_sparse_dense_lambdamart"
+    assert result["retrieval"]["ranking_diagnostics"]["model_version"] == "test-lambdamart"
     assert result["scope"] == {
         "mode": "all_accessible",
         "knowledge_base_count": 2,

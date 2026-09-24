@@ -25,6 +25,7 @@ from .service import DatasetConfigService
 class DatasetExecutionPurpose(StrEnum):
     PARSE = "PARSE"
     RECALL = "RECALL"
+    AGENT_RECALL = "AGENT_RECALL"
 
 
 @dataclass(frozen=True)
@@ -92,7 +93,7 @@ class DatasetExecutionContextLoader:
                         "VISION",
                     )
                 )
-        elif config.recall.enable_rerank:
+        elif purpose is DatasetExecutionPurpose.RECALL and config.recall.enable_rerank:
             required.append(("rerank_config_id", bindings.rerank_config_id, "RERANK"))
         return required
 
