@@ -35,6 +35,7 @@ import {
   linkifyRecallChunkMentions,
   recallChunkNumberFromHref,
 } from "../lib/recall-evidence";
+import { copyText } from "../lib/clipboard";
 
 const STATUS_COPY = {
   recalling: "正在查找相关内容",
@@ -154,7 +155,8 @@ export function PlaygroundPage() {
   const [composing, setComposing] = useState(false);
   const [sourceMessageId, setSourceMessageId] = useState(null);
   const [activeCitationIndex, setActiveCitationIndex] = useState(null);
-  const [copiedMessageId, setCopiedMessageId] = useState(null);
+  const [copyFeedback, setCopyFeedback] = useState(null);
+  const copyFeedbackTimerRef = useRef(null);
   const threadRef = useRef(null);
   const stickToBottomRef = useRef(true);
   const controlsRef = useRef(null);
@@ -179,6 +181,10 @@ export function PlaygroundPage() {
     // 切换会话时恢复"粘底"跟随。
     stickToBottomRef.current = true;
   }, [conversationId]);
+
+  useEffect(() => () => {
+    if (copyFeedbackTimerRef.current) window.clearTimeout(copyFeedbackTimerRef.current);
+  }, []);
 
   useEffect(() => {
     // 挂载时直接吸到底：切回来时这段可能已经生成了一屏，等下一个 delta 才吸会闪一下。
@@ -287,9 +293,16 @@ export function PlaygroundPage() {
 
   async function copyMessage(message) {
     if (!message.content) return;
-    await navigator.clipboard.writeText(message.content);
-    setCopiedMessageId(message.id);
-    window.setTimeout(() => setCopiedMessageId(null), 1500);
+    const copied = await copyText(message.content);
+    setCopyFeedback({ messageId: message.id, status: copied ? "success" : "error" });
+    if (copyFeedbackTimerRef.current) window.clearTimeout(copyFeedbackTimerRef.current);
+    copyFeedbackTimerRef.current = window.setTimeout(() => setCopyFeedback(null), 1800);
+  }
+
+  function copyActionContent(messageId) {
+    if (copyFeedback?.messageId !== messageId) return <><Copy size={14} />复制</>;
+    if (copyFeedback.status === "success") return <><Check size={14} />已复制</>;
+    return <><CircleAlert size={14} />复制失败</>;
   }
 
   /**
@@ -684,7 +697,7 @@ export function PlaygroundPage() {
                   <p>{message.content}</p>
                   {message.content ? (
                     <footer className="chat-message__actions">
-                      <button type="button" onClick={() => copyMessage(message)}>{copiedMessageId === message.id ? <Check size={14} /> : <Copy size={14} />}{copiedMessageId === message.id ? "已复制" : "复制"}</button>
+                      <button type="button" onClick={() => { void copyMessage(message); }} aria-live="polite">{copyActionContent(message.id)}</button>
                     </footer>
                   ) : null}
                 </div>
@@ -732,7 +745,7 @@ export function PlaygroundPage() {
                   {!isStreamingMessage(message) ? (
                     <footer className="chat-message__actions">
                       {message.hits?.length ? <button type="button" onClick={() => openSourceDrawer(message)}><Search size={14} />查看 {message.hits.length} 个召回片段</button> : null}
-                      {message.content ? <button type="button" onClick={() => copyMessage(message)}>{copiedMessageId === message.id ? <Check size={14} /> : <Copy size={14} />}{copiedMessageId === message.id ? "已复制" : "复制"}</button> : null}
+                      {message.content ? <button type="button" onClick={() => { void copyMessage(message); }} aria-live="polite">{copyActionContent(message.id)}</button> : null}
                     </footer>
                   ) : null}
                 </div>
