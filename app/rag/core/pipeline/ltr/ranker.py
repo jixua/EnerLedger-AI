@@ -39,6 +39,10 @@ class LtrRankResult:
     reason: str | None = None
 
 
+class LambdaMartRankingRequiredError(RuntimeError):
+    """LambdaMART 必选场景下无法产出模型排序。"""
+
+
 @dataclass
 class RankerMonitor:
     counters: Counter[str] = field(default_factory=Counter)
@@ -90,6 +94,7 @@ class LambdaMartRanker:
         query: str,
         routes: dict[str, list[RetrieverHit]],
         candidate_contents: dict[str, str],
+        allow_fallback: bool = True,
     ) -> LtrRankResult:
         started = time.perf_counter()
         fallback = weighted_baseline_order(routes)
@@ -100,7 +105,7 @@ class LambdaMartRanker:
             remaining = timeout_seconds - (slot_acquired_at - started)
             if remaining <= 0:
                 self._inference_slots.release()
-                raise asyncio.TimeoutError
+                raise TimeoutError
             if self._closed:
                 self._inference_slots.release()
                 raise RuntimeError("LambdaMART inference executor is closed")
@@ -125,6 +130,8 @@ class LambdaMartRanker:
                 timeout=remaining,
             )
             if not chunk_ids:
+                if not allow_fallback:
+                    raise LambdaMartRankingRequiredError("LambdaMART has no rankable candidates")
                 return LtrRankResult([], "fallback_empty", self.model_version, 0.0)
             compact_length = len("".join(query.split()))
             short_fallback = compact_length <= int(
@@ -132,9 +139,15 @@ class LambdaMartRanker:
             ) and confidence < float(self.short_fallback["confidence_threshold"])
             elapsed_ms = (time.perf_counter() - started) * 1000
             if elapsed_ms > self.latency_budget_ms:
+                if not allow_fallback:
+                    raise LambdaMartRankingRequiredError("LambdaMART latency budget exceeded")
                 ranked = fallback
                 mode = "fallback_budget_exceeded"
             elif short_fallback:
+                if not allow_fallback:
+                    raise LambdaMartRankingRequiredError(
+                        "LambdaMART rejected a low-confidence short query"
+                    )
                 ranked = fallback
                 mode = "hybrid_short_low_confidence"
             else:
@@ -144,8 +157,14 @@ class LambdaMartRanker:
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # 本地模型失败必须降级，不能击穿问答流
+            if not allow_fallback:
+                if isinstance(exc, LambdaMartRankingRequiredError):
+                    raise
+                raise LambdaMartRankingRequiredError(
+                    f"LambdaMART inference failed: {type(exc).__name__}"
+                ) from exc
             elapsed_ms = (time.perf_counter() - started) * 1000
-            mode = "fallback_timeout" if isinstance(exc, asyncio.TimeoutError) else "fallback_error"
+            mode = "fallback_timeout" if isinstance(exc, TimeoutError) else "fallback_error"
             self.monitor.record(mode, elapsed_ms)
             return LtrRankResult(
                 fallback,
@@ -317,7 +336,9 @@ def _validate_bundle(model_dir: Path, manifest: dict[str, Any], model: Any) -> N
 def _rank(chunk_ids: list[str], scores: Any) -> list[str]:
     return [
         item[0]
-        for item in sorted(zip(chunk_ids, scores), key=lambda item: (-float(item[1]), item[0]))
+        for item in sorted(
+            zip(chunk_ids, scores, strict=True), key=lambda item: (-float(item[1]), item[0])
+        )
     ]
 
 

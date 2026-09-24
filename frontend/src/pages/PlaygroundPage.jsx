@@ -45,6 +45,23 @@ const STATUS_COPY = {
   error: "生成失败",
 };
 
+const RETRIEVAL_SOURCE_LABELS = {
+  bm25: "关键词检索",
+  sparse: "稀疏向量检索",
+  dense: "语义向量检索",
+};
+
+function recallWarningText(message) {
+  const failedSources = [...new Set(message.failedSources || [])];
+  const failedKnowledgeBases = message.retrievalDetails?.failed_knowledge_bases || [];
+  const details = [
+    ...failedSources.map((source) => RETRIEVAL_SOURCE_LABELS[source] || source),
+    ...failedKnowledgeBases.map((item) => item.name).filter(Boolean),
+  ];
+  const suffix = details.length ? `（${details.join("、")}）` : "";
+  return `部分检索服务暂时不可用${suffix}，已使用其余检索结果继续回答，结果可能不完整。`;
+}
+
 /** 回答正文里的 markdown 标题下沉一级：页面级 h1 是会话标题，正文不应再出现 h1。 */
 const MESSAGE_MARKDOWN_COMPONENTS = {
   h1: (props) => <h2 {...props} />,
@@ -153,7 +170,7 @@ export function PlaygroundPage() {
     [conversations, conversationId],
   );
   const sourceMessage = messages.find((message) => message.id === sourceMessageId);
-  const sourceHits = sourceMessage?.hits ?? [];
+  const sourceHits = (sourceMessage?.hits ?? []).slice(0, 64);
   const citedSourceCount = sourceHits.filter(
     (hit) => hit.citation_index !== null && hit.citation_index !== undefined,
   ).length;
@@ -711,7 +728,7 @@ export function PlaygroundPage() {
                   ) : null}
                   {message.interaction?.status === "ANSWERED" ? <p className="chat-message__notice">已确认 {message.interaction.selected}，报告任务已经创建。</p> : null}
                   {message.reportRunId ? <ChatReportCard runId={message.reportRunId} /> : null}
-                  {message.failedSources?.length ? <p className="chat-message__warning">部分检索服务暂时不可用，本次回答可能不完整。</p> : null}
+                  {message.failedSources?.length || message.retrievalDetails?.failed_knowledge_bases?.length ? <p className="chat-message__warning">{recallWarningText(message)}</p> : null}
                   {!isStreamingMessage(message) ? (
                     <footer className="chat-message__actions">
                       {message.hits?.length ? <button type="button" onClick={() => openSourceDrawer(message)}><Search size={14} />查看 {message.hits.length} 个召回片段</button> : null}
@@ -733,7 +750,7 @@ export function PlaygroundPage() {
             <header className="source-drawer__header">
               <div>
                 <h2 id="source-drawer-title">召回片段</h2>
-                <p>本轮召回 {sourceHits.length} 个片段，其中 {citedSourceCount} 个进入回答上下文{sourceMessage.retrievalScope?.knowledge_base_count ? `，覆盖 ${sourceMessage.retrievalScope.knowledge_base_count} 个知识库` : ""}。</p>
+                <p>本轮展示 {sourceHits.length} 个召回片段，其中 {citedSourceCount} 个{sourceMessage.retrievalDetails?.rerank_applied ? "在重排后" : ""}进入回答上下文{sourceMessage.retrievalScope?.knowledge_base_count ? `，覆盖 ${sourceMessage.retrievalScope.knowledge_base_count} 个知识库` : ""}。</p>
               </div>
               <button type="button" className="icon-button" onClick={closeSourceDrawer} aria-label="关闭"><X size={18} /></button>
             </header>
@@ -759,7 +776,7 @@ export function PlaygroundPage() {
                         </span>
                         {citationIndex ? <span className="source-usage-chip">用于回答</span> : null}
                       </div>
-                      <span className="source-score">相关度 {scoreText(hit.fused_score)}</span>
+                      <span className="source-score">相关度 {scoreText(hit.rerank_score ?? hit.fused_score)}</span>
                     </div>
                     <h3>{hit.filename || `文档 #${hit.doc_id}`}</h3>
                     <div className="source-detail-card__meta">
@@ -777,6 +794,7 @@ export function PlaygroundPage() {
                         <span><small>稠密向量</small><strong>{scoreText(hit.scores?.dense)}</strong><small>贡献 {scoreText(hit.weighted_contributions?.dense)}</small></span>
                       </div>
                       <small>检索序号 {hit.result_rank ?? "—"}</small>
+                      {hit.rerank_rank ? <small>重排序号 {hit.rerank_rank}</small> : null}
                     </details>
                   </li>
                 );

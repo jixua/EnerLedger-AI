@@ -42,11 +42,10 @@ async def lifespan(_: FastAPI):
     from app.domain.auth import ensure_bootstrap_accounts
 
     await ensure_bootstrap_accounts()
-    from app.rag.application.recall_pipeline_provider import (
-        prewarm_recall_pipeline,
-    )
+    from app.rag.application.ltr_provider import preload_ltr_ranker
+    from app.rag.application.recall_pipeline_provider import prewarm_recall_pipeline
 
-    await prewarm_recall_pipeline()
+    await asyncio.gather(prewarm_recall_pipeline(), preload_ltr_ranker())
     dispatch_stop = asyncio.Event()
     dispatch_task = asyncio.create_task(
         run_document_dispatch_reconciler(dispatch_stop),
@@ -62,14 +61,14 @@ async def lifespan(_: FastAPI):
     report_dispatch_stop.set()
     await dispatch_task
     await report_dispatch_task
-    from app.rag.application.recall_pipeline_provider import (
-        close_recall_pipeline_resources,
-    )
+    from app.rag.application.ltr_provider import shutdown_ltr_ranker
+    from app.rag.application.recall_pipeline_provider import close_recall_pipeline_resources
     from app.rag.services.usage_reporter import drain_usage_reports
     from app.services.document_ingestion import close_ingestion_resources
 
     await drain_usage_reports()
     await close_recall_pipeline_resources()
+    shutdown_ltr_ranker()
     await close_ingestion_resources()
     await close_database()
     await logger.complete()
