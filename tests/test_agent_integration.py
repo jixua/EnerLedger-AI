@@ -124,7 +124,7 @@ async def test_multi_knowledge_base_recall_skips_only_broken_config(
 
 
 @pytest.mark.asyncio
-async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evidence(
+async def test_internal_hybrid_recall_drops_stale_candidates_before_ltr(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     token = "internal-agent-token-" + "x" * 32
@@ -201,13 +201,6 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
                 document_version=1,
                 page=10,
             ),
-            "chunk-3": ChunkSource(
-                content="低排名候选不应进入回答上下文。",
-                filename="锅炉指南.pdf",
-                chunk_index=5,
-                document_version=2,
-                page=11,
-            ),
         }
 
     rank_requests = []
@@ -216,7 +209,7 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
         async def rank(self, **request):
             rank_requests.append(request)
             return SimpleNamespace(
-                ranked_chunk_ids=["chunk-1", "chunk-2", "chunk-3"],
+                ranked_chunk_ids=["chunk-1", "chunk-2"],
                 mode="ltr_short_low_confidence",
                 model_version="test-lambdamart",
                 elapsed_ms=1.25,
@@ -257,30 +250,31 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
         await agent_module.agent_run_registry.release(context.run_id)
 
     hit = result["ranked_hits"][0]
-    assert len(result["ranked_hits"]) == 3
+    assert len(result["ranked_hits"]) == 2
     assert result["retrieval"]["context_count"] == 2
     assert result["retrieval"]["rerank_applied"] is True
     assert len(rank_requests) == 2
     assert all(request["allow_fallback"] is False for request in rank_requests)
     assert all(
-        set(request["candidate_contents"]) == {"chunk-1", "chunk-2", "chunk-3"}
-        for request in rank_requests
+        set(request["candidate_contents"]) == {"chunk-1", "chunk-2"} for request in rank_requests
     )
     assert hit["result_rank"] == 1
     assert hit["knowledge_base_name"] == "政策库"
     assert hit["normalized_scores"]["dense"] == 0.8
     assert hit["weighted_contributions"]["dense"] == 0.56
     assert hit["selected_for_context"] is True
-    assert len(result["ranked_hits"]) == 3
+    assert len(result["ranked_hits"]) == 2
     assert result["retrieval"]["context_count"] == 2
-    assert [item["selected_for_context"] for item in result["ranked_hits"]] == [True, True, False]
+    assert [item["selected_for_context"] for item in result["ranked_hits"]] == [True, True]
     assert result["retrieval"]["weights"]["dense"] == 0.7
     assert result["retrieval"]["strategy"] == "bm25_sparse_dense_lambdamart"
     assert result["retrieval"]["ranking_diagnostics"]["model_version"] == "test-lambdamart"
     assert result["retrieval"]["ranking_diagnostics"]["mode"] == "ltr_short_low_confidence"
+    assert result["retrieval"]["ranking_diagnostics"]["dropped_candidate_count"] == 1
     assert result["retrieval"]["ranking_diagnostics"]["reason"] == (
         "low_confidence_short_query"
     )
+    assert result["retrieval"]["degraded"] is True
     assert result["scope"] == {
         "mode": "all_accessible",
         "knowledge_base_count": 2,
@@ -290,8 +284,100 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
     assert repeated["ranked_hits"][0]["citation_index"] == hit["citation_index"]
 
 
+@pytest.mark.asyncio
+async def test_internal_hybrid_recall_treats_all_stale_candidates_as_empty_recall(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    token = "internal-agent-token-" + "x" * 32
+    monkeypatch.setattr(agent_module.settings, "ENERLEDGER_INTERNAL_AGENT_TOKEN", token)
+    datasets = [SimpleNamespace(id=11, name="政策库", description="政策", status="ACTIVE")]
+
+    class ScalarResult:
+        def all(self):
+            return datasets
+
+    class FakeDb:
+        async def scalars(self, _statement):
+            return ScalarResult()
+
+    response = RecallResponse(
+        query="产品碳足迹怎么做",
+        hits=[
+            RecallHit(
+                chunk_id="stale-chunk",
+                doc_id=21,
+                dataset_id=11,
+                fused_score=0.8,
+                scores={"bm25": 4.0, "sparse": 0.5, "dense": 0.9},
+            )
+        ],
+        per_source_counts={"bm25": 1, "sparse": 1, "dense": 1},
+        failed_sources=[],
+        elapsed_ms=8,
+        fusion_weights={"bm25": 0.15, "sparse": 0.15, "dense": 0.7},
+    )
+
+    class FakePipeline:
+        async def execute(self, _request):
+            return response
+
+    async def fake_resolve(_user_id, _dataset_ids):
+        return RecallConfig.from_settings(), {11: object()}, []
+
+    class UnexpectedRanker:
+        async def rank(self, **_request):
+            raise AssertionError("LambdaMART must not run without rankable candidates")
+
+    monkeypatch.setattr(agent_module, "_resolve_agent_recall_execution", fake_resolve)
+    monkeypatch.setattr(agent_module, "get_recall_pipeline", lambda: FakePipeline())
+    monkeypatch.setattr(
+        agent_module, "get_initialized_agent_ltr_ranker", lambda: UnexpectedRanker()
+    )
+    monkeypatch.setattr(agent_module, "fetch_chunk_sources", lambda *_args: _async_empty_dict())
+    monkeypatch.setattr(
+        agent_module, "aclose_dataset_execution_contexts", lambda _contexts: _async_none()
+    )
+
+    context = await agent_module.agent_run_registry.register(
+        run_id="stale-tool-run",
+        user_id=7,
+        dataset_ids=[11],
+        doc_ids=None,
+        scope_mode="all_accessible",
+    )
+    try:
+        result = await agent_module.internal_agent_recall(
+            context.run_id,
+            agent_module.AgentRecallBody(query="产品碳足迹怎么做"),
+            authorization=f"Bearer {token}",
+            db=FakeDb(),
+        )
+    finally:
+        await agent_module.agent_run_registry.release(context.run_id)
+
+    assert result["ranked_hits"] == []
+    assert result["evidence_blocks"] == []
+    assert result["retrieval"]["rerank_applied"] is False
+    assert result["retrieval"]["degraded"] is True
+    assert result["retrieval"]["ranking_diagnostics"] == {
+        "strategy": "lambdamart",
+        "mode": "skipped_no_rankable_candidates",
+        "model_version": None,
+        "candidate_contract_version": "blind_v5_candidate_routing_v1",
+        "candidate_count": 0,
+        "dropped_candidate_count": 1,
+        "ranked_count": 0,
+        "duration_ms": 0.0,
+        "reason": "candidate_content_unavailable",
+    }
+
+
 async def _async_none() -> None:
     return None
+
+
+async def _async_empty_dict() -> dict:
+    return {}
 
 
 @pytest.mark.asyncio
