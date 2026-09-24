@@ -768,17 +768,27 @@ async def internal_agent_recall(
         sources = await fetch_chunk_sources(
             [hit.chunk_id for hit in ltr_candidate_hits], context.user_id
         )
-        contents = {chunk_id: source.content for chunk_id, source in sources.items()}
+        # 索引删除与 MySQL 事务并非原子提交，生产中可能短暂召回已经失效的
+        # chunk_id；空正文也不能构造有效的 LambdaMART 特征。它们不是排序
+        # 候选，必须在进入强制重排前剔除。这里没有改用 weighted-score，剩余
+        # 候选仍全部经过 LambdaMART；若一个有效候选都没有，则按空召回返回。
+        contents = {
+            chunk_id: source.content
+            for chunk_id, source in sources.items()
+            if source.content and source.content.strip()
+        }
+        rankable_candidate_hits = [hit for hit in ltr_candidate_hits if hit.chunk_id in contents]
+        dropped_candidate_count = len(ltr_candidate_hits) - len(rankable_candidate_hits)
         reranked_hits = []
         ranking_diagnostics = None
-        if ltr_candidate_hits:
+        if rankable_candidate_hits:
             ranker = get_initialized_agent_ltr_ranker()
             if ranker is None:
                 raise HTTPException(
                     status_code=503,
                     detail={"code": "LAMBDA_MART_RERANK_UNAVAILABLE"},
                 )
-            routes = build_ltr_routes(response.route_hits, ltr_candidate_hits, contents)
+            routes = build_ltr_routes(response.route_hits, rankable_candidate_hits, contents)
             try:
                 ranking = await asyncio.wait_for(
                     ranker.rank(
@@ -802,15 +812,13 @@ async def internal_agent_recall(
                     run_id,
                     type(exc).__name__,
                     len("".join(body.query.split())),
-                    len(ltr_candidate_hits),
+                    len(rankable_candidate_hits),
                 )
                 raise HTTPException(
                     status_code=503,
                     detail={"code": "LAMBDA_MART_RERANK_FAILED"},
                 ) from exc
-            hits_by_chunk_id = {
-                hit.chunk_id: hit for hit in ltr_candidate_hits if contents.get(hit.chunk_id)
-            }
+            hits_by_chunk_id = {hit.chunk_id: hit for hit in rankable_candidate_hits}
             reranked_hits = [
                 reranked_from_recall(hits_by_chunk_id[chunk_id], rerank_rank=rank)
                 for rank, chunk_id in enumerate(ranking.ranked_chunk_ids, start=1)
@@ -826,10 +834,23 @@ async def internal_agent_recall(
                 "mode": ranking.mode,
                 "model_version": ranking.model_version,
                 "candidate_contract_version": recall_request.candidate_contract_version,
-                "candidate_count": len(ltr_candidate_hits),
+                "candidate_count": len(rankable_candidate_hits),
+                "dropped_candidate_count": dropped_candidate_count,
                 "ranked_count": len(reranked_hits),
                 "duration_ms": round(ranking.elapsed_ms, 3),
                 "reason": ranking.reason,
+            }
+        elif ltr_candidate_hits:
+            ranking_diagnostics = {
+                "strategy": "lambdamart",
+                "mode": "skipped_no_rankable_candidates",
+                "model_version": None,
+                "candidate_contract_version": recall_request.candidate_contract_version,
+                "candidate_count": 0,
+                "dropped_candidate_count": dropped_candidate_count,
+                "ranked_count": 0,
+                "duration_ms": 0.0,
+                "reason": "candidate_content_unavailable",
             }
 
         candidate_hits = reranked_hits[: settings.AGENT_RECALL_DISPLAY_LIMIT]
@@ -963,6 +984,7 @@ async def internal_agent_recall(
                 "ranking_diagnostics": ranking_diagnostics,
                 "degraded": bool(response.failed_sources)
                 or bool(failed_dataset_ids)
+                or bool(dropped_candidate_count)
                 or bool(diagnostics and diagnostics.degraded),
                 "failed_sources": response.failed_sources,
                 "failed_knowledge_bases": [
