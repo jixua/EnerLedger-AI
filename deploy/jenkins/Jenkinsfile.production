@@ -34,7 +34,7 @@ node {
         if [ -z "$previous" ] || ! git cat-file -e "$previous^{commit}" 2>/dev/null || ! git merge-base --is-ancestor "$previous" "$SOURCE_SHA"; then changed='*'; else changed="$(git diff --name-only "$previous" "$SOURCE_SHA")"; fi
         needs() { printf '%s\\n' "$changed" | grep -Eq "$1"; }
         : > .production-build-components
-        if [ "$changed" = '*' ] || needs '^(Dockerfile|pyproject.toml|uv.lock|README.md|alembic.ini|app/|reporting/|migrations/|docker/)'; then echo api >> .production-build-components; fi
+        if [ "$changed" = '*' ] || needs '^(Dockerfile|pyproject.toml|uv.lock|README.md|alembic.ini|app/|models/|reporting/|migrations/|docker/)'; then echo api >> .production-build-components; fi
         if [ "$changed" = '*' ] || needs '^(third_party/pi/|apps/pi-service/|deploy/jenkins/Dockerfile.pi$)'; then echo pi >> .production-build-components; fi
         if [ "$changed" = '*' ] || needs '^(frontend/|deploy/production/Dockerfile.frontend$|deploy/production/nginx.conf$)'; then echo web >> .production-build-components; fi
         for component in api pi web; do
