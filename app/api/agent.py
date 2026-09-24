@@ -747,10 +747,13 @@ async def internal_agent_recall(
         sources = await fetch_chunk_sources(
             [hit.chunk_id for hit in response.hits], context.user_id
         )
+        # 与普通 RAG 生成链路保持一致：即使 rerank 未启用，也只允许融合排序后的
+        # final TopN 进入生成上下文，不能把整个融合候选池都交给 Agent。
+        context_hits = response.hits[: recall_config.rerank_top_n]
         assembled = assemble_context(
-            response.hits,
+            context_hits,
             {chunk_id: source.content for chunk_id, source in sources.items()},
-            settings.RECALL_GENERATION_CONTEXT_TOKEN_BUDGET,
+            recall_config.recall_context_token_budget,
         )
         selected_chunk_ids = {block.chunk_id for block in assembled.blocks}
         evidence_by_chunk = {}

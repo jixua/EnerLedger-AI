@@ -143,7 +143,21 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
                 scores={"bm25": 4.0, "sparse": 0.5, "dense": 0.9},
                 normalized_scores={"bm25": 1.0, "sparse": 0.5, "dense": 0.8},
                 weighted_contributions={"bm25": 0.15, "sparse": 0.075, "dense": 0.56},
-            )
+            ),
+            RecallHit(
+                chunk_id="chunk-2",
+                doc_id=22,
+                dataset_id=12,
+                fused_score=0.7,
+                scores={"bm25": 3.0, "sparse": 0.4, "dense": 0.8},
+            ),
+            RecallHit(
+                chunk_id="chunk-3",
+                doc_id=23,
+                dataset_id=11,
+                fused_score=0.6,
+                scores={"bm25": 2.0, "sparse": 0.3, "dense": 0.7},
+            ),
         ],
         per_source_counts={"bm25": 1, "sparse": 1, "dense": 1},
         failed_sources=[],
@@ -156,7 +170,10 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
             return response
 
     async def fake_resolve(_user_id, _dataset_ids):
-        return RecallConfig.from_settings(), {11: object(), 12: object()}, []
+        config = RecallConfig.from_settings().model_copy(
+            update={"rerank_top_n": 2, "recall_context_token_budget": 10_000}
+        )
+        return config, {11: object(), 12: object()}, []
 
     async def fake_sources(_chunk_ids, _user_id):
         return {
@@ -166,7 +183,21 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
                 chunk_index=3,
                 document_version=2,
                 page=9,
-            )
+            ),
+            "chunk-2": ChunkSource(
+                content="排放因子应匹配燃料类型。",
+                filename="因子指南.pdf",
+                chunk_index=4,
+                document_version=1,
+                page=10,
+            ),
+            "chunk-3": ChunkSource(
+                content="低排名候选不应进入回答上下文。",
+                filename="锅炉指南.pdf",
+                chunk_index=5,
+                document_version=2,
+                page=11,
+            ),
         }
 
     monkeypatch.setattr(agent_module, "_resolve_agent_recall_execution", fake_resolve)
@@ -205,6 +236,9 @@ async def test_internal_hybrid_recall_keeps_ranking_explanations_and_stable_evid
     assert hit["normalized_scores"]["dense"] == 0.8
     assert hit["weighted_contributions"]["dense"] == 0.56
     assert hit["selected_for_context"] is True
+    assert len(result["ranked_hits"]) == 3
+    assert result["retrieval"]["context_count"] == 2
+    assert [item["selected_for_context"] for item in result["ranked_hits"]] == [True, True, False]
     assert result["retrieval"]["weights"]["dense"] == 0.7
     assert result["scope"] == {
         "mode": "all_accessible",
