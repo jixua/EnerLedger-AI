@@ -1,0 +1,75 @@
+# 能碳会计知识库 RAG 技术交底书（初稿）
+
+> 版本：V0.1，2026-09-25。实现依据为本仓库 `origin/master` 提交 `796ca18de3994d36c2f7d543014dc2baecd5cf11`。本稿是技术方案交底材料，不把设计阈值、历史离线评测或代码能力写成当前业务场景的实测效果；用于专利申请前，还需由发明人确认创新点、公开时间和权利要求边界。
+
+## 一、技术领域与拟解决的问题
+
+本方案面向企业能耗、碳排放及其核算依据的文档问答。资料可能以 PDF、Word、HTML 等形式进入知识库，包含跨页表格、指标数值、单位、公式、图表和版本差异。仅按关键词检索容易漏掉语义相近但措辞不同的依据；仅按语义向量检索又可能把编号、年份、单位或条件相近但并不相同的段落排到前面。若解析阶段漏页、乱序或错误切断表格，即使后续检索算法正常，也无法给出可追溯的回答。
+
+本项目的技术方案是把“入库质量门禁—结构化分片—三路混合召回—证据约束生成”连成一条可检查的数据链。其目标是让每条答案能够回到当前有效版本的原始文档和具体片段，并在某一路检索或重排不可用时明确降级。当前代码实现了这些工程机制；能碳领域的端到端准确率尚需建立人工金标后测量。
+
+## 二、系统组成与数据流
+
+```text
+PDF / DOC(X) / HTML
+       │ 上传、鉴权与数据集归属校验
+       ▼
+FastAPI ──原文件──► MinIO
+   │ 文档 ID 消息
+   ▼
+RabbitMQ ──► parse-worker ──► 解析与质量门禁 ──► 结构化分片
+                                             ├─► MySQL：文档状态、版本、片段正文与来源
+                                             ├─► Qdrant：Dense / Sparse 向量
+                                             └─► Manticore：BM25 全文索引
+
+用户问题 ──► FastAPI ──► 三路并行召回 ──► 分数归一化与融合
+                                      ──► READY/权限/版本过滤 ──► 正文回填
+                                      ──► 可选重排与上下文组装 ──► LLM 流式回答及引用
+```
+
+FastAPI 管理身份、数据集范围、模型配置和对外接口；MySQL 是文档状态、版本及片段的事实源；MinIO 保存原件和解析后的 Markdown/图片；Qdrant 在同一 collection 使用 `dense`、`sparse_text` 两种 named vector；Manticore 提供按数据集隔离的 BM25 索引。独立 `parse-worker` 消费 RabbitMQ 持久消息，消息只携带文档 ID，MySQL 租约和心跳用于防止多个 worker 重复提交。解析、索引与召回源码位于本仓库 `app/rag`，不是运行时转发到另一个 LinkRag 服务。依据：[README](../README.md)、[入库编排](../app/services/document_ingestion.py)、[解析 worker](../app/workers/document_parse_worker.py)。
+
+## 三、文档入库的具体实施方式
+
+上传后，文档从 `QUEUED` 经 worker 领取为 `PROCESSING`。PDF 由 OpenDataLoader 结构解析；扫描页优先按默认 280 DPI 使用本地 RapidOCR，低置信可由数据集绑定的 Vision 模型补充。Word 先将表格转换成统一结构：简单表格输出 GFM Markdown，复杂表格保留跨行、跨列及嵌套关系的 `table-rag-v2` 文字结构；公式转换为 LaTeX。解析产物进入质量门禁，未达要求不应建立可供用户召回的 READY 文档。依据：[README §文档解析](../README.md)、[入库编排](../app/services/document_ingestion.py)。
+
+通过门禁后，分片器首先识别标题、段落、列表、表格、代码、公式等结构边界，再按配置选择第二阶段切分，并补充受控的相邻上下文。当前默认第一阶段是 `candidate_boundary`，第二阶段是 `noop`；代码中的 `semantic_depth_window` 需显式配置才运行。受保护的表格、图片、代码和公式不会被一般文本规则随意截断。片段保留稳定 `chunk_id`、顺序、标题路径、来源文档和版本信息；派生表格/图片片段与主体分片可区分。依据：[README §分片实现](../README.md)、[分片器](../app/rag/core/splitter/pipeline_chunker.py)。
+
+同一批片段分别生成 Dense 与 Sparse 表示，并写入 Qdrant；中文分词后的 BM25 索引写入 Manticore。仅在片段真值集及三路索引写入成功后，服务才把文档设为 `READY` 并切换当前解析产物。重新解析采用新版本和独立产物路径；租约失效、失败或退避重试耗尽不会把不完整的新产物冒充旧版本。检索只使用有权限且状态为 `READY` 的文档。依据：[入库编排](../app/services/document_ingestion.py)、[召回可见性门禁](../app/rag/core/pipeline/recall/pipeline.py)。
+
+## 四、查询、融合与答案生成
+
+系统默认开启 BM25、Sparse、Dense 三路。默认各路候选深度分别为 100、50、100，融合候选窗口为 64；这些值可由数据集配置覆盖。BM25 偏向精确术语、编号和单位，Sparse 保留词项权重，Dense 捕获改写和语义近邻。各路检索可并行执行；默认宽松模式允许单路故障降级，但全部失败会报错。召回结果先按片段 ID 合并，BM25/Sparse 原始分做 `log1p`，Dense 分数直接使用，再分别在各路内部做 min-max 归一化。默认权重 BM25 0.15、Sparse 0.15、Dense 0.70；某一路没有命中时，仅在实际有命中的路之间重新分配权重，一个片段没有命中的路贡献为零。随后先过滤无权访问或非 READY 的文档，再截取结果。依据：[配置](../app/rag/config.py)、[融合实现](../app/rag/core/pipeline/recall/fusion.py)、[召回管线](../app/rag/core/pipeline/recall/pipeline.py)。
+
+普通 RAG 流接口在融合结果上回填片段正文；若数据集启用并配置了远程 rerank，可继续精排，否则按融合顺序降级。`RECALL_LTR_MODE` 默认 `off`，因此不能把 LambdaMART 的历史评测成绩称作普通 RAG 当前默认成绩。该模式另支持 `shadow`、`active` 和 `baseline`：旁路对比、主链本地排序、主动回滚分别有独立语义。Agent 模式通过独立 Pi 服务运行，但 FastAPI 仍控制检索范围；Agent 的 `hybrid_recall` 使用冻结候选契约与本地 LambdaMART 排序，并可调用证据扩展、文档目录和章节阅读工具。Agent 只接收 run 内不透明引用，不直接连接底层数据库或索引。依据：[RAG 流实现](../app/rag/application/recall_stream_runtime.py)、[LTR 装配](../app/rag/application/ltr_provider.py)、[Agent 设计](pi-agent.md)。
+
+生成阶段把入选片段拼入有 token 预算的上下文，要求模型只依据给定证据作答，并在事实句后标注 `[片段N]`。证据内容被视为待分析资料，不作为改变模型规则的指令；无可用上下文时返回固定的无法回答说明，不调用对话模型。SSE 提供召回完成、回答增量和终态事件。Agent 运行内另有 Evidence Ledger：重复召回复用证据 ID，只有真正进入上下文的片段才取得稳定引用编号；展开邻近片段和分页阅读章节的结果会重新登记。依据：[生成提示词](../app/rag/core/prompts/rag_generation.py)、[RAG 接口](../app/api/rag.py)、[Agent 设计](pi-agent.md)。
+
+## 五、质量控制与指标口径
+
+本项目存在三类不同的指标，必须分别报告。**解析门禁**判断一份输入能否进入索引，**检索评测**判断相关依据能否进入前列，**答案评测**判断结论是否被引用片段支持。前一类通过不自动证明后一类通过。
+
+| 层次 | 当前实现或目标 | 证据状态 |
+| --- | --- | --- |
+| PDF 自动门禁 | 页数/页序、正文与图片覆盖、OCR 置信度、正文 source recall 与 output precision；可靠文本层两项默认下限均为 97% | 已实现的入库门槛，属于结构与文本保真检查，不等于能碳问答准确率 |
+| PDF 人工金标 | 页数、页序、扫描页 OCR 覆盖、正文字符准确率、关键数值/单位/公式、简单/复杂/跨页表格、图表关系、引用与 Top 5 噪声等 13 项；缺金标记 `NOT_EVALUABLE` | 评估器及目标阈值已实现；本稿未取得当前业务金标跑分 |
+| 检索质量 | `Recall@K` 看全部相关依据的覆盖；`Hit@K` 看至少一条相关依据是否进入前 K；MRR 看第一条相关依据排名；nDCG@K 同时考虑相关性与位置 | 可由 LinkRag-Eval 历史报告说明方法；需用能碳语料重新测量 |
+| 生成质量 | 事实可支持率、引用准确率、拒答正确率，以及数值、单位、版本和适用条件错误率 | 建议的业务验收项；当前没有可引用的统一实测值 |
+
+PDF 金标策略中，页数/页序/扫描页 OCR 覆盖目标为 100%，正文字符准确率不低于 97%，关键 token、公式、简单表格、跨页表格、图表结构及引用均要求精确，复杂表格单元格准确率不低于 98%，未说明图片片段数和 Top 5 噪声数为零。这些是 `PdfAcceptancePolicy` 的验收阈值，**不是已取得的成绩**；Vision 图表语义、字符和公式准确率仍需人工金标验证。依据：[PDF 评估器](../app/rag/evaluation/pdf_acceptance.py)、[README §PDF 金标验收](../README.md)。
+
+LinkRag-Eval 提供了算法来源侧的历史质检信息，可用于解释为何选择多路检索，也可作为后续同口径复测的参照，但与本仓库现行数据、索引后端和参数不完全相同：
+
+| 历史实验 | 数据和配置 | 主要结果 | 适用边界 |
+| --- | --- | --- | --- |
+| 两路与三路对照，2026-06-20 | 四领域 500 题，BM25+Sparse 对比加 Dense，RRF 融合、每路 Top 20 | Recall@10：0.851→0.932；Hit@10：0.902→0.956；MRR：0.824→0.880 | 说明当时增加 Dense 的增益；不是当前 weighted-score/Manticore 链路的成绩 |
+| 三种路由对照，2026-07-05 | 四领域 394 个 doc 粒度查询、3200 chunk，weighted score、Top 10；当时 BM25 走 Qdrant sparse | Dense / Dense+BM25 / 三路 Recall@10 分别为 0.9745 / 0.9750 / 0.9725；三路 MRR 0.9216 | 增路未必提高 Top 10 查全；旧实验权重和索引与本项目默认配置不同 |
+| Blind v5 排序验收，2026-07-28 | 750 题，比较旧 weighted score 与 LambdaMART v3+短词回退 | Hit@10：98.80%→99.07%；MRR：92.16%→95.64%；真实搜索子集 MRR 下降 0.70 个百分点 | Hit@10 增益不显著（McNemar p=0.5）；当时建议先 Shadow，不是本项目上线证明 |
+
+历史报告原文：[两路/三路](</Users/jixu/Project/Agent/LinkRag-Eval/docs/reports/recall_routes_2way_vs_3way.md>)、[三种路由](</Users/jixu/Project/Agent/LinkRag-Eval/docs/reports/multi_route_recall_comparison_2026_07_05.md>)、[Blind v5](</Users/jixu/Project/Agent/LinkRag-Eval/docs/reports/blind_v5_production_contract_acceptance_2026_07_28.md>)。报告中的实验参数、标签口径、数据集与发布状态应随任何对外引用一并保留。
+
+## 六、可交底的技术要点与后续验证
+
+可供进一步讨论的实施要点是：在文档版本与解析质量约束下建立同一稳定片段 ID 的三种索引；在融合前做分路分数变换与归一化，在融合后再执行权限和 READY 过滤；将排序候选与真正送入生成上下文的证据分开，并以稳定编号约束答案引用；在解析失败、单路故障、重排不可用或资料不足时采取有记录的回退行为。这些是当前代码可见的实现组合，是否具备专利新颖性和创造性尚未检索或判断。
+
+下一版应补充一套经人工标注的能碳业务金标：按政策/核算标准、排放因子、企业报告、表格数值、跨页引用、版本冲突和拒答场景分层，记录原文版本、问题、相关片段 ID、可接受答案及判定人。以冻结的语料、模型、配置与代码提交运行解析验收、Recall/Hit/MRR/nDCG 和答案支持性评估，并附运行日期、失败路数、样本量和置信区间。没有这些材料之前，本文只能交代系统方案与历史参考指标，不能声称“当前能碳 RAG 达到某个检索或问答准确率”。
