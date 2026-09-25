@@ -1,0 +1,62 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="1040" viewBox="0 0 1280 1040" role="img" aria-label="文档解析与入库流程">
+<style>text{font-family:PingFang SC, Noto Sans CJK SC, Microsoft YaHei, Helvetica Neue, sans-serif;} .label{fill:#111827;font-size:17px;font-weight:600} .sub{fill:#64748b;font-size:13px} .tag{fill:#64748b;font-size:13px;font-weight:600}</style>
+<defs>
+<marker id="arrow-blue" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0 L10 4 L0 8 Z" fill="#2563eb"/></marker>
+<marker id="arrow-red" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0 L10 4 L0 8 Z" fill="#dc2626"/></marker>
+<marker id="arrow-green" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0 L10 4 L0 8 Z" fill="#16a34a"/></marker>
+<marker id="arrow-purple" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0 L10 4 L0 8 Z" fill="#9333ea"/></marker>
+</defs>
+<rect width="1280" height="1040" fill="#ffffff"/>
+<text x="48" y="49" font-size="26" font-weight="700" fill="#111827">文档解析与入库流程</text>
+<text x="48" y="77" font-size="14" fill="#64748b">质量门禁位于切分和索引之前；只有全部索引完成的版本才进入 READY</text>
+<rect x="450" y="115" width="380" height="66" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="640.0" y="144.0" text-anchor="middle">上传文档</text>
+<text class="sub" x="640.0" y="167.0" text-anchor="middle">FastAPI 校验数据集与文件类型</text>
+<rect x="65" y="116" width="285" height="64" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+<text class="label" x="207.5" y="144.0" text-anchor="middle">MinIO 保存原文件</text>
+<text class="sub" x="207.5" y="167.0" text-anchor="middle">对象存储</text>
+<polyline points="450,148 350,148" fill="none" stroke="#9333ea" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-purple)"/>
+<rect x="361" y="121" width="78" height="20" rx="4" fill="#ffffff"/>
+<text class="tag" x="400" y="136" text-anchor="middle">原文件</text>
+<rect x="450" y="215" width="380" height="68" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="640.0" y="245.0" text-anchor="middle">RabbitMQ → parse-worker</text>
+<text class="sub" x="640.0" y="268.0" text-anchor="middle">文档 ID 消息；MySQL 租约防重复</text>
+<polyline points="640,181 640,215" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<rect x="450" y="320" width="380" height="72" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="640.0" y="352.0" text-anchor="middle">结构化解析</text>
+<text class="sub" x="640.0" y="375.0" text-anchor="middle">PDF / Word / HTML；扫描 PDF 可 OCR</text>
+<polyline points="640,283 640,320" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<path d="M640 428 L800 485 L640 542 L480 485 Z" fill="#fff7ed" stroke="#fdba74" stroke-width="1.8"/>
+<text class="label" x="640" y="482" text-anchor="middle">质量门禁</text>
+<text class="sub" x="640" y="504" text-anchor="middle">PDF / Word 专项检查</text>
+<polyline points="640,392 640,428" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<rect x="920" y="448" width="275" height="74" rx="12" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.5"/>
+<text class="label" x="1057.5" y="481.0" text-anchor="middle">重试或 FAILED</text>
+<text class="sub" x="1057.5" y="504.0" text-anchor="middle">保留失败原因；不发布新版本</text>
+<polyline points="800,485 920,485" fill="none" stroke="#dc2626" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-red)"/>
+<rect x="816" y="454" width="78" height="20" rx="4" fill="#ffffff"/>
+<text class="tag" x="855" y="469" text-anchor="middle">未通过</text>
+<rect x="450" y="575" width="380" height="72" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="640.0" y="607.0" text-anchor="middle">结构化分片</text>
+<text class="sub" x="640.0" y="630.0" text-anchor="middle">标题/元素边界 → 语义或长度细分</text>
+<polyline points="640,542 640,575" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<rect x="649" y="548" width="78" height="20" rx="4" fill="#ffffff"/>
+<text class="tag" x="688" y="563" text-anchor="middle">通过</text>
+<rect x="450" y="680" width="380" height="72" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="640.0" y="712.0" text-anchor="middle">生成并写入三路索引</text>
+<text class="sub" x="640.0" y="735.0" text-anchor="middle">Dense + Sparse → Qdrant；BM25 → Manticore</text>
+<polyline points="640,647 640,680" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<rect x="450" y="790" width="380" height="74" rx="12" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5"/>
+<text class="label" x="640.0" y="823.0" text-anchor="middle">提交文档片段与版本</text>
+<text class="sub" x="640.0" y="846.0" text-anchor="middle">MySQL 原子切换解析产物</text>
+<polyline points="640,752 640,790" fill="none" stroke="#16a34a" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-green)"/>
+<rect x="450" y="905" width="380" height="66" rx="12" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5"/>
+<text class="label" x="640.0" y="934.0" text-anchor="middle">READY</text>
+<text class="sub" x="640.0" y="957.0" text-anchor="middle">当前版本可参与召回</text>
+<polyline points="640,864 640,905" fill="none" stroke="#16a34a" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-green)"/>
+<rect x="920" y="680" width="275" height="72" rx="12" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.5"/>
+<text class="label" x="1057.5" y="712.0" text-anchor="middle">索引失败</text>
+<text class="sub" x="1057.5" y="735.0" text-anchor="middle">清理本次产物；按策略重试</text>
+<polyline points="830,716 920,716" fill="none" stroke="#dc2626" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-red)"/>
+<text class="sub" x="64" y="1004">蓝：主处理链　紫：异步/存储　红：失败处理　绿：已提交的可检索版本</text>
+</svg>

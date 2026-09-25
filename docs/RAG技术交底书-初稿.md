@@ -31,6 +31,10 @@ FastAPI 管理身份、数据集范围、模型配置和对外接口；MySQL 是
 
 ## 三、文档入库的具体实施方式
 
+![文档解析与入库流程](figures/rag-parse-flow.png)
+
+图 1：文档解析与入库流程（[SVG 原图](figures/rag-parse-flow.svg)）。PDF/Word 专项质检未通过时不进入分片和索引；HTML 无同一套专项门禁，仍须完成后续索引和状态提交。
+
 上传后，文档从 `QUEUED` 经 worker 领取为 `PROCESSING`。PDF 由 OpenDataLoader 结构解析；扫描页优先按默认 280 DPI 使用本地 RapidOCR，低置信可由数据集绑定的 Vision 模型补充。Word 先将表格转换成统一结构：简单表格输出 GFM Markdown，复杂表格保留跨行、跨列及嵌套关系的 `table-rag-v2` 文字结构；公式转换为 LaTeX。解析产物进入质量门禁，未达要求不应建立可供用户召回的 READY 文档。依据：[README §文档解析](../README.md)、[入库编排](../app/services/document_ingestion.py)。
 
 通过门禁后，分片器接收解析器输出的结构化元素及其原文位置，而不是把整篇 Markdown 按固定字符数截断。第一阶段 `candidate_boundary` 顺着标题层级、章节和条款边界构造候选块：遇到强章节边界会优先分开；一般标题或条款需兼顾候选块的 token 软下限，避免只剩一个标题或过短正文。标题路径会随块保存，使后续检索结果仍能说明该内容属于哪一章、哪一节。
@@ -44,6 +48,10 @@ FastAPI 管理身份、数据集范围、模型配置和对外接口；MySQL 是
 同一批片段分别生成 Dense 与 Sparse 表示，并写入 Qdrant；中文分词后的 BM25 索引写入 Manticore。仅在片段真值集及三路索引写入成功后，服务才把文档设为 `READY` 并切换当前解析产物。重新解析采用新版本和独立产物路径；租约失效、失败或退避重试耗尽不会把不完整的新产物冒充旧版本。检索只使用有权限且状态为 `READY` 的文档。依据：[入库编排](../app/services/document_ingestion.py)、[召回可见性门禁](../app/rag/core/pipeline/recall/pipeline.py)。
 
 ## 四、查询、融合与答案生成
+
+![问题召回与证据回答流程](figures/rag-recall-flow.png)
+
+图 2：问题召回与证据回答流程（[SVG 原图](figures/rag-recall-flow.svg)）。普通 RAG 和 Agent 共用受控的三路召回，但后续排序策略及 Agent 的证据登记方式不同。
 
 系统默认开启 BM25、Sparse、Dense 三路。默认各路候选深度分别为 100、50、100，融合候选窗口为 64；这些值可由数据集配置覆盖。BM25 偏向精确术语、编号和单位，Sparse 保留词项权重，Dense 捕获改写和语义近邻。各路检索可并行执行；默认宽松模式允许单路故障降级，但全部失败会报错。召回结果先按片段 ID 合并，BM25/Sparse 原始分做 `log1p`，Dense 分数直接使用，再分别在各路内部做 min-max 归一化。默认权重 BM25 0.15、Sparse 0.15、Dense 0.70；某一路没有命中时，仅在实际有命中的路之间重新分配权重，一个片段没有命中的路贡献为零。随后先过滤无权访问或非 READY 的文档，再截取结果。依据：[配置](../app/rag/config.py)、[融合实现](../app/rag/core/pipeline/recall/fusion.py)、[召回管线](../app/rag/core/pipeline/recall/pipeline.py)。
 

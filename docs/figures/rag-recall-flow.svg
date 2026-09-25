@@ -1,0 +1,63 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1380" height="1070" viewBox="0 0 1380 1070" role="img" aria-label="问题召回与证据回答流程">
+<style>text{font-family:PingFang SC, Noto Sans CJK SC, Microsoft YaHei, Helvetica Neue, sans-serif;} .label{fill:#111827;font-size:17px;font-weight:600} .sub{fill:#64748b;font-size:13px} .tag{fill:#64748b;font-size:13px;font-weight:600}</style>
+<defs>
+<marker id="arrow-blue" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0 L10 4 L0 8 Z" fill="#2563eb"/></marker>
+<marker id="arrow-red" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0 L10 4 L0 8 Z" fill="#dc2626"/></marker>
+<marker id="arrow-green" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0 L10 4 L0 8 Z" fill="#16a34a"/></marker>
+<marker id="arrow-purple" markerWidth="10" markerHeight="8" refX="9" refY="4" orient="auto"><path d="M0 0 L10 4 L0 8 Z" fill="#9333ea"/></marker>
+</defs>
+<rect width="1380" height="1070" fill="#ffffff"/>
+<text x="48" y="49" font-size="26" font-weight="700" fill="#111827">问题召回与证据回答流程</text>
+<text x="48" y="77" font-size="14" fill="#64748b">三路召回并行；排序策略由普通 RAG / Agent 入口选择</text>
+<rect x="495" y="112" width="390" height="65" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="690.0" y="140.5" text-anchor="middle">问题与检索范围</text>
+<text class="sub" x="690.0" y="163.5" text-anchor="middle">FastAPI 鉴权；确定数据集/文档范围</text>
+<rect x="85" y="245" width="300" height="80" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="235.0" y="281.0" text-anchor="middle">BM25 关键词召回</text>
+<text class="sub" x="235.0" y="304.0" text-anchor="middle">Manticore；精确术语/编号</text>
+<rect x="540" y="245" width="300" height="80" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="690.0" y="281.0" text-anchor="middle">Sparse 词项召回</text>
+<text class="sub" x="690.0" y="304.0" text-anchor="middle">Qdrant；加权词项</text>
+<rect x="995" y="245" width="300" height="80" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="1145.0" y="281.0" text-anchor="middle">Dense 语义召回</text>
+<text class="sub" x="1145.0" y="304.0" text-anchor="middle">Qdrant；语义近邻</text>
+<polyline points="690,177 690,210 235,210 235,245" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<polyline points="690,177 690,245" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<polyline points="690,177 690,210 1145,210 1145,245" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<rect x="495" y="395" width="390" height="78" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="690.0" y="430.0" text-anchor="middle">分数变换与加权融合</text>
+<text class="sub" x="690.0" y="453.0" text-anchor="middle">BM25/Sparse log1p → 分路归一化</text>
+<polyline points="235,325 235,360 690,360 690,395" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<polyline points="690,325 690,395" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<polyline points="1145,325 1145,360 690,360 690,395" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<rect x="495" y="520" width="390" height="70" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="690.0" y="551.0" text-anchor="middle">可见性过滤与候选截取</text>
+<text class="sub" x="690.0" y="574.0" text-anchor="middle">仅当前用户有权访问的 READY 文档</text>
+<polyline points="690,473 690,520" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<rect x="65" y="400" width="305" height="68" rx="12" fill="#fef2f2" stroke="#fca5a5" stroke-width="1.5"/>
+<text class="label" x="217.5" y="430.0" text-anchor="middle">单路失败</text>
+<text class="sub" x="217.5" y="453.0" text-anchor="middle">宽松模式保留其余路；全失败报错</text>
+<polyline points="495,434 370,434" fill="none" stroke="#dc2626" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" stroke-dasharray="6 5" marker-end="url(#arrow-red)"/>
+<rect x="60" y="680" width="420" height="83" rx="12" fill="#eff6ff" stroke="#93c5fd" stroke-width="1.5"/>
+<text class="label" x="270.0" y="717.5" text-anchor="middle">普通 RAG 排序</text>
+<text class="sub" x="270.0" y="740.5" text-anchor="middle">可选远程 rerank；不可用回退融合顺序</text>
+<rect x="900" y="680" width="420" height="83" rx="12" fill="#faf5ff" stroke="#d8b4fe" stroke-width="1.5"/>
+<text class="label" x="1110.0" y="717.5" text-anchor="middle">Agent 知识工具排序</text>
+<text class="sub" x="1110.0" y="740.5" text-anchor="middle">冻结候选契约 + 本地 LambdaMART</text>
+<polyline points="690,590 690,632 270,632 270,680" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<rect x="351" y="607" width="78" height="20" rx="4" fill="#ffffff"/>
+<text class="tag" x="390" y="622" text-anchor="middle">普通 RAG</text>
+<polyline points="690,590 690,632 1110,632 1110,680" fill="none" stroke="#9333ea" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-purple)"/>
+<rect x="951" y="607" width="78" height="20" rx="4" fill="#ffffff"/>
+<text class="tag" x="990" y="622" text-anchor="middle">Agent</text>
+<rect x="495" y="824" width="390" height="75" rx="12" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5"/>
+<text class="label" x="690.0" y="857.5" text-anchor="middle">正文回填与证据上下文</text>
+<text class="sub" x="690.0" y="880.5" text-anchor="middle">token 预算；Agent 登记 Evidence Ledger</text>
+<polyline points="270,763 270,796 690,796 690,824" fill="none" stroke="#2563eb" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-blue)"/>
+<polyline points="1110,763 1110,796 690,796 690,824" fill="none" stroke="#9333ea" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-purple)"/>
+<rect x="495" y="944" width="390" height="70" rx="12" fill="#f0fdf4" stroke="#86efac" stroke-width="1.5"/>
+<text class="label" x="690.0" y="975.0" text-anchor="middle">流式回答与片段引用</text>
+<text class="sub" x="690.0" y="998.0" text-anchor="middle">证据不足时返回无法回答</text>
+<polyline points="690,899 690,944" fill="none" stroke="#16a34a" stroke-width="2.4" stroke-linejoin="round" stroke-linecap="round" marker-end="url(#arrow-green)"/>
+<text class="sub" x="64" y="1044">蓝：普通 RAG　紫：Agent 路径　红：降级/错误　绿：证据与回答</text>
+</svg>
