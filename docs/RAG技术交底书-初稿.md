@@ -82,6 +82,8 @@ LinkRag-Eval 提供了算法来源侧的历史质检信息，可用于解释为�
 
 历史报告原文：[两路/三路](</Users/jixu/Project/Agent/LinkRag-Eval/docs/reports/recall_routes_2way_vs_3way.md>)、[三种路由](</Users/jixu/Project/Agent/LinkRag-Eval/docs/reports/multi_route_recall_comparison_2026_07_05.md>)、[Blind v5](</Users/jixu/Project/Agent/LinkRag-Eval/docs/reports/blind_v5_production_contract_acceptance_2026_07_28.md>)。报告中的实验参数、标签口径、数据集与发布状态应随任何对外引用一并保留。
 
+综合三路召回的历史质检结果，同源 LinkRag 技术在 500 题同条件对照中，加入 Dense 后将 Recall@10 从 85.1% 提升至 93.2%（+8.1 个百分点），Hit@10 从 90.2% 提升至 95.6%（+5.4 个百分点），表明语义召回能够有效补足关键词和稀疏检索的漏召回。当前能碳项目已经把 BM25、Sparse、Dense 三路索引与融合、文档权限和 READY 状态过滤、单路故障降级接入实际服务链路，具备发挥这一技术优势的完整工程基础。不过，上述 500 题采用 RRF 融合且语料并非能碳资料；当前项目使用加权分数融合，因此 93.2% 和 95.6% 是同源技术的历史参考值，不能写成当前能碳知识库的实测召回率或命中率。
+
 ## 六、可交底的技术要点与后续验证
 
 可供进一步讨论的实施要点是：在文档版本与解析质量约束下建立同一稳定片段 ID 的三种索引；在融合前做分路分数变换与归一化，在融合后再执行权限和 READY 过滤；将排序候选与真正送入生成上下文的证据分开，并以稳定编号约束答案引用；在解析失败、单路故障、重排不可用或资料不足时采取有记录的回退行为。这些是当前代码可见的实现组合，是否具备专利新颖性和创造性尚未检索或判断。
