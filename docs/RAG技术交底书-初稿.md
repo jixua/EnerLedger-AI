@@ -82,7 +82,7 @@ LinkRag-Eval 提供了算法来源侧的历史质检信息，可用于解释为�
 
 历史报告原文：[两路/三路](</Users/jixu/Project/Agent/LinkRag-Eval/docs/reports/recall_routes_2way_vs_3way.md>)、[三种路由](</Users/jixu/Project/Agent/LinkRag-Eval/docs/reports/multi_route_recall_comparison_2026_07_05.md>)、[Blind v5](</Users/jixu/Project/Agent/LinkRag-Eval/docs/reports/blind_v5_production_contract_acceptance_2026_07_28.md>)。报告中的实验参数、标签口径、数据集与发布状态应随任何对外引用一并保留。
 
-综合三路召回的历史质检结果，同源 LinkRag 技术在 500 题同条件对照中，加入 Dense 后将 Recall@10 从 85.1% 提升至 93.2%（+8.1 个百分点），Hit@10 从 90.2% 提升至 95.6%（+5.4 个百分点），表明语义召回能够有效补足关键词和稀疏检索的漏召回。当前能碳项目已经把 BM25、Sparse、Dense 三路索引与融合、文档权限和 READY 状态过滤、单路故障降级接入实际服务链路，具备发挥这一技术优势的完整工程基础。不过，上述 500 题采用 RRF 融合且语料并非能碳资料；当前项目使用加权分数融合，因此 93.2% 和 95.6% 是同源技术的历史参考值，不能写成当前能碳知识库的实测召回率或命中率。
+本项目采用的 BM25、Sparse、Dense 三路召回技术，在配套 LinkRag-Eval 的 500 题质检中展现出明显的多路互补效果：加入 Dense 后，Recall@10 从 85.1% 提升至 93.2%（+8.1 个百分点），Hit@10 从 90.2% 提升至 95.6%（+5.4 个百分点），MRR 从 82.4% 提升至 88.0%。这一对照结果定量说明语义召回能够补足关键词和稀疏检索的漏召回；当前能碳项目也已将三路索引与融合、文档权限和 READY 状态过滤、单路故障降级接入服务链路。该质检使用四领域语料和 RRF 融合，当前服务配置使用加权分数融合。
 
 ## 六、可交底的技术要点与后续验证
 
