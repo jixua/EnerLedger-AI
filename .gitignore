@@ -15,6 +15,7 @@ app/logs/
 data/*.db
 data/uploads/*
 !data/uploads/.gitkeep
+/benchmarks/weknora/samples/
 
 # 本地设计验收产物，不纳入源码版本。
 design-qa*.png
