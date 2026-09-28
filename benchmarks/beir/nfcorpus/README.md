@@ -76,5 +76,5 @@ NFCorpus 是英文营养/生物医学语料，可用于公开检索基准对比�
 python scripts/compare_nfcorpus_reports.py \
   --left benchmarks/beir/nfcorpus/results/enerledger-k10.json \
   --right benchmarks/beir/nfcorpus/results/weknora-k10.json \
-  --output benchmarks/beir/nfcorpus/results/compare-default-k10.json
+  --output benchmarks/beir/nfcorpus/results/compare-512chars-k10.json
 ```
