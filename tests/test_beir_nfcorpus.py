@@ -9,6 +9,8 @@ import pytest
 from app.rag.evaluation.beir_nfcorpus import load_nfcorpus, score_nfcorpus
 from app.rag.evaluation.retrieval_benchmark import Benchmark
 from scripts.nfcorpus_retrieval_benchmark import _document_map, filename
+from scripts.weknora_nfcorpus_benchmark import document_map as weknora_document_map
+from scripts.weknora_nfcorpus_benchmark import filenames as weknora_filenames
 
 
 def _benchmark() -> Benchmark:
@@ -90,3 +92,31 @@ def test_official_nfcorpus_test_split_if_downloaded() -> None:
     assert len(benchmark.queries) == 323
     assert len(benchmark.corpus) == 3633
     assert sum(map(len, benchmark.qrels.values())) == 12334
+
+
+def test_weknora_document_mapping_requires_complete_corpus() -> None:
+    benchmark = _benchmark()
+    docs = [
+        {"id": str(i), "file_name": filename(doc_id), "parse_status": "completed"}
+        for i, doc_id in enumerate(benchmark.corpus, start=1)
+    ]
+    assert weknora_document_map(benchmark, docs, complete=True) == {
+        "1": "a",
+        "2": "b",
+        "3": "c",
+    }
+    with pytest.raises(ValueError, match="尚未全部"):
+        weknora_document_map(benchmark, docs[:-1], complete=True)
+
+
+def test_weknora_keeps_duplicate_content_as_distinct_documents() -> None:
+    benchmark = Benchmark(
+        queries={"q": "question"},
+        corpus={"a": "same", "b": "same"},
+        qrels={"q": frozenset({"a", "b"})},
+        checksums={},
+    )
+    names = weknora_filenames(benchmark)
+    assert names["a"].endswith(".md")
+    assert names["b"].endswith(".txt")
+    assert names["a"] != names["b"]

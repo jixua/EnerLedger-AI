@@ -35,6 +35,32 @@ python scripts/nfcorpus_retrieval_benchmark.py score \
   --output /tmp/other-nfcorpus-scored.json
 ```
 
+对 WeKnora 可直接使用同一评分器的适配脚本。先创建独立知识库、配置模型，
+把该环境的 JWT 放入 `WEKNORA_BENCHMARK_TOKEN`，再导入和检索。脚本按原始
+BEIR 文档 ID 映射 WeKnora 的 `knowledge_id`，并拒绝语料外文档或未完成解析的语料。
+
+```sh
+python scripts/weknora_nfcorpus_benchmark.py ingest \
+  --base-url http://127.0.0.1:18080 --kb-id YOUR_KB_ID
+python scripts/weknora_nfcorpus_benchmark.py run \
+  --base-url http://127.0.0.1:18080 --kb-id YOUR_KB_ID \
+  --weknora-checkout /path/to/WeKnora --match-count 64 --k 10 \
+  --output /tmp/weknora-nfcorpus.json
+```
+
+两边分别调用项目公开的检索入口，取前 64 个分块候选，在源文档层去重，再计算
+`@10` 指标。这个控制了测试数据、问题、排名粒度和评分口径；两套产品的切分、
+索引、融合和词法检索实现仍然不同，比较应视作端到端检索配置的结果。报告须记录
+模型、版本、候选窗口和解析成功数量，不应与官方 BEIR 榜单的数值直接等同。
+
+官方语料有 40 对正文完全相同但 ID 不同的文档。WeKnora 按相同文件类型与正文
+哈希去重，因此适配脚本把每对第二篇保存为 `.txt`，第一篇保持 `.md`。两篇的
+正文原始字节和独立的 BEIR ID 都保留；这 40 篇的解析器路径可能与 `.md` 不同，
+分析差异时应把这个限制算进去。Qwen `qwen3.7-text-embedding` 在 WeKnora
+模型目录的默认维度为 1024；若本项目使用 2048 维，需在 WeKnora 模型配置中
+把 `embedding_parameters.dimension` 设为 2048 且启用
+`embedding_parameters.supports_dimension_override`，确认两边都真正索引 2048 维。
+
 Precision@K 分母固定为 K；Recall@K 与 AP@K 分母为该问题全部相关文档数；
 NDCG 使用二值相关性；MRR 取前 K 位首个相关文档的倒数名次。指标逐题计算后
 取算术平均，空位视作不相关。该口径对齐 BEIR 使用的 `pytrec_eval` 二值指标。
