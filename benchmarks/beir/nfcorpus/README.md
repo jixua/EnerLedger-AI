@@ -64,7 +64,8 @@ python scripts/weknora_nfcorpus_benchmark.py run \
 
 Precision@K 分母固定为 K；Recall@K 与 AP@K 分母为该问题全部相关文档数；
 NDCG 使用二值相关性；MRR 取前 K 位首个相关文档的倒数名次。指标逐题计算后
-取算术平均，空位视作不相关。该口径对齐 BEIR 使用的 `pytrec_eval` 二值指标。
+取算术平均，空位视作不相关。NFCorpus 的相关等级 1、2 在本评分器中均视为
+相关，因此这里的二值 NDCG 不能与保留分级相关性的 NDCG 成绩直接比较。
 
 NFCorpus 是英文营养/生物医学语料，可用于公开检索基准对比；中文能碳领域的
 实际效果仍需独立的领域测试集验证。
@@ -78,3 +79,6 @@ python scripts/compare_nfcorpus_reports.py \
   --right benchmarks/beir/nfcorpus/results/weknora-k10.json \
   --output benchmarks/beir/nfcorpus/results/compare-512chars-k10.json
 ```
+
+完整的跨系统结论、重排实验与 Recall@10 数值解释见
+[正式评测报告](EVALUATION_REPORT.md)。
