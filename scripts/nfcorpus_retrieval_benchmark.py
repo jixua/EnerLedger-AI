@@ -108,7 +108,7 @@ def _document_map(benchmark: Benchmark, docs: list[dict], *, complete: bool) -> 
         raise ValueError("测试知识库混入了额外文档或有重复文件名")
     if complete and (set(actual) != set(expected) or any(doc["status"] != "READY" for doc in docs)):
         raise ValueError("测试知识库的语料尚未全部入库并处于 READY 状态")
-    return {int(doc["id"]): expected[name] for name, doc in actual.items()}
+    return {int(doc["document_id"]): expected[name] for name, doc in actual.items()}
 
 
 def ingest(benchmark: Benchmark, args: argparse.Namespace) -> None:

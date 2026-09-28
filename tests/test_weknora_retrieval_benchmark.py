@@ -57,7 +57,7 @@ def test_unknown_or_duplicate_passage_ids_fail_closed() -> None:
 def test_document_mapping_requires_exclusive_ready_corpus() -> None:
     benchmark = _benchmark()
     docs = [
-        {"id": i, "filename": passage_filename(pid), "status": "READY"}
+        {"document_id": i, "filename": passage_filename(pid), "status": "READY"}
         for i, pid in enumerate(benchmark.corpus, start=1)
     ]
     assert _document_map(benchmark, docs, require_ready=True) == {1: "a", 2: "b", 3: "c"}

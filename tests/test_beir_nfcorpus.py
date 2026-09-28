@@ -68,7 +68,7 @@ def test_nfcorpus_loader_uses_only_test_qrels(tmp_path: Path) -> None:
 def test_document_mapping_rejects_incomplete_or_mixed_corpus() -> None:
     benchmark = _benchmark()
     docs = [
-        {"id": i, "filename": filename(doc_id), "status": "READY"}
+        {"document_id": i, "filename": filename(doc_id), "status": "READY"}
         for i, doc_id in enumerate(benchmark.corpus, start=1)
     ]
     assert _document_map(benchmark, docs, complete=True) == {1: "a", 2: "b", 3: "c"}
@@ -77,7 +77,7 @@ def test_document_mapping_rejects_incomplete_or_mixed_corpus() -> None:
     with pytest.raises(ValueError, match="额外文档"):
         _document_map(
             benchmark,
-            docs + [{"id": 4, "filename": "foreign.md", "status": "READY"}],
+            docs + [{"document_id": 4, "filename": "foreign.md", "status": "READY"}],
             complete=False,
         )
 

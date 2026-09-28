@@ -87,7 +87,7 @@ def _document_map(benchmark: Benchmark, docs: list[dict], *, require_ready: bool
         unready = [name for name, doc in actual.items() if doc["status"] != "READY"]
         if unready:
             raise ValueError(f"仍有文档未就绪: {unready}")
-    return {int(actual[name]["id"]): pid for name, pid in expected.items()}
+    return {int(actual[name]["document_id"]): pid for name, pid in expected.items()}
 
 
 def _write_json(path: Path, value: dict) -> None:
