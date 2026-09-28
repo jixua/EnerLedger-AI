@@ -8,6 +8,7 @@ import pytest
 
 from app.rag.evaluation.beir_nfcorpus import load_nfcorpus, score_nfcorpus
 from app.rag.evaluation.retrieval_benchmark import Benchmark
+from scripts.compare_nfcorpus_reports import compare
 from scripts.nfcorpus_retrieval_benchmark import _document_map, filename
 from scripts.weknora_nfcorpus_benchmark import document_map as weknora_document_map
 from scripts.weknora_nfcorpus_benchmark import filenames as weknora_filenames
@@ -120,3 +121,15 @@ def test_weknora_keeps_duplicate_content_as_distinct_documents() -> None:
     assert names["a"].endswith(".md")
     assert names["b"].endswith(".txt")
     assert names["a"] != names["b"]
+
+
+def test_report_comparison_uses_paired_queries_and_same_dataset() -> None:
+    benchmark = _benchmark()
+    left = score_nfcorpus(benchmark, {"q": ["a", "c"]}, k=2)
+    right = score_nfcorpus(benchmark, {"q": ["b", "a"]}, k=2)
+    result = compare(left, right, samples=100, seed=1)
+    assert result["metrics"]["precision"]["left_minus_right"] == 0.5
+    assert result["metrics"]["precision"]["paired_bootstrap_95pct"] == [0.5, 0.5]
+    right["dataset_sha256"] = {"corpus.jsonl": "other"}
+    with pytest.raises(ValueError, match="dataset_sha256"):
+        compare(left, right, samples=100, seed=1)

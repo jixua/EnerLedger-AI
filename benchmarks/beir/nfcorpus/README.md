@@ -28,6 +28,7 @@ python scripts/nfcorpus_retrieval_benchmark.py run \
 召回候选窗口，使它至少覆盖 `--k` 个不同源文档。两套系统需要使用相同语料、
 test 问题、K、源文档粒度和评分器，并记录各自模型和检索配置。另一个系统的
 预测结果可导出为 `{ "query-id": ["按名次排列的corpus-id", ...] }` JSON：
+`score` 也可直接读取本脚本或 WeKnora 适配脚本生成的完整报告 JSON。
 
 ```sh
 python scripts/nfcorpus_retrieval_benchmark.py score \
@@ -67,3 +68,13 @@ NDCG 使用二值相关性；MRR 取前 K 位首个相关文档的倒数名次�
 
 NFCorpus 是英文营养/生物医学语料，可用于公开检索基准对比；中文能碳领域的
 实际效果仍需独立的领域测试集验证。
+
+本机完整实验的配置、原始排名和结果见 [RESULTS.md](RESULTS.md)。两份
+`run` 报告可用 `scripts/compare_nfcorpus_reports.py` 做逐题配对 bootstrap：
+
+```sh
+python scripts/compare_nfcorpus_reports.py \
+  --left benchmarks/beir/nfcorpus/results/enerledger-k10.json \
+  --right benchmarks/beir/nfcorpus/results/weknora-k10.json \
+  --output benchmarks/beir/nfcorpus/results/compare-default-k10.json
+```

@@ -251,6 +251,8 @@ def main(argv: list[str] | None = None) -> int:
             run(benchmark, args)
         else:
             predictions = json.loads(args.predictions.read_text(encoding="utf-8"))
+            if isinstance(predictions, dict) and "predictions" in predictions:
+                predictions = predictions["predictions"]
             report = score_nfcorpus(benchmark, predictions, k=args.k)
             _write_json(args.output, report)
             print(json.dumps(report["metrics"], ensure_ascii=False, indent=2))
